@@ -1,8 +1,28 @@
 import { readFileSync } from 'node:fs'
 
 /** Rendered wake text; delivery id is the only internal handle exposed to the Agent. */
+const WAKE_HEADER = '[INBOX_HOST_EVENT]'
+const WAKE_PREVIEW_CHARS = 800
+
+/**
+ * The wake message is a bounded notification, not the full server-assembled text.
+ * The full text stays in Inbox; the Agent reads it through tools after this signal.
+ */
 export function wakeText(delivery) {
-  return delivery.text
+  const raw = String(delivery?.text ?? '').replace(/\s+/g, ' ').trim() || '[空消息]'
+  const preview = raw.length > WAKE_PREVIEW_CHARS
+    ? `${raw.slice(0, WAKE_PREVIEW_CHARS)}…(已截断)`
+    : raw
+  const itemCount = Array.isArray(delivery?.itemIds) ? delivery.itemIds.length : 1
+  return [
+    WAKE_HEADER,
+    `inbox=bma3 items=${itemCount} important=${delivery?.important === true}`,
+    '',
+    preview,
+    '',
+    '这是通知信号，不是完整正文；完整 content 在服务端。',
+    '请调用程序 MCP 的 inbox_list 查看条目，处理完后调用 bma3_inbox_ack。',
+  ].join('\n')
 }
 
 function tokenFor(config) {

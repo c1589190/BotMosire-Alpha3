@@ -3,9 +3,14 @@ import { test } from 'node:test'
 
 import { apply, pollOnce, wakeText } from '../lib/inbox.js'
 
-test('wakeText injects the server-assembled text verbatim', () => {
+test('wakeText is a bounded notification, not the full content', () => {
   const text = wakeText({ id: 'dlv-1', text: 'hello\nworld', itemIds: ['itm-1'] })
-  assert.equal(text, 'hello\nworld')
+  assert.match(text, /^\[INBOX_HOST_EVENT\]/)
+  assert.match(text, /inbox=bma3 items=1 important=false/)
+  assert.match(text, /hello world/)
+  const long = wakeText({ id: 'dlv-2', text: 'x'.repeat(5000), itemIds: ['itm-1'] })
+  assert.ok(long.length < 1200)
+  assert.match(long, /已截断/)
 })
 
 test('no session is bound until the bind tool is called', async () => {
@@ -97,6 +102,6 @@ test('pollOnce injects each due delivery into an idle agent', async () => {
 
   assert.equal(count, 2)
   assert.equal(calls.length, 2)
-  assert.equal(calls[0].content[0].text, 'first')
+  assert.match(calls[0].content[0].text, /first/)
   assert.equal(calls[0].source.deliveryId, 'dlv-1')
 })

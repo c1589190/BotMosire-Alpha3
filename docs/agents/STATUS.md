@@ -57,7 +57,8 @@
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
 - **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
 - **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
-- **Inbox 注入格式**：已按 iibot 推送契约（D-002/D-015）改为服务端按 thread 维护 active item，`text` 为单条服务端拼接文本（`[HH:mm] #seq sender：body`），插件原样注入，不再加 `[BMA3 Inbox]` 包装或 delivery 元数据；新增 `bma3_inbox_ack`，deliveryId 只在插件内部保存。
+- **Inbox 注入格式**：wake 是 `[INBOX_HOST_EVENT]` 的有界通知（preview 800 chars），完整内容只存服务端；不再把整段 delivery.text 注入。
+- **Inbox 注入格式细节**：已按 iibot 推送契约（D-002/D-015）改为服务端按 thread 维护 active item，`text` 为单条服务端拼接文本（`[HH:mm] #seq sender：body`），插件原样注入，不再加 `[BMA3 Inbox]` 包装或 delivery 元数据；新增 `bma3_inbox_ack`，deliveryId 只在插件内部保存。
 - **Inbox 优先级**：按 iibot 最后一版：`priority = max(来源权重, 人级备注)`；私聊 300 / 群 0 / 阈值 200；重要 1s、普通 30s 延迟；同一批只注入最高 priority，私聊唤醒不再混入普通群消息。当前 BMA3 未实现人级备注，先把来源权重与阈值/延迟对齐。
 - **DSH 注入实测**：`@mosire/bma3-dsh` 已 link 进 `web` profile 并绑定当前 `session-50ec...`；插件已加载并轮询 BMA3 Inbox。发现未 ack 的旧 delivery 会阻塞新 delivery；ack 后新 delivery 正常生成。`tokenFile` 支持已加入插件。
 - **限制**：普通群消息（priority < 200）只进消息板，不进 Inbox、不唤醒；绑定另支持 `minPriority` 过滤。
