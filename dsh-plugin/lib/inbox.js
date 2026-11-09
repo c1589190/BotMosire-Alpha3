@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 /** Rendered wake text; delivery id is the only internal handle exposed to the Agent. */
 export function wakeText(delivery) {
   return `[BMA3 Inbox]\n${delivery.text}\n(delivery: ${delivery.id})`
@@ -13,7 +15,9 @@ export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(
     throw new Error('bma3 inbox: baseUrl 不能为空')
   }
   const inboxId = config.inboxId ?? 'bma3'
+  const fileToken = config.tokenFile ? readFileSync(config.tokenFile, 'utf8').trim() : undefined
   const token = config.token
+    ?? fileToken
     ?? (config.tokenEnv ? process.env[config.tokenEnv] : undefined)
     ?? process.env.BMA3_INBOX_TOKEN
     ?? ''

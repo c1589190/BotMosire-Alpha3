@@ -57,6 +57,8 @@
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
 - **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
 - **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
+- **DSH 注入实测**：`@mosire/bma3-dsh` 已 link 进 `web` profile 并绑定当前 `session-50ec...`；插件已加载并轮询 BMA3 Inbox。发现未 ack 的旧 delivery 会阻塞新 delivery；ack 后新 delivery 正常生成。`tokenFile` 支持已加入插件。
+- **限制**：插件将一批 available 项合并成一条 wake；群消息也会进入同一 Inbox，测试批次里混入了 `qq_group/.../760231260`。
 - **风险**：加入 Selenium 后 `bma3-app` app-image 约 109 MB（tar 85 MB）；JVM + jlink + Selenium 比 Go/Node 重。
 - **限制**：webconnect 只做公开页浏览/点击/截图；B 站登录、私信、视频播放工具未做。
 - **限制**：Chromium 点击新标签页需要 300ms 切换；本机已加，但只做了首页/热门页实测。
