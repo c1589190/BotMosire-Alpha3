@@ -29,6 +29,14 @@ import java.util.UUID;
 public final class SqliteMessageBoardStore
         implements MessageBoardStore, ConsumerConversationStore {
 
+    static {
+        try {
+            Class.forName("org.sqlite.JDBC");
+        } catch (ClassNotFoundException failure) {
+            throw new IllegalStateException("SQLite JDBC 驱动缺失", failure);
+        }
+    }
+
     private final Connection connection;
     private boolean closed;
 

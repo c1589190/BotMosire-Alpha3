@@ -18,6 +18,14 @@ import java.util.Optional;
 /** SQLite persistence for one inbox. */
 public final class SqliteInboxStore implements InboxStore {
 
+    static {
+        try {
+            Class.forName("org.sqlite.JDBC");
+        } catch (ClassNotFoundException failure) {
+            throw new IllegalStateException("SQLite JDBC 驱动缺失", failure);
+        }
+    }
+
     private final Connection connection;
     private boolean closed;
 
