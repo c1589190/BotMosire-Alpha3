@@ -110,15 +110,20 @@ public final class InboxService {
         if (eligible.isEmpty()) {
             return List.of();
         }
-        boolean important = eligible.stream()
-                .anyMatch(item -> item.priority() >= policy.importantThreshold());
-        String text = eligible.stream()
+        // iibot priority model: deliver the strongest level first; lower-priority items wait
+        // for the next batch instead of being mixed into an important wake.
+        int maxPriority = eligible.stream().mapToInt(InboxItem::priority).max().orElse(0);
+        List<InboxItem> selected = eligible.stream()
+                .filter(item -> item.priority() == maxPriority)
+                .toList();
+        boolean important = maxPriority >= policy.importantThreshold();
+        String text = selected.stream()
                 .map(InboxItem::summary)
                 .reduce((left, right) -> left + "\n\n" + right)
                 .orElse("");
         Delivery delivery = new Delivery(
                 "dlv-" + UUID.randomUUID(),
-                eligible.stream().map(InboxItem::id).toList(),
+                selected.stream().map(InboxItem::id).toList(),
                 text,
                 important,
                 now,
@@ -126,7 +131,7 @@ public final class InboxService {
                 1,
                 DeliveryState.DELIVERED);
         store.saveDelivery(delivery);
-        for (InboxItem item : eligible) {
+        for (InboxItem item : selected) {
             store.update(item.withStatus(ItemStatus.DELIVERED));
         }
         return List.of(delivery);

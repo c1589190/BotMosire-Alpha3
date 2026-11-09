@@ -87,7 +87,7 @@ class Bma3AppFakeQqTest {
             assertThat(readJson.path("messages").get(0).path("text").asText())
                     .isEqualTo("hello-app");
 
-            Thread.sleep(1100);
+            Thread.sleep(1600);
             List<Delivery> due = app.inboxService().due(Instant.now());
             assertThat(due).hasSize(1);
             McpSchema.CallToolResult acked = mcp.callTool(new McpSchema.CallToolRequest(

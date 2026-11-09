@@ -18,7 +18,7 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Maven 全量测试 | `./mvnw -q test` | **PASS**：16 suites / 29 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 默认跳过，2026-11-09 20:30） |
+| Maven 全量测试 | `./mvnw -q test` | **PASS**：16 suites / 30 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 默认跳过，2026-11-09 20:53） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：5 tests / 0 fail（2026-11-09 20:05） |
 | jpackage smoke | `bash packaging/smoke.sh` | **PASS**：app-image 启动，`/healthz` 200（2026-11-09 20:24，含 Selenium 依赖） |
 | 文档相对链接 | 一次性 Python 链接检查 | **PASS**：checked=47 / missing=0 / rc=0（2026-11-09 20:05） |
@@ -57,8 +57,10 @@
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
 - **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
 - **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
+- **Inbox 优先级**：按 iibot 最后一版：`priority = max(来源权重, 人级备注)`；私聊 300 / 群 0 / 阈值 200；重要 1s、普通 30s 延迟；同一批只注入最高 priority，私聊唤醒不再混入普通群消息。当前 BMA3 未实现人级备注，先把来源权重与阈值/延迟对齐。
 - **DSH 注入实测**：`@mosire/bma3-dsh` 已 link 进 `web` profile 并绑定当前 `session-50ec...`；插件已加载并轮询 BMA3 Inbox。发现未 ack 的旧 delivery 会阻塞新 delivery；ack 后新 delivery 正常生成。`tokenFile` 支持已加入插件。
-- **限制**：插件将一批 available 项合并成一条 wake；群消息也会进入同一 Inbox，测试批次里混入了 `qq_group/.../760231260`。
+- **限制**：插件将同一 priority 的 available 项合并成一条 wake；群消息不会再混入私聊优先批，但同一 priority 的多来源仍会合并。
+- **待修**：DSH profile 仍把 `sessionId` 写死在 `cordis.patch.yml`，没有走插件暴露的 `inbox_bind`/`inbox_unbind` 工具；正确做法是默认不绑，由 Agent 显式绑定当前 `agent.id`。
 - **风险**：加入 Selenium 后 `bma3-app` app-image 约 109 MB（tar 85 MB）；JVM + jlink + Selenium 比 Go/Node 重。
 - **限制**：webconnect 只做公开页浏览/点击/截图；B 站登录、私信、视频播放工具未做。
 - **限制**：Chromium 点击新标签页需要 300ms 切换；本机已加，但只做了首页/热门页实测。

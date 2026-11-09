@@ -10,6 +10,7 @@ public record AppConfig(
         QqConnect qqconnect,
         Inbox inbox,
         Webconnect webconnect,
+        Weighting weighting,
         Logging logging) {
 
     public AppConfig {
@@ -18,13 +19,14 @@ public record AppConfig(
         qqconnect = qqconnect == null ? new QqConnect(List.of()) : qqconnect;
         inbox = inbox == null ? Inbox.defaults() : inbox;
         webconnect = webconnect == null ? Webconnect.defaults() : webconnect;
+        weighting = weighting == null ? Weighting.defaults() : weighting;
         logging = logging == null ? Logging.defaults() : logging;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
                 new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
-                Logging.defaults());
+                Weighting.defaults(), Logging.defaults());
     }
 
     public record Server(String host, int port, String mcpPath, String tokenEnv) {
@@ -53,7 +55,39 @@ public record AppConfig(
     /** 5-arg compatibility constructor for tests/profiles created before webconnect. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Logging logging) {
-        this(dataDir, server, qqconnect, inbox, Webconnect.defaults(), logging);
+        this(dataDir, server, qqconnect, inbox, Webconnect.defaults(),
+                Weighting.defaults(), logging);
+    }
+
+    /** 6-arg compatibility constructor for profiles created before weighting. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Logging logging) {
+        this(dataDir, server, qqconnect, inbox, webconnect, Weighting.defaults(), logging);
+    }
+
+    /**
+     * Last iibot priority model: source weight decides the priority level; signals are
+     * diagnostics only. Normal messages wait; important messages use the short delay.
+     */
+    public record Weighting(int privateSourceWeight, int groupSourceWeight,
+                            int notifyThreshold, long normalDelaySeconds,
+                            long importantDelaySeconds) {
+
+        public Weighting {
+            if (privateSourceWeight < -1000 || privateSourceWeight > 1000
+                    || groupSourceWeight < -1000 || groupSourceWeight > 1000
+                    || notifyThreshold < -1000 || notifyThreshold > 1000) {
+                throw new IllegalArgumentException("weighting 权重必须在 -1000..1000");
+            }
+            if (normalDelaySeconds < 0 || normalDelaySeconds > 600
+                    || importantDelaySeconds < 0 || importantDelaySeconds > 600) {
+                throw new IllegalArgumentException("weighting 延迟必须在 0..600 秒");
+            }
+        }
+
+        public static Weighting defaults() {
+            return new Weighting(300, 0, 200, 30, 1);
+        }
     }
 
     public record Inbox(String inboxId, int httpPort) {

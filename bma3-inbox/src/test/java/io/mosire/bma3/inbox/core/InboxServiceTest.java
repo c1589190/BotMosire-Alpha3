@@ -49,6 +49,27 @@ class InboxServiceTest {
     }
 
     @Test
+    void highestPriorityBatchDoesNotMixGroupIntoPrivateWake() {
+        Instant t0 = Instant.parse("2026-11-09T11:00:00Z");
+        DeliveryPolicy policy = new DeliveryPolicy(200, Duration.ofSeconds(1),
+                Duration.ofSeconds(30), Duration.ofMinutes(10), 3);
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"))) {
+            InboxService service = new InboxService(store, policy);
+            service.append(new AppendItem("qq_private/bot-1/1", "private", 300, t0));
+            service.append(new AppendItem("qq_group/bot-1/2", "group", 0, t0));
+
+            Delivery first = service.due(t0.plusSeconds(31)).getFirst();
+            assertThat(first.text()).isEqualTo("private");
+            assertThat(first.itemIds()).hasSize(1);
+            service.ack(first.id());
+
+            Delivery second = service.due(t0.plusSeconds(31)).getFirst();
+            assertThat(second.text()).isEqualTo("group");
+            assertThat(second.important()).isFalse();
+        }
+    }
+
+    @Test
     void retriesUntilUndeliveredAndKeepsItems() {
         Instant t0 = Instant.parse("2026-11-09T11:00:00Z");
         DeliveryPolicy policy = new DeliveryPolicy(200, Duration.ofSeconds(1),

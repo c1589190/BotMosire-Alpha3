@@ -110,6 +110,7 @@ public final class ConfigLoader {
         for (JsonNode host : webconnect.path("allowedHosts")) {
             allowedHosts.add(host.asText());
         }
+        JsonNode weighting = node.path("weighting");
         JsonNode logging = node.path("logging");
         return new AppConfig(
                 Path.of(dataDir),
@@ -120,6 +121,12 @@ public final class ConfigLoader {
                         text(webconnect, "binary", "/snap/bin/chromium"),
                         webconnect.path("headless").asBoolean(true),
                         allowedHosts.isEmpty() ? AppConfig.Webconnect.defaults().allowedHosts() : allowedHosts),
+                new AppConfig.Weighting(
+                        integer(weighting, "privateSourceWeight", 300),
+                        integer(weighting, "groupSourceWeight", 0),
+                        integer(weighting, "notifyThreshold", 200),
+                        integer(weighting, "normalDelaySeconds", 30),
+                        integer(weighting, "importantDelaySeconds", 1)),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 

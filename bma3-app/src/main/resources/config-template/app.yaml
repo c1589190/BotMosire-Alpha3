@@ -17,6 +17,13 @@ inbox:
   inboxId: bma3
   httpPort: 46500
 
+weighting:
+  privateSourceWeight: 300
+  groupSourceWeight: 0
+  notifyThreshold: 200
+  normalDelaySeconds: 30
+  importantDelaySeconds: 1
+
 webconnect:
   enabled: false
   binary: /snap/bin/chromium

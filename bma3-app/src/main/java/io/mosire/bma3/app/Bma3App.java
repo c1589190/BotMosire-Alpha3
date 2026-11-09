@@ -86,15 +86,19 @@ public final class Bma3App implements AutoCloseable {
                 config.dataDir().resolve("bot.db"));
         SqliteInboxStore inboxStore = new SqliteInboxStore(
                 config.dataDir().resolve("inbox.db"));
-        InboxService inboxService = new InboxService(inboxStore,
-                new DeliveryPolicy(200, Duration.ofSeconds(1),
-                        Duration.ofSeconds(30), Duration.ofMinutes(10), 3));
+        AppConfig.Weighting weighting = config.weighting();
+        DeliveryPolicy deliveryPolicy = new DeliveryPolicy(
+                weighting.notifyThreshold(),
+                Duration.ofSeconds(weighting.importantDelaySeconds()),
+                Duration.ofSeconds(weighting.normalDelaySeconds()),
+                Duration.ofMinutes(10), 3);
+        InboxService inboxService = new InboxService(inboxStore, deliveryPolicy);
         HealthServer health = new HealthServer();
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), mcpToken, inboxService);
         AccountRegistry accounts = new AccountRegistry(
-                event -> ingest(board, inboxService, event));
+                event -> ingest(board, inboxService, weighting, event));
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
@@ -143,7 +147,7 @@ public final class Bma3App implements AutoCloseable {
     }
 
     private static void ingest(SqliteMessageBoardStore board, InboxService inboxService,
-                               AccountEvent accountEvent) {
+                               AppConfig.Weighting weighting, AccountEvent accountEvent) {
         OneBotEvent event = accountEvent.event();
         SourceAddress source = event.source(accountEvent.accountId());
         AppendResult appended = board.append(new InboundMessage(
@@ -156,7 +160,11 @@ public final class Bma3App implements AutoCloseable {
             return;
         }
         String summary = event.text().isBlank() ? "[非文本消息]" : event.text();
-        int priority = "qq_private".equals(source.platform()) ? 300 : 0;
+        boolean privateChat = "qq_private".equals(source.platform());
+        int priority = privateChat
+                ? weighting.privateSourceWeight() : weighting.groupSourceWeight();
+        // The Inbox delivery policy applies the important/normal delay from priority;
+        // availableAt stays the raw arrival time so the delay is not applied twice.
         inboxService.append(new AppendItem(source.format(), summary, priority, Instant.now()));
     }
 
