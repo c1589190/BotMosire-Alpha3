@@ -60,7 +60,7 @@
 - **Inbox 优先级**：按 iibot 最后一版：`priority = max(来源权重, 人级备注)`；私聊 300 / 群 0 / 阈值 200；重要 1s、普通 30s 延迟；同一批只注入最高 priority，私聊唤醒不再混入普通群消息。当前 BMA3 未实现人级备注，先把来源权重与阈值/延迟对齐。
 - **DSH 注入实测**：`@mosire/bma3-dsh` 已 link 进 `web` profile 并绑定当前 `session-50ec...`；插件已加载并轮询 BMA3 Inbox。发现未 ack 的旧 delivery 会阻塞新 delivery；ack 后新 delivery 正常生成。`tokenFile` 支持已加入插件。
 - **限制**：插件将同一 priority 的 available 项合并成一条 wake；群消息不会再混入私聊优先批，但同一 priority 的多来源仍会合并。
-- **待修**：DSH profile 仍把 `sessionId` 写死在 `cordis.patch.yml`，没有走插件暴露的 `inbox_bind`/`inbox_unbind` 工具；正确做法是默认不绑，由 Agent 显式绑定当前 `agent.id`。
+- **已修**：DSH 插件不再写死 `sessionId`，默认不绑定；新增 `bma3_inbox_bind` / `bma3_inbox_unbind` / `bma3_inbox_status`，由 Agent 显式绑定当前 `agent.id`。插件测试 7/7。DSH 需重启一次加载新插件代码。
 - **风险**：加入 Selenium 后 `bma3-app` app-image 约 109 MB（tar 85 MB）；JVM + jlink + Selenium 比 Go/Node 重。
 - **限制**：webconnect 只做公开页浏览/点击/截图；B 站登录、私信、视频播放工具未做。
 - **限制**：Chromium 点击新标签页需要 300ms 切换；本机已加，但只做了首页/热门页实测。
