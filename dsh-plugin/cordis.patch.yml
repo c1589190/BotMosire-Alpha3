@@ -1,0 +1,20 @@
+# BMA3 DSH bundle. One package, three independent loader rows.
+- insert:
+    - id: bma3-inbox
+      name: '@mosire/bma3-dsh'
+      config:
+        module: inbox
+        baseUrl: http://127.0.0.1:46500
+        inboxId: bma3
+        autoStart: true
+
+    - id: bma3-persona
+      name: '@mosire/bma3-dsh'
+      config:
+        module: persona
+        prompt: 你是 BMA3 的角色。
+
+    - id: bma3-preset
+      name: '@mosire/bma3-dsh'
+      config:
+        module: preset

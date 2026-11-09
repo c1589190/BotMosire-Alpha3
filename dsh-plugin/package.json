@@ -1,0 +1,35 @@
+{
+  "name": "@mosire/bma3-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "BMA3 thin DSH bundle: Inbox wake injection, role prompt and tool preset.",
+  "exports": {
+    ".": "./index.js",
+    "./inbox": "./lib/inbox.js",
+    "./persona": "./lib/persona.js",
+    "./preset": "./lib/preset.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    }
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT"
+}
