@@ -106,7 +106,7 @@ public final class Bma3App implements AutoCloseable {
                     next -> accounts.reconcile(resolveAccounts(next, env)));
 
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
-            tools.addAll(QqTools.all(new QqToolContext(accounts, board, board)));
+            tools.addAll(QqTools.all(new QqToolContext(accounts, board, board, config.dataDir())));
             tools.addAll(InboxTools.all(inboxService));
             if (config.webconnect().enabled()) {
                 browser = new BrowserService(new BrowserOptions(

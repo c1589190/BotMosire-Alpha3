@@ -9,6 +9,7 @@ dist/
 !/.mvn/wrapper/maven-wrapper.jar
 
 # Runtime data and local work
+.dsh-vision-router/
 .superpowers/
 data/
 logs/

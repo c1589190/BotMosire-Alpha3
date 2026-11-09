@@ -2,7 +2,7 @@
 
 > **更新时间**：2026-11-09（Plan 1 已实现）
 > **定位**：单仓项目；DevMosire-iiBot 的继承与重构。
-> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）与 Plan 2 的 webconnect（Selenium + 系统 Chromium）已实现；B 站首页/热门页/登录页已通过 BMA3 MCP 打开，视频逐帧查看器已实现并实测；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`。
+> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）与 Plan 2 的 webconnect（Selenium + 系统 Chromium）已实现；B 站已扫码登录成功，视频逐帧查看器、QQ 图片发送已实现并实测；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`。
 > **远端**：<https://github.com/c1589190/BotMosire-Alpha3>
 > **继承来源（只读参考）**：`/home/cna/DevMosire-iiBot`
 

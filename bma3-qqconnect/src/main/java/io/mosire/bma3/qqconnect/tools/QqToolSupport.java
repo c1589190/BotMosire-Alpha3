@@ -24,6 +24,7 @@ final class QqToolSupport {
                 new QqAccountListTool(context),
                 new QqConversationReadTool(context),
                 new QqConversationSendTool(context),
+                new QqConversationSendImageTool(context),
                 new QqConversationAckTool(context));
     }
 

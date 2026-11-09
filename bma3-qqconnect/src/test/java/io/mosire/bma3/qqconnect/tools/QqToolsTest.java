@@ -20,6 +20,7 @@ import io.mosire.bma3.qqconnect.account.AccountConfig;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -49,11 +50,12 @@ class QqToolsTest {
             registry.reconcile(List.of(new AccountConfig(
                     "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
 
-            QqToolContext context = new QqToolContext(registry, board, board);
+            QqToolContext context = new QqToolContext(registry, board, board, tempDir);
             List<AgentTool> tools = QqTools.all(context);
             assertThat(tools).extracting(AgentTool::name)
                     .containsExactly("qq_account_list", "qq_conversation_read",
-                            "qq_conversation_send", "qq_conversation_ack");
+                            "qq_conversation_send", "qq_conversation_send_image",
+                            "qq_conversation_ack");
 
             ToolResult read = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));
@@ -80,6 +82,21 @@ class QqToolsTest {
             ToolResult afterSend = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));
             assertThat(mapper.readTree(afterSend.message()).path("messages")).isEmpty();
+
+            Path qr = tempDir.resolve("qr.png");
+            Files.write(qr, new byte[]{(byte) 0x89, 'P', 'N', 'G'});
+            ToolResult image = tool(tools, "qq_conversation_send_image").execute(
+                    call(Map.of("source", source.format(), "imagePath", qr.toString(),
+                            "text", "扫码登录")));
+            assertThat(image.success()).isTrue();
+            assertThat(mapper.readTree(image.message()).path("state").asText()).isEqualTo("SENT");
+            assertThat(client.sentParams.path("message").isArray()).isTrue();
+            assertThat(client.sentParams.path("message").toString()).contains("base64://");
+
+            ToolResult outside = tool(tools, "qq_conversation_send_image").execute(
+                    call(Map.of("source", source.format(), "imagePath", "/etc/hosts")));
+            assertThat(outside.success()).isFalse();
+            assertThat(outside.code()).isEqualTo("INVALID_ARGUMENT");
 
             client.failure = new IllegalStateException("timeout");
             ToolResult unknown = tool(tools, "qq_conversation_send").execute(
