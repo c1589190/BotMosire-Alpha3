@@ -2,6 +2,9 @@ import { apply as applyInbox } from './lib/inbox.js'
 import { apply as applyPersona } from './lib/persona.js'
 import { apply as applyPreset } from './lib/preset.js'
 
+/** Cordis must provide these services before apply() touches ctx.tools/ctx.agents. */
+export const inject = ['tools', 'agents']
+
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bma3-dsh'
 
