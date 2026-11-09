@@ -31,7 +31,8 @@ class BrowserToolsTest {
 
         assertThat(tools).extracting(AgentTool::name).containsExactly(
                 "browser_open", "browser_snapshot", "browser_click",
-                "browser_type", "browser_text", "browser_screenshot");
+                "browser_type", "browser_text", "browser_screenshot",
+                "browser_video_frames");
 
         ToolResult opened = tool(tools, "browser_open").execute(call(Map.of(
                 "url", "https://www.bilibili.com/")));
@@ -53,6 +54,20 @@ class BrowserToolsTest {
         ToolResult shot = tool(tools, "browser_screenshot").execute(call(Map.of()));
         Path path = Path.of(mapper.readTree(shot.message()).path("path").asText());
         assertThat(path).exists();
+    }
+
+    @Test
+    void capturesVideoFramesAtRequestedTimes() throws Exception {
+        FakeSession session = new FakeSession();
+        List<AgentTool> tools = BrowserTools.all(new BrowserToolContext(
+                () -> session, tempDir, List.of("bilibili.com")));
+        ToolResult result = tool(tools, "browser_video_frames").execute(call(Map.of(
+                "url", "https://www.bilibili.com/video/BV1xx",
+                "times", List.of(1, "00:02"))));
+        assertThat(result.success()).isTrue();
+        var json = mapper.readTree(result.message());
+        assertThat(json.path("frames")).hasSize(2);
+        assertThat(json.path("frames").get(0).path("path").asText()).isNotEmpty();
     }
 
     @Test
@@ -123,6 +138,23 @@ class BrowserToolsTest {
             try {
                 Files.createDirectories(directory);
                 Path path = directory.resolve("test.png");
+                Files.writeString(path, "png");
+                return path;
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+        }
+
+        @Override
+        public double videoDuration() {
+            return 10.0;
+        }
+
+        @Override
+        public Path frameAt(double seconds, Path directory) {
+            try {
+                Files.createDirectories(directory);
+                Path path = directory.resolve("frame-" + seconds + ".png");
                 Files.writeString(path, "png");
                 return path;
             } catch (Exception failure) {

@@ -11,8 +11,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.By;
 import org.openqa.selenium.OutputType;
 import org.openqa.selenium.TakesScreenshot;
+import org.openqa.selenium.WebElement;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeDriverService;
@@ -175,6 +177,53 @@ public final class SeleniumBrowserSession implements BrowserSession {
         Object raw = javascript.executeScript(
                 "return document.body ? document.body.innerText : '';");
         return raw == null ? "" : raw.toString();
+    }
+
+    @Override
+    public double videoDuration() {
+        Object raw = javascript.executeScript("""
+                const v = Array.from(document.querySelectorAll('video'))
+                  .find((el) => el.offsetWidth > 0 && el.offsetHeight > 0);
+                return v && Number.isFinite(v.duration) ? v.duration : 0;
+                """);
+        return raw instanceof Number number ? number.doubleValue() : 0.0;
+    }
+
+    @Override
+    public Path frameAt(double seconds, Path directory) {
+        driver.manage().timeouts().scriptTimeout(pageLoadTimeout);
+        Object seeked = ((JavascriptExecutor) driver).executeAsyncScript("""
+                const done = arguments[arguments.length - 1];
+                const v = Array.from(document.querySelectorAll('video'))
+                  .find((el) => el.offsetWidth > 0 && el.offsetHeight > 0);
+                if (!v) { done(false); return; }
+                v.pause();
+                const target = Math.max(0, Math.min(arguments[0], v.duration || arguments[0]));
+                const finish = () => setTimeout(() => done(true), 150);
+                if (Math.abs(v.currentTime - target) < 0.05 && v.readyState >= 2) {
+                  finish();
+                  return;
+                }
+                const timer = setTimeout(finish, 3000);
+                v.addEventListener('seeked', () => { clearTimeout(timer); finish(); }, {once: true});
+                v.currentTime = target;
+                """, seconds);
+        if (!Boolean.TRUE.equals(seeked)) {
+            throw new IllegalStateException("页面没有可用的 HTML5 video");
+        }
+        try {
+            Files.createDirectories(directory);
+            WebElement video = driver.findElements(By.cssSelector("video")).stream()
+                    .filter(WebElement::isDisplayed)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("video 元素不可见"));
+            File file = video.getScreenshotAs(OutputType.FILE);
+            Path target = directory.resolve("video-frame-" + Instant.now().toEpochMilli() + ".png");
+            Files.copy(file.toPath(), target, StandardCopyOption.REPLACE_EXISTING);
+            return target;
+        } catch (IOException failure) {
+            throw new IllegalStateException("保存视频帧失败", failure);
+        }
     }
 
     @Override

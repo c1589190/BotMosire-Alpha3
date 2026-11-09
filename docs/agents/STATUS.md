@@ -18,7 +18,7 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Maven 全量测试 | `./mvnw -q test` | **PASS**：16 suites / 28 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 默认跳过，2026-11-09 20:24） |
+| Maven 全量测试 | `./mvnw -q test` | **PASS**：16 suites / 29 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 默认跳过，2026-11-09 20:30） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：5 tests / 0 fail（2026-11-09 20:05） |
 | jpackage smoke | `bash packaging/smoke.sh` | **PASS**：app-image 启动，`/healthz` 200（2026-11-09 20:24，含 Selenium 依赖） |
 | 文档相对链接 | 一次性 Python 链接检查 | **PASS**：checked=47 / missing=0 / rc=0（2026-11-09 20:05） |
@@ -42,7 +42,7 @@
 - `qqconnect`：单正向 WS、token header、事件/动作同连接、账号 registry 热插拔（增删/换 endpoint 只影响对应账号）、QQ read/send/ack 工具；发送返回 `SENT/FAILED_BEFORE_SEND/UNKNOWN`。
 - `inbox`：单 inbox `available → delivered → acked`、重试/`undelivered`、delivery ack、HTTP status/items/due/ack、`inbox_status/list/ack` 工具。
 - `app`：加载 `config/app.yaml`、校验、Bearer MCP、health、Inbox HTTP、ConfigWatcher 对 QQ 账号做 reconcile；fake OneBot → 消息板 → Inbox → MCP read/ack/send 集成测试通过。
-- `webconnect`：Selenium + 系统 Chromium，`browser_open/snapshot/click/type/text/screenshot`；B 站首页/热门页已通过 BMA3 MCP 打开、snapshot 并截图（2026-11-09 live smoke）。
+- `webconnect`：Selenium + 系统 Chromium，`browser_open/snapshot/click/type/text/screenshot/browser_video_frames`；B 站首页/热门页已通过 BMA3 MCP 打开、snapshot 并截图；B 站视频 `BV1EPnG6DEJC` 真实抽帧成功（duration=890s），登录页已生成扫码二维码。
 - DSH：一个 npm 包三个 loader row（inbox/persona/preset），独立配置/失败域；未接真实 DSH。
 - 打包：jlink + jpackage app-image、tar + SHA256、用户级 systemd unit 安装骨架；未实际安装 systemd。
 
@@ -55,7 +55,7 @@
 - **限制**：DSH 插件未接真实宿主；`lib/inbox.js` 以轮询 due 方式工作，未做 SSE/occupancy。
 - **限制**：Selenium 需要匹配 ChromeDriver；本机通过 `BMA3_CHROMEDRIVER` 指定，Selenium Manager 自动下载曾非常慢。
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
-- **限制**：B 站目前只做公开页浏览/截图，未做登录、私信、视频播放工具。
+- **限制**：B 站登录 QR 已生成但尚未完成扫码；私信/评论/视频播放控制未做。
 - **风险**：加入 Selenium 后 `bma3-app` app-image 约 109 MB（tar 85 MB）；JVM + jlink + Selenium 比 Go/Node 重。
 - **限制**：webconnect 只做公开页浏览/点击/截图；B 站登录、私信、视频播放工具未做。
 - **限制**：Chromium 点击新标签页需要 300ms 切换；本机已加，但只做了首页/热门页实测。

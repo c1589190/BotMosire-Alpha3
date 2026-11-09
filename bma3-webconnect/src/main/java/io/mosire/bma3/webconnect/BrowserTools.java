@@ -28,10 +28,11 @@ public final class BrowserTools {
                 new ClickTool(context),
                 new TypeTool(context),
                 new TextTool(context),
-                new ScreenshotTool(context));
+                new ScreenshotTool(context),
+                new BrowserVideoFramesTool(context));
     }
 
-    private abstract static class Base implements AgentTool {
+    abstract static class Base implements AgentTool {
 
         final BrowserToolContext context;
 

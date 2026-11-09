@@ -22,6 +22,16 @@ public interface BrowserSession extends AutoCloseable {
 
     Path screenshot(Path directory);
 
+    /** Duration of the first visible HTML5 video, or 0 when absent. */
+    default double videoDuration() {
+        throw new UnsupportedOperationException("video frames not supported");
+    }
+
+    /** Seek to seconds and save a frame. */
+    default Path frameAt(double seconds, Path directory) {
+        throw new UnsupportedOperationException("video frames not supported");
+    }
+
     @Override
     void close();
 }

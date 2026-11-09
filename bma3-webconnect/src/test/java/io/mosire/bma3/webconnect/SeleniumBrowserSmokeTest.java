@@ -33,6 +33,16 @@ class SeleniumBrowserSmokeTest {
             Path shot = session.screenshot(tempDir.resolve("shots"));
             assertThat(shot).exists();
             System.out.println("shot=" + shot);
+
+            session.open("https://www.bilibili.com/video/BV1EPnG6DEJC");
+            double duration = session.videoDuration();
+            System.out.println("videoDuration=" + duration);
+            if (duration > 0) {
+                Path frame = session.frameAt(Math.min(5.0, duration / 2.0),
+                        tempDir.resolve("video-shots"));
+                assertThat(frame).exists();
+                System.out.println("videoFrame=" + frame);
+            }
         }
     }
 }
