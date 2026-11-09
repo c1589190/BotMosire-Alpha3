@@ -1,15 +1,15 @@
 # AGENTS.md — BotMosire-Alpha3
 
-> **更新时间**：2026-11-09（初始化，尚未写产品代码）
+> **更新时间**：2026-11-09（Plan 1 已实现）
 > **定位**：单仓项目；DevMosire-iiBot 的继承与重构。
-> **当前阶段**：规则与文档骨架已建立，等待用户描述需求。
+> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）已实现并通过本地门禁；Plan 2（webconnect/Selenium）待设计；真实 LLBot/DSH/systemd 联调 `NOT_RUN`。
 > **远端**：<https://github.com/c1589190/BotMosire-Alpha3>
 > **继承来源（只读参考）**：`/home/cna/DevMosire-iiBot`
 
 ## 0. 冲突顺序
 
 1. 用户当次明确指令。
-2. 用户设计裁定：`docs/superpowers/DESIGN_RULINGS.md`（当前只有 D-001）。
+2. 用户设计裁定：`docs/superpowers/DESIGN_RULINGS.md`（D-001..D-008）。
 3. 项目维护裁定：`docs/agents/MAINTENANCE_RULINGS.md`、`docs/AGENTS.md`。
 4. 当前有效的专题设计：`docs/superpowers/specs/**`。
 5. 本文件。
@@ -18,17 +18,17 @@
 
 ## 1. 当前阶段（硬约束）
 
-- 已完成：只读调查继承来源；建立 `AGENTS.md` 与文档系统；初始化 Git 仓库。
-- 未开始：技术选型、模块划分、数据模型、运行时形态、宿主策略、移植清单。
-- **用户描述需求前，不写产品代码、不创建 Maven/Gradle/npm 工程、不复制旧仓源码。**
-- 第一个真实任务按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进；没有 spec 不进入实现。
+- 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
+- 当前门禁：`./mvnw -q test` PASS（14 suites / 25 tests）；`dsh-plugin` `npm test` PASS（5 tests）；`packaging/smoke.sh` PASS。
+- 未开始：webconnect/Selenium、B 站视频/私信、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
+- **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**
 
 ## 2. 继承关系
 
 - `DevMosire-iiBot` 是协调工作区，不是 monorepo 根；其内部有 5 个独立 Git 仓，另有运行目录 `bot/`、`bot2/` 和不带 Git 的 `InboxMosire-OpenCode/`。
 - 产品主体是 `iiBotMosire`：Java 21 + Maven，4 模块（`iibot-connect` / `iibot-video-connect` / `iibot-bot` / `iibot-app`），做 QQ（OneBot 11）/ B 站会话、消息板、Bot MCP 与 Inbox 唤醒。
 - 配套是 `InboxMosire`（通知板）与三套宿主适配器（DSH / OpenCode / Hermes）。
-- 上述内容是**继承来源的现状**，不是本项目的既定架构。是否继续用 Java、是否保留 4 模块、是否保留 Inbox/宿主层，均等需求裁定。
+- 上述内容是**继承来源的现状**，不是本项目的既定架构。本项目已定 Java 21 + jlink/jpackage、单仓多模块、DSH 单宿主；旧 4 模块/三宿主形态只作参考。
 
 只读调查见：[邻居项目基本情况调查](docs/superpowers/reports/2026-11-09-neighbor-DevMosire-iiBot-survey.md)。
 
@@ -74,14 +74,16 @@
 
 ```text
 BotMosire-Alpha3/
-├── AGENTS.md
-├── README.md
-├── docs/
-│   ├── AGENTS.md
-│   ├── agents/          # 维护：状态、工作流、验证、环境、裁定、Skill
-│   ├── superpowers/     # 设计：specs / plans / reports / reviews / status
-│   └── upstream/        # 外部契约摘要
+├── pom.xml / mvnw       # Maven 多模块父工程
+├── bma3-core/           # 领域模型 + SQLite 消息板 + 配置/日志原语
+├── bma3-agentlib/       # AgentLib ToolRegistry/MCP Bearer 包装
+├── bma3-qqconnect/      # OneBot 11 正向 WS、账号 registry、QQ AgentTools
+├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
+├── bma3-app/            # 组合根：config/logging/MCP/health/Main
+├── dsh-plugin/          # @mosire/bma3-dsh，三个 loader row
+├── packaging/           # jlink/jpackage + 用户级 installer
+├── docs/                # 维护/设计/上游契约
 └── .agents/             # 工程 Skill 与决策解释（当前无 active Skill）
 ```
 
-没有 `src/`、`pom.xml`、`package.json`；这是刻意的初始化状态。
+`dist/`、`build/`、`logs/`、`data/`、`target/` 均不提交；`config/app.yaml` 是本地运行配置。

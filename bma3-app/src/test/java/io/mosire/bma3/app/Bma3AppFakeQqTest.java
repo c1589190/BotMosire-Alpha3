@@ -49,7 +49,7 @@ class Bma3AppFakeQqTest {
                             "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
                     new AppConfig.Inbox("bma3", 0),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
-            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"));
+            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
             assertThat(app.mcpPort()).isPositive();
             assertThat(app.healthPort()).isPositive();
             assertThat(app.inboxHttpPort()).isPositive();

@@ -9,6 +9,7 @@ dist/
 !/.mvn/wrapper/maven-wrapper.jar
 
 # Runtime data and local work
+.superpowers/
 data/
 logs/
 run/

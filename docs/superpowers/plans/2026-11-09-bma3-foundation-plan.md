@@ -1,12 +1,14 @@
 # BMA3 Foundation + QQ + Inbox Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 建立一个可运行的 Java 21 常驻服务：OneBot 11 正向 WS 入站 → 统一消息板 → 单 Inbox → 回环 Bearer MCP；带 DSH 薄插件、jlink/jpackage app-image 与一站式安装骨架。
 
 **Architecture:** `bma3-core` 持有领域模型/SQLite；`bma3-agentlib` 包装 AgentLib 的 ToolRegistry/MCP；`bma3-qqconnect` 与 `bma3-inbox` 各自实现 `AgentTool`；`bma3-app` 做唯一组合根，暴露一个 MCP 端点。大量代码从隔壁 `iiBotMosire` / `InboxMosire` 移植，先搬测试再改包名。
 
 **Tech Stack:** Java 21、Maven、SQLite JDBC、Jackson、Log4j2/SLF4J、AgentLib 0.2.4、JDK HttpServer、OneBot 11 正向 WS、Node 22（DSH 插件）。
+
+> **执行状态**：2026-11-09 已按 native 执行；测试与证据见 `docs/agents/STATUS.md`。
 
 **Spec:** [`docs/superpowers/specs/2026-11-09-bma3-foundation-design.md`](../specs/2026-11-09-bma3-foundation-design.md)
 
@@ -79,11 +81,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `record AccountId(String value)`、`record ConsumerId(String value)`、`SourceAddress.parse(String)` / `format()`、`record InboundMessage(SourceAddress source, String messageId, Instant at, List<Segment> segments, Direction direction)`、`record Message(long localSeq, InboundMessage inbound)`。
 
-- [ ] Step 1: 写 `SourceAddressTest`：parse/format 往返；`qq_group/bot-1/955432692`、`qq_private/bot-1/123`、`qq_system/bot-1/request`、非法输入抛 `IllegalArgumentException`。
-- [ ] Step 2: 跑 `./mvnw -q -pl bma3-core -Dtest=SourceAddressTest test`，确认失败（类不存在）。
-- [ ] Step 3: 从 `iibot-connect/core/MessageSourceAddress.java` 移植 parse/format，改包名；实现 `AccountId`/`Message` 最小 record。
-- [ ] Step 4: 再跑测试，PASS；跑 `./mvnw -q -pl bma3-core test`。
-- [ ] Step 5: 提交：`git add pom.xml bma3-core && git commit -m "feat(core): add domain ids and source address"`。
+- [x] Step 1: 写 `SourceAddressTest`：parse/format 往返；`qq_group/bot-1/955432692`、`qq_private/bot-1/123`、`qq_system/bot-1/request`、非法输入抛 `IllegalArgumentException`。
+- [x] Step 2: 跑 `./mvnw -q -pl bma3-core -Dtest=SourceAddressTest test`，确认失败（类不存在）。
+- [x] Step 3: 从 `iibot-connect/core/MessageSourceAddress.java` 移植 parse/format，改包名；实现 `AccountId`/`Message` 最小 record。
+- [x] Step 4: 再跑测试，PASS；跑 `./mvnw -q -pl bma3-core test`。
+- [x] Step 5: 提交：`git add pom.xml bma3-core && git commit -m "feat(core): add domain ids and source address"`。
 
 ### Task 2: core SQLite 消息板
 
@@ -97,11 +99,11 @@ packaging/build-app-image.sh, packaging/install.sh
 - Consumes: Task 1 `Message` / `SourceAddress`.
 - Produces: `AppendResult append(InboundMessage)`、`List<Message> read(SourceAddress, long afterSeq, int limit)`、`long readSeq(ConsumerId, SourceAddress)`、`void ack(ConsumerId, SourceAddress, long seq)`。
 
-- [ ] Step 1: 复制并改名 `SqliteMessageBoardStoreTest` 的核心用例：入站追加、按 thread 读、consumer readSeq、ack 幂等、重启后保留。
-- [ ] Step 2: 跑测试，确认失败。
-- [ ] Step 3: 移植 `SqliteMessageBoardStore`/schema；删除文游/玩家相关字段；用 `jdbc:sqlite:<dataDir>/bot.db`，开启 WAL。
-- [ ] Step 4: 跑 `./mvnw -q -pl bma3-core test`，PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 复制并改名 `SqliteMessageBoardStoreTest` 的核心用例：入站追加、按 thread 读、consumer readSeq、ack 幂等、重启后保留。
+- [x] Step 2: 跑测试，确认失败。
+- [x] Step 3: 移植 `SqliteMessageBoardStore`/schema；删除文游/玩家相关字段；用 `jdbc:sqlite:<dataDir>/bot.db`，开启 WAL。
+- [x] Step 4: 跑 `./mvnw -q -pl bma3-core test`，PASS。
+- [x] Step 5: 提交。
 
 ### Task 3: 配置与日志
 
@@ -117,11 +119,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `AppConfig load(Path root)`；`List<ConfigError> validate(AppConfig)`；`ConfigWatcher.watch(Path, Consumer<AppConfig>)`；`void applyLogLevel(String module, Level level)`。
 
-- [ ] Step 1: 写测试：缺文件给默认值；非法 `port` 拒绝；`${ENV:TOKEN}` 解析；日志脱敏 `Bearer ...`/`Cookie: ...`；watch 到非法变更时保留 last-known-good，不回调。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 实现 YAML 加载（Jackson YAML）+ JSON Schema 最小校验；`WatchService` debounce；日志用 Log4j2 JSON layout + 模块 logger；`SecretRef` 不落盘。
-- [ ] Step 4: 跑 `./mvnw -q -pl bma3-app -am test`，PASS。
-- [ ] Step 5: 提交（需授权）。
+- [x] Step 1: 写测试：缺文件给默认值；非法 `port` 拒绝；`${ENV:TOKEN}` 解析；日志脱敏 `Bearer ...`/`Cookie: ...`；watch 到非法变更时保留 last-known-good，不回调。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 实现 YAML 加载（Jackson YAML）+ JSON Schema 最小校验；`WatchService` debounce；日志用 Log4j2 JSON layout + 模块 logger；`SecretRef` 不落盘。
+- [x] Step 4: 跑 `./mvnw -q -pl bma3-app -am test`，PASS。
+- [x] Step 5: 提交（需授权）。
 
 ### Task 4: AgentLib MCP 包装
 
@@ -134,11 +136,11 @@ packaging/build-app-image.sh, packaging/install.sh
 - Consumes: AgentLib `ToolRegistry` / `AgentTool`。
 - Produces: `Bma3McpServer(host, port, path, token, serverName, version, List<AgentTool>)`、`start()`、`boundPort()`、`close()`。
 
-- [ ] Step 1: 移植 `BotMcpServerTest`：401 无 token、200 tools/list、streamable POST、路径不匹配 404。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 从 `BotMcpServer.java` 移植内部 `AgentToMcpServer.startHttp` + 外部 Bearer 代理；保留回环校验、虚拟线程 executor。
-- [ ] Step 4: 跑 `./mvnw -q -pl bma3-agentlib -am test`，PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 移植 `BotMcpServerTest`：401 无 token、200 tools/list、streamable POST、路径不匹配 404。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 从 `BotMcpServer.java` 移植内部 `AgentToMcpServer.startHttp` + 外部 Bearer 代理；保留回环校验、虚拟线程 executor。
+- [x] Step 4: 跑 `./mvnw -q -pl bma3-agentlib -am test`，PASS。
+- [x] Step 5: 提交。
 
 ### Task 5: OneBot 11 正向 WS
 
@@ -150,11 +152,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `OneBot11Client(URI endpoint, String token, Listener listener)`；`sendAction(String action, Map<String,Object>)`；`close()`；回调 `onEvent(OneBotEvent)`。
 
-- [ ] Step 1: 复制 `OneBot11CodecTest` 的消息/事件用例；新增 fake WS server 测试：连接、收到 `message` 事件、action 请求/响应；重连后同一条 `message_id` 只交付一次、乱序不回退游标。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 移植 `OneBot11Codec` 与 `NapCatAdapter` 的 WS 部分；删除 HTTP 双开；token 走 `Authorization` header；重连 backoff；`RecentMessageDeduplicator` 按 `message_id` 去重。
-- [ ] Step 4: 跑 `./mvnw -q -pl bma3-qqconnect -am test`，PASS。
-- [ ] Step 5: 提交（需授权）。
+- [x] Step 1: 复制 `OneBot11CodecTest` 的消息/事件用例；新增 fake WS server 测试：连接、收到 `message` 事件、action 请求/响应；重连后同一条 `message_id` 只交付一次、乱序不回退游标。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 移植 `OneBot11Codec` 与 `NapCatAdapter` 的 WS 部分；删除 HTTP 双开；token 走 `Authorization` header；重连 backoff；`RecentMessageDeduplicator` 按 `message_id` 去重。
+- [x] Step 4: 跑 `./mvnw -q -pl bma3-qqconnect -am test`，PASS。
+- [x] Step 5: 提交（需授权）。
 
 ### Task 6: 账号 registry 与热插拔
 
@@ -165,11 +167,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `ReconcileResult reconcile(List<AccountConfig>)`；`Optional<OneBot11Client> client(AccountId)`；`void close()`。
 
-- [ ] Step 1: 写测试：新增两条账号；删除一条；改 endpoint 触发重连；重复 `self_id` 拒绝；非法账号不影响其他账号。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 移植/实现 registry；每账号一个 client；reconcile 先建新、后关旧；drain 在途；记录 redacted diff。
-- [ ] Step 4: 跑测试 PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 写测试：新增两条账号；删除一条；改 endpoint 触发重连；重复 `self_id` 拒绝；非法账号不影响其他账号。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 移植/实现 registry；每账号一个 client；reconcile 先建新、后关旧；drain 在途；记录 redacted diff。
+- [x] Step 4: 跑测试 PASS。
+- [x] Step 5: 提交。
 
 ### Task 7: QQ AgentTool
 
@@ -181,11 +183,11 @@ packaging/build-app-image.sh, packaging/install.sh
 - Consumes: `MessageBoardStore`、`AccountRegistry`。
 - Produces: `List<AgentTool> tools(...)`；工具名 `qq_account_list`、`qq_conversation_read/send/ack`；JSON Schema 与旧版兼容。
 
-- [ ] Step 1: 复制旧 `BotMcpToolsTest` 中 read/send/ack 用例；新增多账号路由失败测试（账号不匹配 fail-closed）。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 移植工具实现；发送走 outbox 三态；`UNKNOWN` 不重发；正文不进日志。
-- [ ] Step 4: 跑测试 PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 复制旧 `BotMcpToolsTest` 中 read/send/ack 用例；新增多账号路由失败测试（账号不匹配 fail-closed）。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 移植工具实现；发送走 outbox 三态；`UNKNOWN` 不重发；正文不进日志。
+- [x] Step 4: 跑测试 PASS。
+- [x] Step 5: 提交。
 
 ### Task 8: Inbox 单状态机
 
@@ -197,11 +199,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `append(AppendItem)`、`InboxStatus status()`、`List<ItemSummary> list()`、`List<Delivery> due(Instant now)`、`void ack(String deliveryId)`。
 
-- [ ] Step 1: 移植 `InboxServiceTest`/`SqliteInboxStoreTest` 的 delivery/ack 用例；删除 claim/release/complete 用例。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 移植 `inbox-core`/`inbox-sqlite` 子集；状态 `available→delivered→acked`，超限 `undelivered`；revision/attempts/TTL。
-- [ ] Step 4: 跑 `./mvnw -q -pl bma3-inbox -am test`，PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 移植 `InboxServiceTest`/`SqliteInboxStoreTest` 的 delivery/ack 用例；删除 claim/release/complete 用例。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 移植 `inbox-core`/`inbox-sqlite` 子集；状态 `available→delivered→acked`，超限 `undelivered`；revision/attempts/TTL。
+- [x] Step 4: 跑 `./mvnw -q -pl bma3-inbox -am test`，PASS。
+- [x] Step 5: 提交。
 
 ### Task 9: Inbox HTTP + tools
 
@@ -214,11 +216,11 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `/healthz`、`/v1/inboxes/{id}/status`、`/items`、`/deliveries/{id}/ack`；工具 `inbox_status/list/ack`。
 
-- [ ] Step 1: 写测试：status 200、items 不含正文、ack 幂等、无 token 401。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 用 JDK HttpServer + 虚拟线程；token 从 env/file；工具包装 `InboxService`。
-- [ ] Step 4: 跑测试 PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 写测试：status 200、items 不含正文、ack 幂等、无 token 401。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 用 JDK HttpServer + 虚拟线程；token 从 env/file；工具包装 `InboxService`。
+- [x] Step 4: 跑测试 PASS。
+- [x] Step 5: 提交。
 
 ### Task 10: app 组合根 + fake QQ 闭环
 
@@ -231,11 +233,11 @@ packaging/build-app-image.sh, packaging/install.sh
 - Consumes: all modules.
 - Produces: `Bma3App.start(AppConfig)`；一个 MCP 端点；`/healthz`；graceful shutdown。
 
-- [ ] Step 1: 写集成测试：fake OneBot WS 推入私聊消息 → 消息板 → Inbox item → MCP `qq_conversation_read` → `inbox_ack`；再发一条 → `qq_conversation_send` 三态；改 qqconnect 配置触发 `reconcile`，其他账号不受影响。
-- [ ] Step 2: 跑测试失败。
-- [ ] Step 3: 组装 config → stores → qqconnect → inbox → tool registry → Bma3McpServer → start；订阅 `ConfigWatcher` 调 `AccountRegistry.reconcile`；注册 shutdown hook。
-- [ ] Step 4: 跑 `./mvnw -q test`，PASS。
-- [ ] Step 5: 提交（需授权）。
+- [x] Step 1: 写集成测试：fake OneBot WS 推入私聊消息 → 消息板 → Inbox item → MCP `qq_conversation_read` → `inbox_ack`；再发一条 → `qq_conversation_send` 三态；改 qqconnect 配置触发 `reconcile`，其他账号不受影响。
+- [x] Step 2: 跑测试失败。
+- [x] Step 3: 组装 config → stores → qqconnect → inbox → tool registry → Bma3McpServer → start；订阅 `ConfigWatcher` 调 `AccountRegistry.reconcile`；注册 shutdown hook。
+- [x] Step 4: 跑 `./mvnw -q test`，PASS。
+- [x] Step 5: 提交（需授权）。
 
 ### Task 11: DSH 薄插件
 
@@ -248,11 +250,11 @@ packaging/build-app-image.sh, packaging/install.sh
 - Consumes: 服务 HTTP API、DSH `agent.followup`/lifecycle/tools。
 - Produces: 三个 loader row；`inbox` 消费 wake → followup；`persona` 注入系统提示词；`preset` 工具组。
 
-- [ ] Step 1: 复制 `iiBotMosire-DSH` 的 module/preset 模式和 `InboxMosire-DSH` 的 host 事件测试；写 manifest 测试。
-- [ ] Step 2: 跑 `npm test` 失败。
-- [ ] Step 3: 实现三个 module，独立配置/失败域；插件只检查服务 `/healthz`，不托管进程。
-- [ ] Step 4: 跑 `npm test` PASS。
-- [ ] Step 5: 提交。
+- [x] Step 1: 复制 `iiBotMosire-DSH` 的 module/preset 模式和 `InboxMosire-DSH` 的 host 事件测试；写 manifest 测试。
+- [x] Step 2: 跑 `npm test` 失败。
+- [x] Step 3: 实现三个 module，独立配置/失败域；插件只检查服务 `/healthz`，不托管进程。
+- [x] Step 4: 跑 `npm test` PASS。
+- [x] Step 5: 提交。
 
 ### Task 12: jpackage + 安装器骨架
 
@@ -264,17 +266,17 @@ packaging/build-app-image.sh, packaging/install.sh
 **Interfaces:**
 - Produces: `dist/botmosire-a3/bin/botmosire-a3`；`dist/botmosire-a3.tar.gz` + SHA256；`install.sh --version <v>` 解压/软链/systemd unit。
 
-- [ ] Step 1: 写 `smoke.sh`：构建 app-image，运行 `--version`，启动 fake 配置后 `curl /healthz` 200。
-- [ ] Step 2: 跑脚本失败（构建未实现）。
-- [ ] Step 3: `jlink` + `jpackage --type app-image`；installer 只做用户级目录/软链/systemd unit，不自动 root。
-- [ ] Step 4: 跑 `packaging/smoke.sh` PASS；真实 systemd 安装标 `NOT_RUN`。
-- [ ] Step 5: 提交。
+- [x] Step 1: 写 `smoke.sh`：构建 app-image，运行 `--version`，启动 fake 配置后 `curl /healthz` 200。
+- [x] Step 2: 跑脚本失败（构建未实现）。
+- [x] Step 3: `jlink` + `jpackage --type app-image`；installer 只做用户级目录/软链/systemd unit，不自动 root。
+- [x] Step 4: 跑 `packaging/smoke.sh` PASS；真实 systemd 安装标 `NOT_RUN`。
+- [x] Step 5: 提交。
 
 ### Task 13: 文档与状态
 
-- [ ] 更新 `docs/agents/STATUS.md`：测试数、命令、rc、`NOT_RUN`（真实 QQ/DSH）。
-- [ ] 更新 `docs/upstream/agentlib-change-requests.md`：仅当实际依赖版本变化。
-- [ ] 提交。
+- [x] 更新 `docs/agents/STATUS.md`：测试数、命令、rc、`NOT_RUN`（真实 QQ/DSH）。
+- [x] 更新 `docs/upstream/agentlib-change-requests.md`：仅当实际依赖版本变化。
+- [x] 提交。
 
 ---
 

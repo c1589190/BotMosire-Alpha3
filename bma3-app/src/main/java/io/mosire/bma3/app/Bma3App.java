@@ -2,6 +2,7 @@ package io.mosire.bma3.app;
 
 import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
+import io.mosire.bma3.app.config.ConfigWatcher;
 import io.mosire.bma3.core.config.ConfigException;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
@@ -41,11 +42,13 @@ public final class Bma3App implements AutoCloseable {
     private final InboxHttpServer inboxHttp;
     private final AccountRegistry accounts;
     private final Bma3McpServer mcp;
+    private final ConfigWatcher watcher;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
                    SqliteInboxStore inboxStore, InboxService inboxService,
                    HealthServer health, InboxHttpServer inboxHttp,
-                   AccountRegistry accounts, Bma3McpServer mcp) {
+                   AccountRegistry accounts, Bma3McpServer mcp,
+                   ConfigWatcher watcher) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -54,6 +57,7 @@ public final class Bma3App implements AutoCloseable {
         this.inboxHttp = inboxHttp;
         this.accounts = accounts;
         this.mcp = mcp;
+        this.watcher = watcher;
     }
 
     public static Bma3App start(AppConfig config) {
@@ -61,7 +65,12 @@ public final class Bma3App implements AutoCloseable {
     }
 
     public static Bma3App start(AppConfig config, Map<String, String> env) {
+        return start(config, env, Path.of("."));
+    }
+
+    public static Bma3App start(AppConfig config, Map<String, String> env, Path configRoot) {
         Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(configRoot, "configRoot");
         String mcpToken = secret(env, config.server().tokenEnv(), "server.tokenEnv");
         try {
             Files.createDirectories(config.dataDir());
@@ -80,13 +89,16 @@ public final class Bma3App implements AutoCloseable {
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), mcpToken, inboxService);
-        AccountRegistry accounts = null;
+        AccountRegistry accounts = new AccountRegistry(
+                event -> ingest(board, inboxService, event));
+        ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         try {
             inboxHttp.start();
-            accounts = new AccountRegistry(event -> ingest(board, inboxService, event));
             List<AccountConfig> resolved = resolveAccounts(config, env);
             accounts.reconcile(resolved);
+            watcher = ConfigWatcher.watch(configRoot, env,
+                    next -> accounts.reconcile(resolveAccounts(next, env)));
 
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(new QqToolContext(accounts, board, board)));
@@ -95,14 +107,15 @@ public final class Bma3App implements AutoCloseable {
                     config.server().mcpPath(), mcpToken, "bma3", "0.1.0", tools);
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
-                    inboxHttp, accounts, mcp);
+                    inboxHttp, accounts, mcp, watcher);
         } catch (RuntimeException failure) {
             if (mcp != null) {
                 mcp.close();
             }
-            if (accounts != null) {
-                accounts.close();
+            if (watcher != null) {
+                watcher.close();
             }
+            accounts.close();
             inboxHttp.close();
             health.close();
             inboxStore.close();
@@ -171,9 +184,10 @@ public final class Bma3App implements AutoCloseable {
 
     @Override
     public void close() {
-        if (accounts != null) {
-            accounts.close();
+        if (watcher != null) {
+            watcher.close();
         }
+        accounts.close();
         if (mcp != null) {
             mcp.close();
         }

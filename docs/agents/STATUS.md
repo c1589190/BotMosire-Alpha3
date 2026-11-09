@@ -1,59 +1,65 @@
-# STATUS —— 更新时间：2026-11-09 19:44 (UTC+8)
+# STATUS —— 更新时间：2026-11-09 20:05 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-1. **已完成**：只读调查继承来源 `DevMosire-iiBot`；建立根 `AGENTS.md`、文档系统、裁定索引与 Skill 规范；初始化本仓 Git 与远端；完成第一轮 bot 工作流前置调查（LLBot/Milky、DSH 注入面、B 站视频/私信、iibot/Inbox、语言选项）。
-2. **已定方向**：Java 21 + `jlink`/`jpackage`（D-006）；Inbox 独立常驻服务（D-004）；QQ 第一版单正向 WS（D-002）；DSH 一个插件包内维护 Inbox 注入/角色提示词/工具组预设三个独立组件（D-003）；Inbox lib 只封装单 inbox 状态机（D-004）；分模块配置/日志与 QQ 多账号热插拔（D-007）。
-3. **进行中**：评审初版模块图 `agentlib / qqconnect / webconnect / inbox / app`（D-008）；确认是否补共享 `core`/`store`，以及 Inbox 是 app 内模块还是第二进程。
-4. **未开始**：模块划分定稿、数据模型、适配器 SPI 细节、安装器脚本、任何产品代码。
+1. **Plan 1 已实现**：Java 21 独立服务骨架、core SQLite 消息板、AgentLib MCP 包装、OneBot 11 正向 WS、账号热插拔、QQ AgentTools、单 Inbox 状态机/HTTP/工具、app 组合根、DSH 薄插件、jlink/jpackage 安装骨架。
+2. **进行中**：Plan 1 收尾验证与文档；真实 LLBot/DSH/systemd 联调仍待授权。
+3. **未开始（后续 Plan）**：webconnect/Selenium、B 站视频/私信、Linux 桌面控制、Web 管理面。
 
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- Git：`main`；初始化提交见 `git log -1`；remote `origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 工作树：有未提交文档改动（新增调查、STATUS 更新）；产品代码仍为空。
-- 产品代码：无。没有 `src/`、`pom.xml`、`package.json`。
-- 继承参考：`/home/cna/DevMosire-iiBot`（只读；5 个嵌套 Git 仓，HEAD 见 [`ENVIRONMENT.md`](ENVIRONMENT.md)）。
+- 分支：`feat/bma3-plan-1`（从 `main` 的 `2ecc94a` 起）。
+- 产品代码：`bma3-core` / `bma3-agentlib` / `bma3-qqconnect` / `bma3-inbox` / `bma3-app`；DSH 插件在 `dsh-plugin/`；打包脚本在 `packaging/`。Plan 1 已提交到 `feat/bma3-plan-1`。
+- 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`；未 push。
+- 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| 文档相对链接 | 一次性 Python 链接检查（见 `docs/AGENTS.md` §8） | **PASS**：checked=47 / missing=0 / rc=0（2026-11-09 19:44） |
-| Git 状态 | `git status --short --branch` | `## main`；有未提交调查/STATUS 改动；`origin` 已配置、未 push |
-| 构建 / 单元测试 | — | `NOT_RUN`（无构建文件） |
-| 真实 QQ / B 站 / 宿主联调 | — | `NOT_RUN` |
+| Maven 全量测试 | `./mvnw -q test` | **PASS**：14 suites / 25 tests / 0 failures / 0 errors / 0 skipped（2026-11-09 20:05） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：5 tests / 0 fail（2026-11-09 20:05） |
+| jpackage smoke | `bash packaging/smoke.sh` | **PASS**：app-image 启动，`/healthz` 200；app-image 78 MB，tar 55 MB（2026-11-09 20:05） |
+| 文档相对链接 | 一次性 Python 链接检查 | **PASS**：checked=47 / missing=0 / rc=0（2026-11-09 20:05） |
+| 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
+| 真实 DSH 宿主加载 | — | `NOT_RUN` |
+| systemd 实际安装/开机常驻 | — | `NOT_RUN`（只跑 `install.sh --dry-run`） |
 | 邻居项目测试复跑 | — | `NOT_RUN`（只读调查，未构建） |
 
 ## 当前有效设计 / 维护入口
 
-- 设计裁定：D-001（继承与重构）、D-002（单正向 WS）、D-003（DSH 插件三组件）、D-004（Inbox 独立服务 + 单 inbox lib）、D-005（浏览器 sidecar，提议）、D-006（Java jlink/jpackage + 一站式安装）、D-007（配置/日志/热插拔）、D-008（初版模块图）[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)。
-- 维护裁定：M-001（[`MAINTENANCE_RULINGS.md`](MAINTENANCE_RULINGS.md)）。
+- 设计裁定：D-001..D-008（[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)）。
+- 设计基线：[`../superpowers/specs/2026-11-09-bma3-foundation-design.md`](../superpowers/specs/2026-11-09-bma3-foundation-design.md)。
+- 实施计划：[`../superpowers/plans/2026-11-09-bma3-foundation-plan.md`](../superpowers/plans/2026-11-09-bma3-foundation-plan.md)（Task 1..13 已执行）。
 - 文档系统：[`../AGENTS.md`](../AGENTS.md)。
 - 继承调查：[`../superpowers/reports/2026-11-09-neighbor-DevMosire-iiBot-survey.md`](../superpowers/reports/2026-11-09-neighbor-DevMosire-iiBot-survey.md)。
 - Bot 工作流前置调查：[`../superpowers/reports/2026-11-09-bot-workflow-design-survey.md`](../superpowers/reports/2026-11-09-bot-workflow-design-survey.md)。
-- 设计基线：[`../superpowers/specs/2026-11-09-bma3-foundation-design.md`](../superpowers/specs/2026-11-09-bma3-foundation-design.md)。
-- 实施计划：[`../superpowers/plans/2026-11-09-bma3-foundation-plan.md`](../superpowers/plans/2026-11-09-bma3-foundation-plan.md)（Task 1..13）。
-- AgentLib 变更需求：[`../upstream/agentlib-change-requests.md`](../upstream/agentlib-change-requests.md)（P0 认证/source 批量注册/取消，P1 resync/工具分组）。
-- 未决岔路：Q-A..Q-L（共享 core/store、Inbox 进程边界、webconnect 范围、B 站/Playwright、兼容性、数据迁移等）。
+- AgentLib 变更需求：[`../upstream/agentlib-change-requests.md`](../upstream/agentlib-change-requests.md)。
+
+## 已实现的关键行为
+
+- `qqconnect`：单正向 WS、token header、事件/动作同连接、账号 registry 热插拔（增删/换 endpoint 只影响对应账号）、QQ read/send/ack 工具；发送返回 `SENT/FAILED_BEFORE_SEND/UNKNOWN`。
+- `inbox`：单 inbox `available → delivered → acked`、重试/`undelivered`、delivery ack、HTTP status/items/due/ack、`inbox_status/list/ack` 工具。
+- `app`：加载 `config/app.yaml`、校验、Bearer MCP、health、Inbox HTTP、ConfigWatcher 对 QQ 账号做 reconcile；fake OneBot → 消息板 → Inbox → MCP read/ack/send 集成测试通过。
+- DSH：一个 npm 包三个 loader row（inbox/persona/preset），独立配置/失败域；未接真实 DSH。
+- 打包：jlink + jpackage app-image、tar + SHA256、用户级 systemd unit 安装骨架；未实际安装 systemd。
 
 ## 未验证 / 风险 / blocker
 
-- **未验证**：邻居的 343 tests、架构审查中的 227 MB / 99% Playwright / 22,559 行适配器等数字均为邻居记录，本次未复跑。
-- **未验证**：邻居文档的 HEAD/仓库数量与实际不一致（实测 5 个 Git 仓，文档写 4/6 个）；引用旧文档前必须复核。
-- **未验证**：B 站私信没有现成 DSH 插件；现有 iibot `BilibiliAdapter` 的登录续期链有已知缺口，复用前必须重修。
-- **已确认（本机源码/实测）**：AgentLib 0.2.4 的 `AgentTool`/`ToolRegistry`/`AgentToMcpServer.startHttp` 可用；P0 变更未合并前，用单条 `register(sourceId, tool)`、工具内超时、`BotMcpServer` 风控包装兜住；固定 0.2.4，不依赖 SNAPSHOT。Java 的 `jlink` 最小运行时约 44 MB，`jpackage` app-image 约 45 MB（Hello world）。
-- **已确认（本机环境）**：`/snap/bin/chromium`、Playwright 缓存、`Xvfb` 存在；`x11vnc`/`noVNC`/`xdotool` 未安装，Linux 全桌面控制需要另装 sidecar。
-- **风险**：模块图缺共享消息板/会话存储；若让 Inbox 兼做存储，跨平台历史/已读/发送状态会碎。
-- **风险**：AgentLib 的 HTTP MCP 无鉴权/TLS；必须复用 `BotMcpServer` 的回环 Bearer 代理，不能直接暴露。
-- **风险**：DSH 插件管理器没有通用 service 安装钩子；一站式安装应做 first-run bootstrap + 明确 `setup` 命令，不能只依赖 npm `postinstall`。
-- **blocker**：无硬阻塞；计划已出，待用户评审并选择执行方式。
+- **未验证**：真实 LLBot 连接、真实 QQ 收发、真实 DSH 插件加载/followup、systemd 开机常驻均 `NOT_RUN`。
+- **未验证**：AgentLib P0（HTTP MCP 认证钩子、source 批量注册、取消）未合并；当前用单条 `register`、`Bma3McpServer` Bearer 包装、工具内超时兜住。
+- **限制**：`ConfigWatcher` 当前只对 QQ 账号做 reconcile；server 端口/路径、MCP/Inbox token、日志级别不会热切换。
+- **限制**：DSH 插件未接真实宿主；`lib/inbox.js` 以轮询 due 方式工作，未做 SSE/occupancy。
+- **风险**：`bma3-app` app-image 约 78 MB；已去掉 Playwright，但 JVM + jlink 运行时仍比 Go/Node 重。
+- **风险**：未做 webconnect/B 站/桌面控制；Plan 2 另写 Selenium 计划。
+- **blocker**：无硬阻塞；下一步是真实 LLBot/DSH 验收或 Plan 2 设计。
 
 ## 下一步
 
-1. 用户评审[实施计划](../superpowers/plans/2026-11-09-bma3-foundation-plan.md)。
-2. 选择执行方式：subagent-driven 或 native；确认后从 Task 1 开始。
-3. 第一条命令：
+1. 在授权后启动真实 LLBot，验证连接/收发/热插拔；在 DSH 测试 profile 安装 `dsh-plugin` 验证三 row。
+2. 真实 systemd 安装/重启验收。
+3. 之后写 Plan 2（webconnect/Selenium）设计。
 
 ```bash
 git status --short --branch

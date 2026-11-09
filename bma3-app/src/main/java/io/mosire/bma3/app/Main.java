@@ -25,7 +25,7 @@ public final class Main {
             }
         }
         AppConfig config = ConfigLoader.load(root);
-        Bma3App app = Bma3App.start(config);
+        Bma3App app = Bma3App.start(config, System.getenv(), root);
         CountDownLatch stopped = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             app.close();
