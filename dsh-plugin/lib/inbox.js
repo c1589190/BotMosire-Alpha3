@@ -111,6 +111,22 @@ export function createBindingRegistry(ctx, config = {}) {
   return { bind, unbind, get, list, pollAll, clear: () => bindings.clear() }
 }
 
+
+/** DSH tool registry requires an explicit canonical output contract. */
+const OUTPUT = {
+  schema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'Human-readable Inbox binding result.' },
+    },
+    required: ['text'],
+    additionalProperties: false,
+  },
+  render(_args, value) {
+    return [{ type: 'text', text: value.text }]
+  },
+}
+
 const BIND_SCHEMA = {
   type: 'object',
   properties: {
@@ -146,6 +162,7 @@ export function apply(ctx, config = {}) {
       description:
         'Bind this DSH session (or an explicit sessionId) to a BMA3 Inbox. Nothing is bound by default; the Agent chooses whether to receive wake injections.',
       parameters: BIND_SCHEMA,
+      output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
         const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
         const binding = registry.bind({ ...args, sessionId: target })
@@ -156,6 +173,7 @@ export function apply(ctx, config = {}) {
       name: 'bma3_inbox_unbind',
       description: 'Remove the BMA3 Inbox wake binding for this session (or an explicit sessionId).',
       parameters: STATUS_SCHEMA,
+      output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
         const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
         const removed = registry.unbind(target)
@@ -167,6 +185,7 @@ export function apply(ctx, config = {}) {
       description:
         'Read BMA3 Inbox bindings without exposing tokens: whether the caller is bound and the list of bound sessions.',
       parameters: STATUS_SCHEMA,
+      output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
         const caller = String(exec.agent?.id ?? '')
         const target = String(args.sessionId ?? caller).trim()
