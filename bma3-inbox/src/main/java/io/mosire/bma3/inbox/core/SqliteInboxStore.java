@@ -128,6 +128,23 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
+    public synchronized Optional<InboxItem> activeForSource(String source) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT * FROM inbox_item
+                WHERE source = ? AND status = 'AVAILABLE'
+                ORDER BY created_at DESC LIMIT 1
+                """)) {
+            statement.setString(1, source);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(mapItem(result)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 active Inbox item 失败", failure);
+        }
+    }
+
+    @Override
     public synchronized List<InboxItem> items() {
         ensureOpen();
         try (Statement statement = connection.createStatement();

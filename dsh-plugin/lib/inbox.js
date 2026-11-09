@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 
 /** Rendered wake text; delivery id is the only internal handle exposed to the Agent. */
 export function wakeText(delivery) {
-  return `[BMA3 Inbox]\n${delivery.text}\n(delivery: ${delivery.id})`
+  return delivery.text
 }
 
 function tokenFor(config) {
@@ -18,7 +18,7 @@ function tokenFor(config) {
  * Poll one batch of due deliveries and inject each into an idle bound agent.
  * Returns the number of injected deliveries. No token is ever rendered into the message.
  */
-export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date() }) {
+export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(), onInjected }) {
   const baseUrl = String(config.baseUrl ?? '').replace(/\/$/, '')
   if (!baseUrl) {
     throw new Error('bma3 inbox: baseUrl 不能为空')
@@ -58,6 +58,7 @@ export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(
       content: [{ type: 'text', text: wakeText(delivery) }],
       source: { kind: 'bma3-inbox', deliveryId: delivery.id },
     })
+    onInjected?.(delivery)
     injected += 1
   }
   return injected
@@ -75,6 +76,7 @@ function publicBinding(binding) {
 /** Per-session bindings. Nothing is bound until the Agent calls the bind tool. */
 export function createBindingRegistry(ctx, config = {}) {
   const bindings = new Map()
+  const lastDeliveries = new Map()
 
   const bind = (input = {}) => {
     const sessionId = String(input.sessionId ?? '').trim()
@@ -103,12 +105,20 @@ export function createBindingRegistry(ctx, config = {}) {
   const pollAll = async ({ fetchImpl = fetch, now = new Date() } = {}) => {
     let injected = 0
     for (const binding of bindings.values()) {
-      injected += await pollOnce({ ctx, config: binding, fetchImpl, now })
+      injected += await pollOnce({
+        ctx, config: binding, fetchImpl, now,
+        onInjected: (delivery) => lastDeliveries.set(binding.sessionId, {
+          ...binding, deliveryId: delivery.id,
+        }),
+      })
     }
     return injected
   }
 
-  return { bind, unbind, get, list, pollAll, clear: () => bindings.clear() }
+  const lastDelivery = (sessionId) => lastDeliveries.get(String(sessionId ?? ''))
+  const clearLast = (sessionId) => lastDeliveries.delete(String(sessionId ?? ''))
+  return { bind, unbind, get, list, pollAll, lastDelivery, clearLast,
+    clear: () => { bindings.clear(); lastDeliveries.clear() } }
 }
 
 
@@ -178,6 +188,36 @@ export function apply(ctx, config = {}) {
         const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
         const removed = registry.unbind(target)
         return { text: removed ? `已解绑 ${target}` : `${target} 当前没有绑定` }
+      },
+    })
+    register({
+      name: 'bma3_inbox_ack',
+      description:
+        'Ack the last BMA3 Inbox delivery injected into this session. The delivery id stays internal; the Agent never has to maintain it.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: OUTPUT,
+      execute: async (_args = {}, exec = {}) => {
+        const target = String(exec.agent?.id ?? '').trim()
+        const last = registry.lastDelivery(target)
+        if (!last) {
+          return { text: `${target} 当前没有待 ack 的 delivery` }
+        }
+        const url = `${last.baseUrl}/v1/inboxes/${encodeURIComponent(last.inboxId)}`
+          + `/deliveries/${encodeURIComponent(last.deliveryId)}/ack`
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenFor(last)}`,
+          },
+          body: '{}',
+        })
+        if (!response.ok) {
+          throw new Error(`bma3 inbox ack: HTTP ${response.status}`)
+        }
+        const body = await response.json()
+        registry.clearLast(target)
+        return { text: JSON.stringify(body) }
       },
     })
     register({

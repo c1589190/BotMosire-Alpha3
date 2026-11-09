@@ -31,6 +31,31 @@ public final class InboxService {
         return item;
     }
 
+    /**
+     * Merge one rendered message into the thread's active item; start a new item when the
+     * previous one was delivered. This is the server-side assembly required by the iibot
+     * push contract: the client sees one text block, not one wake per message.
+     */
+    public InboxItem appendOrMerge(AppendItem request) {
+        java.util.Optional<InboxItem> active = store.activeForSource(request.source());
+        if (active.isEmpty()) {
+            return append(request);
+        }
+        InboxItem item = active.orElseThrow();
+        String line = request.summary();
+        String text = item.summary().isBlank() ? line : item.summary() + "\n" + line;
+        if (text.length() > 64 * 1024) {
+            text = text.substring(0, 64 * 1024 - 16) + "\n…(已截断)";
+        }
+        InboxItem updated = new InboxItem(
+                item.id(), item.source(), text,
+                Math.max(item.priority(), request.priority()),
+                ItemStatus.AVAILABLE, item.availableAt(), item.createdAt(),
+                item.revision() + 1);
+        store.update(updated);
+        return updated;
+    }
+
     public InboxStatus status() {
         int available = 0;
         int delivered = 0;

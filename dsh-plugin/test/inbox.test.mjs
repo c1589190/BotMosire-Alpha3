@@ -3,10 +3,9 @@ import { test } from 'node:test'
 
 import { apply, pollOnce, wakeText } from '../lib/inbox.js'
 
-test('wakeText carries delivery id and rendered text only', () => {
+test('wakeText injects the server-assembled text verbatim', () => {
   const text = wakeText({ id: 'dlv-1', text: 'hello\nworld', itemIds: ['itm-1'] })
-  assert.match(text, /dlv-1/)
-  assert.match(text, /hello\nworld/)
+  assert.equal(text, 'hello\nworld')
 })
 
 test('no session is bound until the bind tool is called', async () => {
@@ -23,7 +22,7 @@ test('no session is bound until the bind tool is called', async () => {
   })
   assert.equal(registry.list().length, 0)
   assert.deepEqual(definitions.map((definition) => definition.name).sort(), [
-    'bma3_inbox_bind', 'bma3_inbox_status', 'bma3_inbox_unbind',
+    'bma3_inbox_ack', 'bma3_inbox_bind', 'bma3_inbox_status', 'bma3_inbox_unbind',
   ])
 
   const bind = definitions.find((definition) => definition.name === 'bma3_inbox_bind')
@@ -98,6 +97,6 @@ test('pollOnce injects each due delivery into an idle agent', async () => {
 
   assert.equal(count, 2)
   assert.equal(calls.length, 2)
-  assert.match(calls[0].content[0].text, /first/)
+  assert.equal(calls[0].content[0].text, 'first')
   assert.equal(calls[0].source.deliveryId, 'dlv-1')
 })

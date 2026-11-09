@@ -49,6 +49,29 @@ class InboxServiceTest {
     }
 
     @Test
+    void mergesMessagesIntoOneActiveThreadItem() {
+        Instant t0 = Instant.parse("2026-11-09T11:00:00Z");
+        DeliveryPolicy policy = new DeliveryPolicy(200, Duration.ofSeconds(1),
+                Duration.ofSeconds(30), Duration.ofMinutes(10), 3);
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"))) {
+            InboxService service = new InboxService(store, policy);
+            service.appendOrMerge(new AppendItem("qq_private/bot-1/1",
+                    "[11:00] #1 Alice：hello", 300, t0));
+            service.appendOrMerge(new AppendItem("qq_private/bot-1/1",
+                    "[11:01] #2 Alice：world", 300, t0.plusSeconds(1)));
+
+            var items = service.list();
+            assertThat(items).hasSize(1);
+            assertThat(items.getFirst().summary()).isEqualTo(
+                    "[11:00] #1 Alice：hello\n[11:01] #2 Alice：world");
+
+            Delivery delivery = service.due(t0.plusSeconds(2)).getFirst();
+            assertThat(delivery.text()).isEqualTo(
+                    "[11:00] #1 Alice：hello\n[11:01] #2 Alice：world");
+        }
+    }
+
+    @Test
     void highestPriorityBatchDoesNotMixGroupIntoPrivateWake() {
         Instant t0 = Instant.parse("2026-11-09T11:00:00Z");
         DeliveryPolicy policy = new DeliveryPolicy(200, Duration.ofSeconds(1),

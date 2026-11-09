@@ -28,6 +28,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -159,13 +162,24 @@ public final class Bma3App implements AutoCloseable {
         if (!appended.created()) {
             return;
         }
-        String summary = event.text().isBlank() ? "[非文本消息]" : event.text();
+        String summary = renderLine(event, appended.message().localSeq());
         boolean privateChat = "qq_private".equals(source.platform());
         int priority = privateChat
                 ? weighting.privateSourceWeight() : weighting.groupSourceWeight();
         // The Inbox delivery policy applies the important/normal delay from priority;
         // availableAt stays the raw arrival time so the delay is not applied twice.
-        inboxService.append(new AppendItem(source.format(), summary, priority, Instant.now()));
+        inboxService.appendOrMerge(new AppendItem(source.format(), summary, priority, Instant.now()));
+    }
+
+    private static String renderLine(OneBotEvent event, long localSeq) {
+        var when = event.at().atZone(ZoneId.systemDefault());
+        String stamp = when.toLocalDate().equals(LocalDate.now(ZoneId.systemDefault()))
+                ? when.format(DateTimeFormatter.ofPattern("HH:mm"))
+                : when.format(DateTimeFormatter.ofPattern("MM-dd HH:mm"));
+        String sender = event.senderName() == null || event.senderName().isBlank()
+                ? Long.toString(event.userId()) : event.senderName();
+        String body = event.text().isBlank() ? "[非文本消息]" : event.text();
+        return "[" + stamp + "] #" + localSeq + " " + sender + "：" + body;
     }
 
     private static List<AccountConfig> resolveAccounts(AppConfig config,

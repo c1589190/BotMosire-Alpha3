@@ -12,6 +12,9 @@ public interface InboxStore extends AutoCloseable {
 
     Optional<InboxItem> item(String id);
 
+    /** The current unread item for one thread/source, if any. */
+    Optional<InboxItem> activeForSource(String source);
+
     List<InboxItem> items();
 
     void saveDelivery(Delivery delivery);
