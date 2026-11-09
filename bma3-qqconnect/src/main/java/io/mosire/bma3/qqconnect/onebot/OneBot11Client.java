@@ -21,7 +21,7 @@ import java.util.function.Consumer;
  * OneBot 11 forward-WebSocket client. Events and action calls share one socket; no HTTP action
  * endpoint is needed. Reconnect policy is owned by the account registry.
  */
-public final class OneBot11Client implements AutoCloseable {
+public class OneBot11Client implements AutoCloseable {
 
     private final URI endpoint;
     private final String token;
