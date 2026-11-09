@@ -1,10 +1,173 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**Plan 1 + webconnect 已实现：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jpackage 安装骨架。**
+DevMosire-iiBot 的继承与重构。**版本 `0.0.1`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-- 当前阶段：Plan 1 已实现并通过本地门禁；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`；Plan 2 做 webconnect/Selenium。
-- 继承来源（只读）：`/home/cna/DevMosire-iiBot`
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
+- 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
+- 当前分支：`feat/bma3-plan-1`
+- 真实 QQ/DSH/systemd 的完整生产联调仍按 `NOT_RUN` 记录，见 [`docs/agents/STATUS.md`](docs/agents/STATUS.md)。
+
+## 给 Agent 的快速加载顺序
+
+看到仓库后按这个顺序做，不要先改代码：
+
+1. 下载或编译 `bma3-app-0.0.1.jar`；
+2. 准备运行目录、`config/app.yaml` 和 token 文件；
+3. 启动 jar，确认 MCP 和 Inbox 端口；
+4. 把 `dsh-plugin` link 进目标 DSH profile；
+5. 在会话里调用 `bma3_inbox_bind` 绑定 Inbox；
+6. 需要 MCP 工具时，在 DSH 里添加 Bearer MCP 连接。
+
+### 1. 下载或编译
+
+Release 资产（推荐给只看仓库的 Agent）：
+
+<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.1/bma3-app-0.0.1.jar>
+
+从源码编译：
+
+```bash
+./mvnw -q -pl bma3-app -am package -DskipTests
+ls -lh bma3-app/target/bma3-app-0.0.1.jar
+```
+
+要求：JDK 21、Node.js 22（仅 DSH 插件需要）。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
+
+### 2. 运行目录与配置
+
+```bash
+mkdir -p /opt/bma3/run/config /opt/bma3/data
+cp bma3-app/src/main/resources/config-template/app.yaml /opt/bma3/run/config/app.yaml
+openssl rand -hex 24 > /opt/bma3/token
+chmod 600 /opt/bma3/token
+```
+
+最小配置示例（把 `dataDir`、endpoint 和 token env 换成实际值）：
+
+```yaml
+dataDir: /opt/bma3/data
+
+server:
+  host: 127.0.0.1
+  port: 8765
+  mcpPath: /mcp
+  tokenEnv: BMA3_MCP_TOKEN
+
+qqconnect:
+  accounts:
+    - accountId: qq-main
+      endpoint: ws://47.100.101.156:3001/
+      tokenEnv: LLBOT_ACCESS_TOKEN
+      enabled: true
+
+inbox:
+  inboxId: bma3
+  httpPort: 46500
+
+weighting:
+  privateSourceWeight: 300
+  groupSourceWeight: 0
+  notifyThreshold: 200
+  normalDelaySeconds: 30
+  importantDelaySeconds: 1
+
+webconnect:
+  enabled: true
+  binary: /snap/bin/chromium
+  headless: true
+  allowedHosts:
+    - bilibili.com
+    - www.bilibili.com
+    - passport.bilibili.com
+    - search.bilibili.com
+    - space.bilibili.com
+```
+
+启动：
+
+```bash
+export BMA3_MCP_TOKEN="$(cat /opt/bma3/token)"
+export LLBOT_ACCESS_TOKEN="..."          # 云端 LLBot/OneBot token
+export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium Manager
+java -jar bma3-app-0.0.1.jar --config /opt/bma3/run
+```
+
+启动日志会打印实际 MCP/health/Inbox 端口；默认配置对应：
+
+- MCP：`http://127.0.0.1:8765/mcp`
+- Inbox HTTP：`http://127.0.0.1:46500`
+- health：启动日志中的随机回环端口
+
+验证 Inbox（Bearer 用 `/opt/bma3/token`）：
+
+```bash
+curl -H "Authorization: Bearer $(cat /opt/bma3/token)" \
+  http://127.0.0.1:46500/v1/inboxes/bma3/status
+```
+
+### 3. 安装 DSH 插件
+
+插件是仓库里的 `dsh-plugin/`，包名 `@mosire/bma3-dsh`，一个包三行 loader：`bma3-inbox`、`bma3-persona`、`bma3-preset`。
+
+```bash
+git clone https://github.com/c1589190/BotMosire-Alpha3.git
+cd BotMosire-Alpha3
+dsh plugin --profile web add link:$PWD/dsh-plugin
+```
+
+在目标 profile 的 `cordis.patch.yml` 加/覆盖：
+
+```yaml
+- id: bma3-inbox
+  name: "@mosire/bma3-dsh"
+  config:
+    module: inbox
+    baseUrl: http://127.0.0.1:46500
+    inboxId: bma3
+    tokenFile: /opt/bma3/token
+    minPriority: 200
+    autoStart: true
+
+- id: bma3-persona
+  disabled: true
+
+- id: bma3-preset
+  disabled: true
+```
+
+`tokenFile` 必须是 0600 的 Inbox Bearer 文件；`minPriority: 200` 只让私聊优先项唤醒，普通群消息不进入 Inbox。改完后重启 DSH，或先在插件页把 `bma3-inbox` 关开一次。
+
+插件加载成功后，在会话里显式绑定（**默认不绑定**）：
+
+```json
+{"minPriority": 200}
+```
+
+调用工具 `bma3_inbox_bind`；用 `bma3_inbox_status` 检查，用 `bma3_inbox_unbind` 解绑。Inbox 唤醒会以有界 `[INBOX_HOST_EVENT]` 通知出现，处理完调用 `bma3_inbox_ack`。
+
+### 4. 添加 BMA3 MCP（可选）
+
+在 DSH 的 MCP 连接里新增：
+
+- 名称：`bma3`
+- URL：`http://127.0.0.1:8765/mcp`
+- 传输：streamable HTTP
+- 鉴权：Bearer，值同 `/opt/bma3/token`
+
+加载后可用的工具组：
+
+- QQ：`qq_account_list`、`qq_conversation_read/ack/send/send_image`
+- Inbox：`inbox_status/list/ack`
+- 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`
+
+`qq_conversation_send_image` 的 `imagePath` 必须在 `dataDir` 下，适合把登录 QR 截图发给用户。
+
+### 5. 常见问题
+
+- **QQ 连不上**：先检查云端 LLBot `/get_login_info` 和 `/get_status`，再检查 `endpoint`/token env；不要把本地 LLBot 和远程配置混用。
+- **Inbox 没唤醒**：确认插件行是“运行中”、`bma3_inbox_status` 显示 `bound=true`、目标会话是 idle；旧 delivery 未 ack 会阻塞新投递。
+- **浏览器起不来**：Snap Chromium 不能读 `/tmp`，profile 必须在 home 下；ChromeDriver 用 `BMA3_CHROMEDRIVER` 显式指定。
+- **密钥**：token 文件 0600，不提交、不打印、不进 MCP 结果；所有服务只绑定回环。
 
 ## 从这里开始
 
