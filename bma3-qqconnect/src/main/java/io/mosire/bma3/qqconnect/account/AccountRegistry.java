@@ -103,6 +103,10 @@ public final class AccountRegistry implements AutoCloseable {
         return holder == null ? Optional.empty() : Optional.of(holder.client);
     }
 
+    public synchronized List<AccountId> accounts() {
+        return active.keySet().stream().map(AccountId::new).toList();
+    }
+
     @Override
     public synchronized void close() {
         for (String accountId : new ArrayList<>(active.keySet())) {
