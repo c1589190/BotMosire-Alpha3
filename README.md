@@ -1,6 +1,6 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**Plan 1 已实现：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + DSH 薄插件 + jpackage 安装骨架。**
+DevMosire-iiBot 的继承与重构。**Plan 1 + webconnect 已实现：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jpackage 安装骨架。**
 
 - 当前阶段：Plan 1 已实现并通过本地门禁；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`；Plan 2 做 webconnect/Selenium。
 - 继承来源（只读）：`/home/cna/DevMosire-iiBot`
@@ -19,7 +19,7 @@ DevMosire-iiBot 的继承与重构。**Plan 1 已实现：Java 21 独立服务 +
 ## 构建与测试
 
 ```bash
-./mvnw -q test                 # Java 14 suites / 25 tests
+./mvnw -q test                 # Java 16 suites / 28 tests（1 个真实浏览器 smoke 默认跳过）
 (cd dsh-plugin && npm test)    # 5 tests
 bash packaging/smoke.sh        # jlink/jpackage app-image + /healthz smoke
 ```

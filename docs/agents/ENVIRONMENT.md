@@ -30,6 +30,8 @@
 - Python：3.12.3。
 - ffmpeg：6.1.1。
 - Git：2.43.0。
+- Chromium：`/snap/bin/chromium`，Chrome 156.0.8078.47；本机 ChromeDriver 156.0.8078.80 位于 `~/.cache/bma3-chromedriver/156.0.8078.80/chromedriver`，通过 `BMA3_CHROMEDRIVER` 指定。
+- Selenium Manager 自动下载在本机曾长时间无输出；webconnect 优先用显式 driver 路径。Snap Chromium 不能读 `/tmp`，浏览器 profile/页面放 home 下。
 
 ## 网络
 

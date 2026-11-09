@@ -105,12 +105,21 @@ public final class ConfigLoader {
         }
 
         JsonNode inbox = node.path("inbox");
+        JsonNode webconnect = node.path("webconnect");
+        List<String> allowedHosts = new ArrayList<>();
+        for (JsonNode host : webconnect.path("allowedHosts")) {
+            allowedHosts.add(host.asText());
+        }
         JsonNode logging = node.path("logging");
         return new AppConfig(
                 Path.of(dataDir),
                 serverConfig,
                 new AppConfig.QqConnect(accounts),
                 new AppConfig.Inbox(text(inbox, "inboxId", "bma3"), integer(inbox, "httpPort", 46500)),
+                new AppConfig.Webconnect(webconnect.path("enabled").asBoolean(false),
+                        text(webconnect, "binary", "/snap/bin/chromium"),
+                        webconnect.path("headless").asBoolean(true),
+                        allowedHosts.isEmpty() ? AppConfig.Webconnect.defaults().allowedHosts() : allowedHosts),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 

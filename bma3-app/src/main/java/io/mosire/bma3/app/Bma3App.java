@@ -21,6 +21,8 @@ import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
 import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqTools;
+import io.mosire.bma3.webconnect.BrowserOptions;
+import io.mosire.bma3.webconnect.BrowserService;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,13 +44,14 @@ public final class Bma3App implements AutoCloseable {
     private final InboxHttpServer inboxHttp;
     private final AccountRegistry accounts;
     private final Bma3McpServer mcp;
+    private final BrowserService browser;
     private final ConfigWatcher watcher;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
                    SqliteInboxStore inboxStore, InboxService inboxService,
                    HealthServer health, InboxHttpServer inboxHttp,
                    AccountRegistry accounts, Bma3McpServer mcp,
-                   ConfigWatcher watcher) {
+                   BrowserService browser, ConfigWatcher watcher) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -57,6 +60,7 @@ public final class Bma3App implements AutoCloseable {
         this.inboxHttp = inboxHttp;
         this.accounts = accounts;
         this.mcp = mcp;
+        this.browser = browser;
         this.watcher = watcher;
     }
 
@@ -93,6 +97,7 @@ public final class Bma3App implements AutoCloseable {
                 event -> ingest(board, inboxService, event));
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
+        BrowserService browser = null;
         try {
             inboxHttp.start();
             List<AccountConfig> resolved = resolveAccounts(config, env);
@@ -103,14 +108,27 @@ public final class Bma3App implements AutoCloseable {
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(new QqToolContext(accounts, board, board)));
             tools.addAll(InboxTools.all(inboxService));
+            if (config.webconnect().enabled()) {
+                browser = new BrowserService(new BrowserOptions(
+                        config.webconnect().binary(),
+                        config.webconnect().headless(),
+                        config.dataDir().resolve("browser"),
+                        config.dataDir().resolve("screenshots"),
+                        config.webconnect().allowedHosts(),
+                        Duration.ofSeconds(30)));
+                tools.addAll(browser.tools());
+            }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
                     config.server().mcpPath(), mcpToken, "bma3", "0.1.0", tools);
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
-                    inboxHttp, accounts, mcp, watcher);
+                    inboxHttp, accounts, mcp, browser, watcher);
         } catch (RuntimeException failure) {
             if (mcp != null) {
                 mcp.close();
+            }
+            if (browser != null) {
+                browser.close();
             }
             if (watcher != null) {
                 watcher.close();
@@ -184,6 +202,9 @@ public final class Bma3App implements AutoCloseable {
 
     @Override
     public void close() {
+        if (browser != null) {
+            browser.close();
+        }
         if (watcher != null) {
             watcher.close();
         }

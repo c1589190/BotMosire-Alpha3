@@ -2,7 +2,7 @@
 
 > **更新时间**：2026-11-09（Plan 1 已实现）
 > **定位**：单仓项目；DevMosire-iiBot 的继承与重构。
-> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）已实现并通过本地门禁；Plan 2（webconnect/Selenium）待设计；真实 LLBot/DSH/systemd 联调 `NOT_RUN`。
+> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）与 Plan 2 的 webconnect（Selenium + 系统 Chromium）已实现；B 站首页/热门页已通过 BMA3 MCP 打开并截图；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`。
 > **远端**：<https://github.com/c1589190/BotMosire-Alpha3>
 > **继承来源（只读参考）**：`/home/cna/DevMosire-iiBot`
 
@@ -19,8 +19,8 @@
 ## 1. 当前阶段（硬约束）
 
 - 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
-- 当前门禁：`./mvnw -q test` PASS（14 suites / 25 tests）；`dsh-plugin` `npm test` PASS（5 tests）；`packaging/smoke.sh` PASS。
-- 未开始：webconnect/Selenium、B 站视频/私信、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
+- 当前门禁：`./mvnw -q test` PASS（16 suites / 28 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（5 tests）；`packaging/smoke.sh` PASS。
+- 未开始：B 站登录/私信/视频工具、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
 - **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**
 
 ## 2. 继承关系
@@ -79,6 +79,7 @@ BotMosire-Alpha3/
 ├── bma3-agentlib/       # AgentLib ToolRegistry/MCP Bearer 包装
 ├── bma3-qqconnect/      # OneBot 11 正向 WS、账号 registry、QQ AgentTools
 ├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
+├── bma3-webconnect/     # Selenium + 系统 Chromium 浏览器 AgentTools
 ├── bma3-app/            # 组合根：config/logging/MCP/health/Main
 ├── dsh-plugin/          # @mosire/bma3-dsh，三个 loader row
 ├── packaging/           # jlink/jpackage + 用户级 installer

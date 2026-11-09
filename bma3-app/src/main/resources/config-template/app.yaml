@@ -17,6 +17,17 @@ inbox:
   inboxId: bma3
   httpPort: 46500
 
+webconnect:
+  enabled: false
+  binary: /snap/bin/chromium
+  headless: true
+  allowedHosts:
+    - bilibili.com
+    - www.bilibili.com
+    - passport.bilibili.com
+    - search.bilibili.com
+    - space.bilibili.com
+
 logging:
   level: INFO
   dir: logs
