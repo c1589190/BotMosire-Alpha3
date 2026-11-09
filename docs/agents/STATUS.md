@@ -50,6 +50,7 @@
 - **未验证**：真实 LLBot 连接、真实 QQ 收发、真实 DSH 插件加载/followup、systemd 开机常驻均 `NOT_RUN`。
 - **未验证**：AgentLib P0（HTTP MCP 认证钩子、source 批量注册、取消）未合并；当前用单条 `register`、`Bma3McpServer` Bearer 包装、工具内超时兜住。
 - **限制**：`ConfigWatcher` 当前只对 QQ 账号做 reconcile；server 端口/路径、MCP/Inbox token、日志级别不会热切换。
+- **限制**：`OneBot11Client` 暂无自动重连；断线后需要下一次 `reconcile`/配置变更触发重连。
 - **限制**：DSH 插件未接真实宿主；`lib/inbox.js` 以轮询 due 方式工作，未做 SSE/occupancy。
 - **风险**：`bma3-app` app-image 约 78 MB；已去掉 Playwright，但 JVM + jlink 运行时仍比 Go/Node 重。
 - **风险**：未做 webconnect/B 站/桌面控制；Plan 2 另写 Selenium 计划。
