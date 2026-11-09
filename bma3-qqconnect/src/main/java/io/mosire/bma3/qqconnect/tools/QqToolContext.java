@@ -10,10 +10,16 @@ public record QqToolContext(
         AccountRegistry accounts,
         MessageBoardStore board,
         ConsumerConversationStore consumers,
-        Path imageRoot) {
+        Path imageRoot,
+        QqExtrasStore extras) {
 
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
                          ConsumerConversationStore consumers) {
-        this(accounts, board, consumers, Path.of(".").toAbsolutePath().normalize());
+        this(accounts, board, consumers, Path.of(".").toAbsolutePath().normalize(), null);
+    }
+
+    public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
+                         ConsumerConversationStore consumers, Path imageRoot) {
+        this(accounts, board, consumers, imageRoot, null);
     }
 }

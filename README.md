@@ -1,6 +1,6 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**版本 `0.0.1`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**版本 `0.0.1-hotfix1`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -11,7 +11,7 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.1`**：Java 21 独立服务 +
 
 看到仓库后按这个顺序做，不要先改代码：
 
-1. 下载或编译 `bma3-app-0.0.1.jar`；
+1. 下载或编译 `bma3-app-0.0.1-hotfix1.jar`；
 2. 准备运行目录、`config/app.yaml` 和 token 文件；
 3. 启动 jar，确认 MCP 和 Inbox 端口；
 4. 把 `dsh-plugin` link 进目标 DSH profile；
@@ -22,13 +22,13 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.1`**：Java 21 独立服务 +
 
 Release 资产（推荐给只看仓库的 Agent）：
 
-<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.1/bma3-app-0.0.1.jar>
+<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.1-hotfix1/bma3-app-0.0.1-hotfix1.jar>
 
 从源码编译：
 
 ```bash
 ./mvnw -q -pl bma3-app -am package -DskipTests
-ls -lh bma3-app/target/bma3-app-0.0.1.jar
+ls -lh bma3-app/target/bma3-app-0.0.1-hotfix1.jar
 ```
 
 要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release jar 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
@@ -89,7 +89,7 @@ webconnect:
 export BMA3_MCP_TOKEN="$(cat /opt/bma3/token)"
 export LLBOT_ACCESS_TOKEN="..."          # 云端 LLBot/OneBot token
 export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium Manager
-java -jar bma3-app-0.0.1.jar --config /opt/bma3/run
+java -jar bma3-app-0.0.1-hotfix1.jar --config /opt/bma3/run
 ```
 
 启动日志会打印实际 MCP/health/Inbox 端口；默认配置对应：
@@ -156,7 +156,11 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 
 加载后可用的工具组：
 
-- QQ：`qq_account_list`、`qq_conversation_read/ack/send/send_image`
+- QQ 账号：`qq_account_list/status/login_info`
+- 会话导航：`qq_thread_list`、`qq_recent_messages`、`qq_conversation_history`、`qq_message_get`
+- 读写：`qq_conversation_read/ack/send/send_image`、`qq_reply`、`qq_private_send`
+- 用户/来源：`qq_user_note_get/list/upsert`、`qq_source_weight_get/list/set`
+- 目录：`qq_group_list`、`qq_friend_list`
 - Inbox：`inbox_status/list/ack`
 - 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`
 

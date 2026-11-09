@@ -12,6 +12,9 @@ public interface MessageBoardStore extends AutoCloseable {
 
     List<Message> read(SourceAddress source, long afterSeq, int limit);
 
+    /** Thread metadata, newest first; never includes full message bodies. */
+    List<ThreadSummary> threads(int limit);
+
     @Override
     void close();
 }

@@ -57,6 +57,7 @@
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
 - **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
 - **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
+- **0.0.1-hotfix1**：QQ 工具面从 5 个扩到 21 个（账号诊断、thread/recent/history/message、reply/private send、user note、source weight、group/friend 目录），Inbox+浏览器合计 31 个 MCP 工具；用户备注/来源权重已接入 ingest priority。
 - **AgentLib**：已迁移到 `agentlib-mosire 0.2.5`，使用 `ToolRegistry.registerAll(sourceId, tools)` 原子注册；native Bearer/TLS 面尚未替换现有回环代理。源码构建依赖本地安装的 AgentLib 0.2.5。
 - **易用性差距**：已完成只读调查，见 [`iibot 易用性差距报告`](../superpowers/reports/2026-11-09-iibot-usability-gap.md)；会话导航、用户备注、来源权重、账号诊断、reply/分片等仍是缺口。
 - **Inbox 注入格式**：wake 是 `[INBOX_HOST_EVENT]` 的有界通知（preview 800 chars），完整内容只存服务端；不再把整段 delivery.text 注入。

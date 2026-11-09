@@ -167,6 +167,38 @@ public final class SqliteMessageBoardStore
     }
 
     @Override
+    public synchronized List<ThreadSummary> threads(int limit) {
+        if (limit < 1 || limit > 1000) {
+            throw new IllegalArgumentException("limit 必须在 1..1000");
+        }
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT source, account_id, MAX(local_seq) AS last_seq,
+                       MAX(at) AS last_at, COUNT(*) AS message_count
+                FROM chat_message
+                GROUP BY source, account_id
+                ORDER BY last_seq DESC
+                LIMIT ?
+                """)) {
+            statement.setInt(1, limit);
+            try (ResultSet result = statement.executeQuery()) {
+                List<ThreadSummary> threads = new ArrayList<>();
+                while (result.next()) {
+                    threads.add(new ThreadSummary(
+                            result.getString("source"),
+                            result.getString("account_id"),
+                            result.getLong("last_seq"),
+                            Instant.parse(result.getString("last_at")),
+                            result.getLong("message_count")));
+                }
+                return List.copyOf(threads);
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取消息板 thread 失败", failure);
+        }
+    }
+
+    @Override
     public synchronized long readSeq(ConsumerId consumer, SourceAddress source) {
         Objects.requireNonNull(consumer, "consumer");
         Objects.requireNonNull(source, "source");

@@ -50,12 +50,39 @@ class QqToolsTest {
             registry.reconcile(List.of(new AccountConfig(
                     "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
 
-            QqToolContext context = new QqToolContext(registry, board, board, tempDir);
+            QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras.db"));
+            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
             List<AgentTool> tools = QqTools.all(context);
             assertThat(tools).extracting(AgentTool::name)
-                    .containsExactly("qq_account_list", "qq_conversation_read",
-                            "qq_conversation_send", "qq_conversation_send_image",
-                            "qq_conversation_ack");
+                    .contains("qq_account_list", "qq_account_status", "qq_account_login_info",
+                            "qq_group_list", "qq_friend_list",
+                            "qq_thread_list", "qq_conversation_history",
+                            "qq_recent_messages", "qq_message_get",
+                            "qq_conversation_read", "qq_conversation_send",
+                            "qq_conversation_send_image", "qq_reply", "qq_private_send",
+                            "qq_user_note_get", "qq_user_note_list", "qq_user_note_upsert",
+                            "qq_source_weight_get", "qq_source_weight_list",
+                            "qq_source_weight_set", "qq_conversation_ack");
+
+            ToolResult threads = tool(tools, "qq_thread_list").execute(call(Map.of()));
+            assertThat(threads.success()).isTrue();
+            assertThat(mapper.readTree(threads.message()).path("threads")).hasSize(1);
+
+            ToolResult note = tool(tools, "qq_user_note_upsert").execute(call(Map.of(
+                    "userId", "20002", "note", "Alice", "priority", 80,
+                    "tags", List.of("vip"))));
+            assertThat(note.success()).isTrue();
+            assertThat(mapper.readTree(note.message()).path("priority").asInt()).isEqualTo(80);
+            ToolResult noteGet = tool(tools, "qq_user_note_get").execute(
+                    call(Map.of("userId", "20002")));
+            assertThat(mapper.readTree(noteGet.message()).path("note").asText()).isEqualTo("Alice");
+
+            ToolResult weight = tool(tools, "qq_source_weight_set").execute(call(Map.of(
+                    "source", source.format(), "weight", 250, "notifyThreshold", 200)));
+            assertThat(weight.success()).isTrue();
+            assertThat(mapper.readTree(weight.message()).path("sourceWeight").asInt()).isEqualTo(250);
+            assertThat(tool(tools, "qq_source_weight_get").execute(
+                    call(Map.of("source", source.format()))).success()).isTrue();
 
             ToolResult read = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));
