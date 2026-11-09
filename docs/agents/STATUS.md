@@ -57,6 +57,8 @@
 - **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
 - **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
 - **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
+- **AgentLib**：已迁移到 `agentlib-mosire 0.2.5`，使用 `ToolRegistry.registerAll(sourceId, tools)` 原子注册；native Bearer/TLS 面尚未替换现有回环代理。源码构建依赖本地安装的 AgentLib 0.2.5。
+- **易用性差距**：已完成只读调查，见 [`iibot 易用性差距报告`](../superpowers/reports/2026-11-09-iibot-usability-gap.md)；会话导航、用户备注、来源权重、账号诊断、reply/分片等仍是缺口。
 - **Inbox 注入格式**：wake 是 `[INBOX_HOST_EVENT]` 的有界通知（preview 800 chars），完整内容只存服务端；不再把整段 delivery.text 注入。
 - **Inbox 注入格式细节**：已按 iibot 推送契约（D-002/D-015）改为服务端按 thread 维护 active item，`text` 为单条服务端拼接文本（`[HH:mm] #seq sender：body`），插件原样注入，不再加 `[BMA3 Inbox]` 包装或 delivery 元数据；新增 `bma3_inbox_ack`，deliveryId 只在插件内部保存。
 - **Inbox 优先级**：按 iibot 最后一版：`priority = max(来源权重, 人级备注)`；私聊 300 / 群 0 / 阈值 200；重要 1s、普通 30s 延迟；同一批只注入最高 priority，私聊唤醒不再混入普通群消息。当前 BMA3 未实现人级备注，先把来源权重与阈值/延迟对齐。

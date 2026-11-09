@@ -1,8 +1,8 @@
 # AgentLib 变更需求（BotMosire-Alpha3 → AgentLib）
 
 > **日期**：2026-11-09
-> **目标**：`io.mosire:agentlib-mosire` 0.2.4 及后续版本
-> **状态**：待隔壁评估；P0 为 BMA3 组合根必须，P1 为热配置/工具预设需要，P2 可选。
+> **目标**：`io.mosire:agentlib-mosire` 0.2.5 及后续版本
+> **状态**：0.2.5 已发布；A1/A2/A3 已进入库，BMA3 已迁移版本并使用 A2 批量注册；A1 仍用回环 Bearer 代理，A4/A5/A6 待评估。
 > **背景**：BMA3 是独立常驻 Java 服务；`qqconnect` / `webconnect` / `inbox` 各自实现 `AgentTool`，注册到 app 的单一 `ToolRegistry`，由 `AgentToMcpServer` 暴露 MCP；DSH 只挂一个 connector。
 
 ## 0. 已确认的现状（不需要重做）

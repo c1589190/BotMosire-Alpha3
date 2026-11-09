@@ -31,7 +31,7 @@ Release 资产（推荐给只看仓库的 Agent）：
 ls -lh bma3-app/target/bma3-app-0.0.1.jar
 ```
 
-要求：JDK 21、Node.js 22（仅 DSH 插件需要）。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
+要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release jar 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
 
 ### 2. 运行目录与配置
 

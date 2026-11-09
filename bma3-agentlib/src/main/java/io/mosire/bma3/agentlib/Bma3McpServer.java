@@ -158,9 +158,7 @@ public final class Bma3McpServer implements AutoCloseable {
             boolean frontStarted = false;
             try {
                 ToolRegistry registry = new ToolRegistry();
-                for (AgentTool tool : tools) {
-                    registry.register(tool);
-                }
+                registry.registerAll("bma3", tools);
                 internal = AgentToMcpServer.startHttp(
                         INTERNAL_HOST, 0, INTERNAL_PATH, registry, serverName, serverVersion,
                         supervisorContext(tools), ToolCallAuthorizer.standard(), assetResolver);
