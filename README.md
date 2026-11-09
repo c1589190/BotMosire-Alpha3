@@ -19,11 +19,15 @@ DevMosire-iiBot 的继承与重构。**Plan 1 + webconnect 已实现：Java 21 �
 ## 构建与测试
 
 ```bash
-./mvnw -q test                 # Java 16 suites / 29 tests（1 个真实浏览器 smoke 默认跳过）
-(cd dsh-plugin && npm test)    # 5 tests
+./mvnw -q test                 # Java 16 suites / 31 tests（1 个真实浏览器 smoke 默认跳过）
+(cd dsh-plugin && npm test)    # 7 tests
 bash packaging/smoke.sh        # jlink/jpackage app-image + /healthz smoke
 ```
 
 ## 边界
 
 新功能必须先有设计稿与验收判据；未跑过的验证一律写 `NOT_RUN`。真实 QQ/DSH/systemd 联调不得用 fake/回环测试冒充。
+
+## License
+
+MIT License. See [`LICENSE`](LICENSE).

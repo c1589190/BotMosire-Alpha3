@@ -6,10 +6,17 @@
 
   <groupId>io.mosire.bma3</groupId>
   <artifactId>bma3-parent</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.0.1</version>
   <packaging>pom</packaging>
   <name>BotMosire-Alpha3</name>
   <description>Independent DSH-side IM/browser inbox service.</description>
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
 
   <modules>
     <module>bma3-core</module>
