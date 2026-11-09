@@ -88,7 +88,8 @@ public final class InboxHttpServer implements AutoCloseable {
             if ("deliveries".equals(parts[4]) && parts.length == 6
                     && "due".equals(parts[5]) && "POST".equals(exchange.getRequestMethod())) {
                 Instant now = now(exchange);
-                send(exchange, 200, mapper.writeValueAsString(service.due(now)));
+                send(exchange, 200, mapper.writeValueAsString(
+                        service.due(now, minPriority(exchange))));
                 return;
             }
             if ("deliveries".equals(parts[4]) && parts.length == 7
@@ -116,6 +117,24 @@ public final class InboxHttpServer implements AutoCloseable {
         var node = mapper.readTree(body);
         String raw = node.path("now").asText("");
         return raw.isBlank() ? Instant.now() : Instant.parse(raw);
+    }
+
+    private int minPriority(HttpExchange exchange) {
+        String query = exchange.getRequestURI().getQuery();
+        if (query == null || query.isBlank()) {
+            return Integer.MIN_VALUE;
+        }
+        for (String part : query.split("&")) {
+            String[] pair = part.split("=", 2);
+            if (pair.length == 2 && "minPriority".equals(pair[0])) {
+                try {
+                    return Integer.parseInt(pair[1]);
+                } catch (NumberFormatException ignored) {
+                    return Integer.MIN_VALUE;
+                }
+            }
+        }
+        return Integer.MIN_VALUE;
     }
 
     private boolean authorized(HttpExchange exchange) {

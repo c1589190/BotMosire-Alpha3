@@ -34,7 +34,10 @@ export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(
     return 0
   }
 
-  const response = await fetchImpl(`${baseUrl}/v1/inboxes/${encodeURIComponent(inboxId)}/deliveries/due`, {
+  const minPriority = Number.isInteger(config.minPriority) ? config.minPriority : undefined
+  const dueUrl = `${baseUrl}/v1/inboxes/${encodeURIComponent(inboxId)}/deliveries/due`
+    + (minPriority === undefined ? '' : `?minPriority=${minPriority}`)
+  const response = await fetchImpl(dueUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -70,6 +73,7 @@ function publicBinding(binding) {
     inboxId: binding.inboxId,
     baseUrl: binding.baseUrl,
     tokenFile: binding.tokenFile ?? null,
+    minPriority: binding.minPriority ?? null,
   }
 }
 
@@ -90,6 +94,7 @@ export function createBindingRegistry(ctx, config = {}) {
       tokenFile: input.tokenFile ?? config.tokenFile,
       token: input.token,
       tokenEnv: input.tokenEnv ?? config.tokenEnv,
+      minPriority: Number.isInteger(input.minPriority) ? input.minPriority : config.minPriority,
     }
     if (!binding.baseUrl) {
       throw new Error('baseUrl 不能为空')
@@ -147,6 +152,10 @@ const BIND_SCHEMA = {
     inboxId: { type: 'string', description: 'Inbox id, default bma3.' },
     baseUrl: { type: 'string', description: 'Optional BMA3 Inbox API base URL.' },
     tokenFile: { type: 'string', description: 'Optional absolute path to the 0600 Inbox token.' },
+    minPriority: {
+      type: 'integer',
+      description: 'Only wake for items at or above this priority; use 200 to ignore ordinary group traffic.',
+    },
   },
   additionalProperties: false,
 }

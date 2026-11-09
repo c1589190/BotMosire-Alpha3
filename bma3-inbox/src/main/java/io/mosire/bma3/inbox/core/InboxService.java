@@ -92,6 +92,11 @@ public final class InboxService {
      * that delivery is retried; no second batch is created until it is acked or exhausted.
      */
     public List<Delivery> due(Instant now) {
+        return due(now, Integer.MIN_VALUE);
+    }
+
+    /** Due deliveries at or above {@code minPriority}; used by per-session bindings. */
+    public List<Delivery> due(Instant now, int minPriority) {
         List<Delivery> result = new ArrayList<>();
         boolean open = false;
         for (Delivery delivery : store.deliveries()) {
@@ -123,7 +128,7 @@ public final class InboxService {
 
         List<InboxItem> eligible = new ArrayList<>();
         for (InboxItem item : store.items()) {
-            if (item.status() != ItemStatus.AVAILABLE) {
+            if (item.status() != ItemStatus.AVAILABLE || item.priority() < minPriority) {
                 continue;
             }
             boolean important = item.priority() >= policy.importantThreshold();
