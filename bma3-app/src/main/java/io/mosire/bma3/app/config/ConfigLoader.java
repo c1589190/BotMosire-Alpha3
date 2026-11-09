@@ -54,8 +54,11 @@ public final class ConfigLoader {
 
     public static List<ConfigError> validate(AppConfig config) {
         List<ConfigError> errors = new ArrayList<>();
-        if (config.server().port() < 1 || config.server().port() > 65535) {
-            errors.add(new ConfigError("server.port", "必须在 1..65535"));
+        if (config.server().port() < 0 || config.server().port() > 65535) {
+            errors.add(new ConfigError("server.port", "必须在 0..65535"));
+        }
+        if (config.inbox().httpPort() < 0 || config.inbox().httpPort() > 65535) {
+            errors.add(new ConfigError("inbox.httpPort", "必须在 0..65535"));
         }
         if (config.server().host() == null || config.server().host().isBlank()) {
             errors.add(new ConfigError("server.host", "不能为空"));
@@ -107,7 +110,7 @@ public final class ConfigLoader {
                 Path.of(dataDir),
                 serverConfig,
                 new AppConfig.QqConnect(accounts),
-                new AppConfig.Inbox(text(inbox, "inboxId", "bma3")),
+                new AppConfig.Inbox(text(inbox, "inboxId", "bma3"), integer(inbox, "httpPort", 46500)),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 

@@ -1,0 +1,178 @@
+package io.mosire.bma3.app;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.modelcontextprotocol.client.McpClient;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
+import io.modelcontextprotocol.spec.McpSchema;
+import io.mosire.bma3.app.config.AppConfig;
+import io.mosire.bma3.inbox.core.Delivery;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
+@Timeout(30)
+class Bma3AppFakeQqTest {
+
+    @TempDir
+    java.nio.file.Path tempDir;
+
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    @Test
+    void fakeOneBotMessageReachesInboxAndMcpTools() throws Exception {
+        FakeOneBotServer oneBot = new FakeOneBotServer();
+        oneBot.start();
+        oneBot.awaitStarted(Duration.ofSeconds(3));
+        Bma3App app = null;
+        McpSyncClient mcp = null;
+        try {
+            AppConfig config = new AppConfig(
+                    tempDir,
+                    new AppConfig.Server("127.0.0.1", 0, "/mcp", "BMA3_TEST_TOKEN"),
+                    new AppConfig.QqConnect(List.of(new AppConfig.Account(
+                            "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
+                    new AppConfig.Inbox("bma3", 0),
+                    new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
+            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"));
+            assertThat(app.mcpPort()).isPositive();
+            assertThat(app.healthPort()).isPositive();
+            assertThat(app.inboxHttpPort()).isPositive();
+
+            oneBot.send("""
+                    {"post_type":"message","message_type":"private","self_id":10001,
+                     "user_id":20002,"message_id":9001,"time":1762700000,
+                     "message":[{"type":"text","data":{"text":"hello-app"}}],
+                     "sender":{"nickname":"Alice"}}
+                    """);
+
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (app.inboxService().status().available() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(app.inboxService().status().available()).isEqualTo(1);
+
+            HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport
+                    .builder("http://127.0.0.1:" + app.mcpPort())
+                    .endpoint("/mcp")
+                    .resumableStreams(false)
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .httpRequestCustomizer((request, method, uri, body, context) ->
+                            request.header("Authorization", "Bearer mcp-token"))
+                    .build();
+            mcp = McpClient.sync(transport).build();
+            mcp.initialize();
+
+            McpSchema.CallToolResult read = mcp.callTool(new McpSchema.CallToolRequest(
+                    "qq_conversation_read",
+                    Map.of("source", "qq_private/bot-1/20002", "limit", 10)));
+            assertThat(read.isError()).isFalse();
+            JsonNode readJson = mapper.readTree(text(read));
+            assertThat(readJson.path("messages").get(0).path("text").asText())
+                    .isEqualTo("hello-app");
+
+            Thread.sleep(1100);
+            List<Delivery> due = app.inboxService().due(Instant.now());
+            assertThat(due).hasSize(1);
+            McpSchema.CallToolResult acked = mcp.callTool(new McpSchema.CallToolRequest(
+                    "inbox_ack", Map.of("deliveryId", due.getFirst().id())));
+            assertThat(acked.isError()).isFalse();
+            assertThat(mapper.readTree(text(acked)).path("acked").asBoolean()).isTrue();
+
+            McpSchema.CallToolResult sent = mcp.callTool(new McpSchema.CallToolRequest(
+                    "qq_conversation_send",
+                    Map.of("source", "qq_private/bot-1/20002", "text", "reply")));
+            assertThat(sent.isError()).isFalse();
+            assertThat(mapper.readTree(text(sent)).path("state").asText()).isEqualTo("SENT");
+        } finally {
+            if (mcp != null) {
+                mcp.closeGracefully();
+            }
+            if (app != null) {
+                app.close();
+            }
+            oneBot.stop();
+        }
+    }
+
+    private static String text(McpSchema.CallToolResult result) {
+        return result.content().stream()
+                .filter(McpSchema.TextContent.class::isInstance)
+                .map(McpSchema.TextContent.class::cast)
+                .map(McpSchema.TextContent::text)
+                .findFirst()
+                .orElse("");
+    }
+
+    private static final class FakeOneBotServer extends WebSocketServer {
+
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final AtomicReference<WebSocket> client = new AtomicReference<>();
+
+        FakeOneBotServer() {
+            super(new InetSocketAddress("127.0.0.1", 0));
+        }
+
+        @Override
+        public void onOpen(WebSocket connection, ClientHandshake handshake) {
+            client.set(connection);
+        }
+
+        @Override
+        public void onClose(WebSocket connection, int code, String reason, boolean remote) {
+            client.compareAndSet(connection, null);
+        }
+
+        @Override
+        public void onMessage(WebSocket connection, String message) {
+            if (message.contains("\"action\":\"send_private_msg\"")) {
+                connection.send("""
+                        {"status":"ok","retcode":0,"data":{"message_id":777},"echo":"%s"}
+                        """.formatted(echo(message)));
+            }
+        }
+
+        @Override
+        public void onError(WebSocket connection, Exception exception) {
+        }
+
+        @Override
+        public void onStart() {
+            started.countDown();
+        }
+
+        void awaitStarted(Duration timeout) throws InterruptedException {
+            assertThat(started.await(timeout.toMillis(), TimeUnit.MILLISECONDS)).isTrue();
+        }
+
+        void send(String event) {
+            WebSocket target = client.get();
+            if (target == null) {
+                throw new IllegalStateException("fake OneBot 尚未连接");
+            }
+            target.send(event);
+        }
+
+        private static String echo(String message) {
+            int start = message.indexOf("\"echo\":\"") + "\"echo\":\"".length();
+            int end = message.indexOf('"', start);
+            return message.substring(start, end);
+        }
+    }
+}

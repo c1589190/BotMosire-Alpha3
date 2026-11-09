@@ -1,0 +1,22 @@
+dataDir: ./data
+
+server:
+  host: 127.0.0.1
+  port: 8765
+  mcpPath: /mcp
+  tokenEnv: BMA3_MCP_TOKEN
+
+qqconnect:
+  accounts:
+    - accountId: qq-main
+      endpoint: ws://127.0.0.1:3001
+      tokenEnv: LLBOT_ACCESS_TOKEN
+      enabled: false
+
+inbox:
+  inboxId: bma3
+  httpPort: 46500
+
+logging:
+  level: INFO
+  dir: logs

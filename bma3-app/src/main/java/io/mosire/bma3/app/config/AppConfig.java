@@ -15,13 +15,13 @@ public record AppConfig(
         dataDir = dataDir == null ? Path.of("data") : dataDir;
         server = server == null ? Server.defaults() : server;
         qqconnect = qqconnect == null ? new QqConnect(List.of()) : qqconnect;
-        inbox = inbox == null ? new Inbox("bma3") : inbox;
+        inbox = inbox == null ? Inbox.defaults() : inbox;
         logging = logging == null ? Logging.defaults() : logging;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
-                new QqConnect(List.of()), new Inbox("bma3"), Logging.defaults());
+                new QqConnect(List.of()), Inbox.defaults(), Logging.defaults());
     }
 
     public record Server(String host, int port, String mcpPath, String tokenEnv) {
@@ -47,10 +47,14 @@ public record AppConfig(
     public record Account(String accountId, String endpoint, String tokenEnv, boolean enabled) {
     }
 
-    public record Inbox(String inboxId) {
+    public record Inbox(String inboxId, int httpPort) {
 
         public Inbox {
             inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
+        }
+
+        public static Inbox defaults() {
+            return new Inbox("bma3", 46500);
         }
     }
 
