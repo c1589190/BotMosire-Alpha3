@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="Console" target="SYSTEM_OUT">
+      <JsonLayout compact="true" eventEol="true" properties="true"/>
+    </Console>
+    <RollingFile name="File" fileName="logs/bma3.jsonl"
+                 filePattern="logs/bma3-%d{yyyy-MM-dd}-%i.jsonl.gz">
+      <JsonLayout compact="true" eventEol="true" properties="true"/>
+      <SizeBasedTriggeringPolicy size="20 MB"/>
+      <DefaultRolloverStrategy max="10"/>
+    </RollingFile>
+  </Appenders>
+  <Loggers>
+    <Root level="info">
+      <AppenderRef ref="Console"/>
+      <AppenderRef ref="File"/>
+    </Root>
+  </Loggers>
+</Configuration>
