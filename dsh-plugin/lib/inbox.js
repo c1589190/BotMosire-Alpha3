@@ -13,11 +13,15 @@ export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(
     throw new Error('bma3 inbox: baseUrl 不能为空')
   }
   const inboxId = config.inboxId ?? 'bma3'
+  const token = config.token
+    ?? (config.tokenEnv ? process.env[config.tokenEnv] : undefined)
+    ?? process.env.BMA3_INBOX_TOKEN
+    ?? ''
   const response = await fetchImpl(`${baseUrl}/v1/inboxes/${encodeURIComponent(inboxId)}/deliveries/due`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.token ?? ''}`,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ now: now.toISOString() }),
   })

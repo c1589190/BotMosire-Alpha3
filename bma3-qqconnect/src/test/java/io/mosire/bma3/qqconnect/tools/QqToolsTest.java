@@ -77,6 +77,10 @@ class QqToolsTest {
             assertThat(client.sentAction).isEqualTo("send_private_msg");
             assertThat(client.sentParams.path("user_id").asLong()).isEqualTo(20002L);
 
+            ToolResult afterSend = tool(tools, "qq_conversation_read").execute(
+                    call(Map.of("source", source.format(), "limit", 10)));
+            assertThat(mapper.readTree(afterSend.message()).path("messages")).isEmpty();
+
             client.failure = new IllegalStateException("timeout");
             ToolResult unknown = tool(tools, "qq_conversation_send").execute(
                     call(Map.of("source", source.format(), "text", "reply-2")));

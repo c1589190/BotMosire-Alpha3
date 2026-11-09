@@ -6,6 +6,7 @@
         module: inbox
         baseUrl: http://127.0.0.1:46500
         inboxId: bma3
+        tokenEnv: BMA3_INBOX_TOKEN
         autoStart: true
 
     - id: bma3-persona

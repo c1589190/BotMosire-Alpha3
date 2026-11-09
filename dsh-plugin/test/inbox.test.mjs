@@ -38,11 +38,21 @@ test('pollOnce injects each due delivery into an idle agent', async () => {
     }
   }
 
-  const count = await pollOnce({
-    ctx,
-    config: { baseUrl: 'http://127.0.0.1:46500', inboxId: 'bma3', token: 'test-token' },
-    fetchImpl,
-  })
+  process.env.BMA3_TEST_INBOX_TOKEN = 'test-token'
+  let count
+  try {
+    count = await pollOnce({
+      ctx,
+      config: {
+        baseUrl: 'http://127.0.0.1:46500',
+        inboxId: 'bma3',
+        tokenEnv: 'BMA3_TEST_INBOX_TOKEN',
+      },
+      fetchImpl,
+    })
+  } finally {
+    delete process.env.BMA3_TEST_INBOX_TOKEN
+  }
 
   assert.equal(count, 2)
   assert.equal(calls.length, 2)

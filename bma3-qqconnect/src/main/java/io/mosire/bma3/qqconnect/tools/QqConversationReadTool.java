@@ -3,6 +3,7 @@ package io.mosire.bma3.qqconnect.tools;
 import io.mosire.agentlib.tool.AgentTool;
 import io.mosire.agentlib.tool.ToolContext;
 import io.mosire.agentlib.tool.ToolResult;
+import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.Message;
 import io.mosire.bma3.core.source.SourceAddress;
 import java.util.List;
@@ -48,6 +49,9 @@ public final class QqConversationReadTool implements AgentTool {
             var array = root.putArray("messages");
             long last = after;
             for (Message message : messages) {
+                if (message.inbound().direction() != Direction.INBOUND) {
+                    continue;
+                }
                 var item = array.addObject();
                 item.put("seq", message.localSeq());
                 item.put("messageId", message.inbound().messageId());
