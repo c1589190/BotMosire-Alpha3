@@ -1,0 +1,44 @@
+# Build output
+target/
+**/target/
+build/
+out/
+dist/
+*.class
+*.jar
+!/.mvn/wrapper/maven-wrapper.jar
+
+# Runtime data and local work
+data/
+logs/
+run/
+.work/
+*.db
+*.db-shm
+*.db-wal
+*.pid
+*.log
+
+# Secrets and local config
+.env
+.env.*
+*.env
+*.local.json
+config/local/
+config/**/bot.json
+secrets/
+*.token
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Node (only if a later design chooses it)
+node_modules/
+npm-debug.log*
+
+# Python tooling
+__pycache__/
+*.pyc
