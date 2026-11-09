@@ -166,6 +166,11 @@ public final class Bma3App implements AutoCloseable {
         boolean privateChat = "qq_private".equals(source.platform());
         int priority = privateChat
                 ? weighting.privateSourceWeight() : weighting.groupSourceWeight();
+        if (!privateChat && priority < weighting.notifyThreshold()) {
+            // Keep ordinary group traffic on the message board; it must not wake a session.
+            // Group wake needs an explicit source policy/user-note priority above the threshold.
+            return;
+        }
         // The Inbox delivery policy applies the important/normal delay from priority;
         // availableAt stays the raw arrival time so the delay is not applied twice.
         inboxService.appendOrMerge(new AppendItem(source.format(), summary, priority, Instant.now()));
