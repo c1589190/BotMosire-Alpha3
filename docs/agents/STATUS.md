@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-10 21:25 (UTC+8)
+# STATUS —— 更新时间：2026-11-10 21:35 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -9,16 +9,17 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；HEAD：`53b13a1`（本轮改动未提交，工作树 dirty）。
-- 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`；未 push。
+- 分支：`feat/bma3-plan-1`；发布：`v0.0.2` tag；本轮发布提交已推送，工作树提交后 clean。
+- 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`；已 push `feat/bma3-plan-1` + `v0.0.2`。
+- 发布资产：`bma3-app-0.0.2.jar` + `.sha256`（GitHub Release `v0.0.2`）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -q test` | **PASS**：19 suites / 50 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 跳过，2026-11-10 20:49） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：13 tests / 0 fail（2026-11-10 21:25） |
+| Java 全量测试 | `./mvnw -q test` | **PASS**：19 suites / 50 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 跳过，2026-11-10 21:31） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：13 tests / 0 fail（2026-11-10 21:31） |
 | 离线打包 | `./mvnw -o -q -pl bma3-app -am package -DskipTests` | **PASS**：`bma3-app/target/bma3-app-0.0.2.jar` 53MB，含 AgentLib 0.2.5 |
 | packaging/smoke.sh | — | `NOT_RUN`（本轮未重跑） |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
