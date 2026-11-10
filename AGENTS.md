@@ -19,7 +19,7 @@
 ## 1. 当前阶段（硬约束）
 
 - 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
-- 当前门禁：`./mvnw -q test` PASS（19 suites / 50 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（13 tests）；`packaging/smoke.sh` 本轮 `NOT_RUN`。
+- 当前门禁：`./mvnw -q test` PASS（19 suites / 50 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（14 tests）；`packaging/smoke.sh` 本轮 `NOT_RUN`。
 - 已实现：DSH 插件侧 BMA3 preset / 工作区人设 loader / 默认工具组 / `minimal` 子 Agent（`dsh-plugin/lib/self.js`）；真实 DSH preset 激活与远端联调仍 `NOT_RUN`。
 - 未开始：B 站登录/私信/视频工具、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
 - **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**

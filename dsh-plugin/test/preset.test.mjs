@@ -46,3 +46,22 @@ test('preset can be registered', () => {
   assert.equal(registered.length, 1)
   assert.equal(registered[0].id, 'bma3')
 })
+
+test('preset reads agentPresets through ctx.get, not the uninjected property', () => {
+  const registered = []
+  const ctx = {
+    get(name) {
+      return name === 'agentPresets'
+        ? { register(value) { registered.push(value); return () => {} } }
+        : undefined
+    },
+    effect(fn) { return fn() },
+  }
+  Object.defineProperty(ctx, 'agentPresets', {
+    get() { throw new Error('cannot get property "agentPresets" without inject') },
+  })
+
+  apply(ctx)
+  assert.equal(registered.length, 1)
+  assert.equal(registered[0].id, 'bma3')
+})

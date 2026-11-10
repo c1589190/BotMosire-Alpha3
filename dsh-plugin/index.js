@@ -3,8 +3,8 @@ import { apply as applyPersona } from './lib/persona.js'
 import { apply as applyPreset } from './lib/preset.js'
 import { apply as applySelf } from './lib/self.js'
 
-/** Cordis must provide these services before apply() touches ctx.tools/ctx.agents. */
-export const inject = ['tools', 'agents', 'systemPrompt']
+/** Cordis must provide these services before apply() touches ctx.tools/ctx.agents/ctx.agentPresets. */
+export const inject = ['tools', 'agents', 'systemPrompt', 'agentPresets']
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bma3-dsh'

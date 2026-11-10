@@ -58,7 +58,7 @@ export function presetDefinition() {
 
 export function apply(ctx, config = {}) {
   const definition = presetDefinition(config)
-  const presets = ctx?.agentPresets ?? ctx?.get?.('agentPresets')
+  const presets = typeof ctx?.get === 'function' ? ctx.get('agentPresets') : ctx?.agentPresets
   const dispose = presets?.register?.(definition)
   if (typeof dispose === 'function') {
     ctx?.effect?.(() => dispose)

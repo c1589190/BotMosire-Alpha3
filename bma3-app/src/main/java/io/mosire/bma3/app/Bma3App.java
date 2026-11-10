@@ -154,7 +154,7 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.2", tools);
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.2-hotfix1", tools);
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, qqExtras, watcher);
