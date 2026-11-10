@@ -1,29 +1,6 @@
 import { readFileSync } from 'node:fs'
 
-/** Rendered wake text; delivery id is the only internal handle exposed to the Agent. */
-const WAKE_HEADER = '[INBOX_HOST_EVENT]'
-const WAKE_PREVIEW_CHARS = 800
-
-/**
- * The wake message is a bounded notification, not the full server-assembled text.
- * The full text stays in Inbox; the Agent reads it through tools after this signal.
- */
-export function wakeText(delivery) {
-  const raw = String(delivery?.text ?? '').replace(/\s+/g, ' ').trim() || '[空消息]'
-  const preview = raw.length > WAKE_PREVIEW_CHARS
-    ? `${raw.slice(0, WAKE_PREVIEW_CHARS)}…(已截断)`
-    : raw
-  const itemCount = Array.isArray(delivery?.itemIds) ? delivery.itemIds.length : 1
-  return [
-    WAKE_HEADER,
-    `inbox=bma3 items=${itemCount} important=${delivery?.important === true}`,
-    '',
-    preview,
-    '',
-    '这是通知信号，不是完整正文；完整 content 在服务端。',
-    '请调用程序 MCP 的 inbox_list 查看条目，处理完后调用 bma3_inbox_ack。',
-  ].join('\n')
-}
+const WAKE_REVISION_HEADER = '[INBOX_PANEL]'
 
 function tokenFor(config) {
   const fileToken = config.tokenFile ? readFileSync(config.tokenFile, 'utf8').trim() : undefined
@@ -34,125 +11,290 @@ function tokenFor(config) {
     ?? ''
 }
 
+function endpoint(config, suffix = '') {
+  return `${String(config.baseUrl ?? '').replace(/\/$/, '')}`
+    + `/v1/inboxes/${encodeURIComponent(config.inboxId ?? 'bma3')}${suffix}`
+}
+
 /**
- * Poll one batch of due deliveries and inject each into an idle bound agent.
- * Returns the number of injected deliveries. No token is ever rendered into the message.
+ * Render one bounded panel as the wake text. Full history stays in the message board;
+ * this text carries only source labels, relation markers and a short omitted count.
  */
-export async function pollOnce({ ctx, config, fetchImpl = fetch, now = new Date(), onInjected }) {
-  const baseUrl = String(config.baseUrl ?? '').replace(/\/$/, '')
-  if (!baseUrl) {
-    throw new Error('bma3 inbox: baseUrl 不能为空')
+export function renderPanel(panel) {
+  const items = Array.isArray(panel?.items) ? panel.items : []
+  const includeOmitted = panel?.includeOmittedCount !== false
+  const total = includeOmitted && Number.isInteger(panel?.totalItems)
+    ? panel.totalItems : items.length
+  const lines = [
+    `${WAKE_REVISION_HEADER} inbox=${panel?.inboxId ?? 'bma3'}`
+      + ` rev=${panel?.revision ?? 0} unread=${total} items=${items.length}/${total}`,
+  ]
+  for (const item of items) {
+    const label = item?.sourceLabel ?? item?.source ?? 'unknown'
+    const entries = Array.isArray(item?.entries) ? item.entries : []
+    lines.push(`[${label}] priority=${item?.priority ?? 0}`
+      + ` total=${item?.totalMessages ?? entries.length} shown=${entries.length}`)
+    for (const entry of entries) {
+      lines.push(`  ${entry?.line ?? fallbackLine(entry)}`)
+    }
+    if (includeOmitted && Number(item?.omittedMessages) > 0) {
+      lines.push(`  …（省略 ${item.omittedMessages} 条）`)
+    }
   }
-  const inboxId = config.inboxId ?? 'bma3'
-  const agents = ctx?.agents
-  const agent = config.sessionId
-    ? agents?.get?.(config.sessionId)
-    : agents?.list?.().find((candidate) => candidate?.status === 'idle')
-  // Never consume a delivery while the target is busy: it would become an open delivery
-  // and block every later wake until someone acks it.
-  if (!agent?.followup || agent.status !== 'idle') {
-    return 0
+  if (includeOmitted && Number(panel?.omittedItems) > 0) {
+    lines.push(`…（另有 ${panel.omittedItems} 个来源未显示）`)
   }
-
-  const minPriority = Number.isInteger(config.minPriority) ? config.minPriority : undefined
-  const dueUrl = `${baseUrl}/v1/inboxes/${encodeURIComponent(inboxId)}/deliveries/due`
-    + (minPriority === undefined ? '' : `?minPriority=${minPriority}`)
-  const response = await fetchImpl(dueUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenFor(config)}`,
-    },
-    body: JSON.stringify({ now: now.toISOString() }),
-  })
-  if (!response.ok) {
-    throw new Error(`bma3 inbox: HTTP ${response.status}`)
-  }
-  const deliveries = await response.json()
-  if (!Array.isArray(deliveries) || deliveries.length === 0) {
-    return 0
-  }
-
-  let injected = 0
-  for (const delivery of deliveries) {
-    agent.followup({
-      id: `bma3-${delivery.id}`,
-      role: 'user',
-      content: [{ type: 'text', text: wakeText(delivery) }],
-      source: { kind: 'bma3-inbox', deliveryId: delivery.id },
-    })
-    onInjected?.(delivery)
-    injected += 1
-  }
-  return injected
+  return lines.join('\n')
 }
 
-function publicBinding(binding) {
+function fallbackLine(entry) {
+  const seq = entry?.localSeq ?? 0
+  const sender = entry?.sender ?? ''
+  const text = entry?.text ?? ''
+  const markers = Array.isArray(entry?.markers) ? entry.markers.join(' ') : ''
+  return `#${seq} ${sender}：${text}${markers ? ` ${markers}` : ''}`
+}
+
+/** Minimal SSE frame parser; exposed for tests and deterministic reconnect handling. */
+export class SseParser {
+  constructor(onEvent) {
+    this.onEvent = onEvent
+    this.buffer = ''
+  }
+
+  push(chunk) {
+    this.buffer += String(chunk ?? '')
+    let index
+    while ((index = this.buffer.search(/\r?\n\r?\n/)) >= 0) {
+      const frame = this.buffer.slice(0, index)
+      this.buffer = this.buffer.slice(index).replace(/^\r?\n\r?\n/, '')
+      this.dispatch(frame)
+    }
+  }
+
+  dispatch(frame) {
+    let id = ''
+    let event = 'message'
+    const data = []
+    for (const rawLine of frame.split(/\r?\n/)) {
+      if (rawLine.startsWith(':')) continue
+      const colon = rawLine.indexOf(':')
+      const field = colon < 0 ? rawLine : rawLine.slice(0, colon)
+      let value = colon < 0 ? '' : rawLine.slice(colon + 1)
+      if (value.startsWith(' ')) value = value.slice(1)
+      if (field === 'id') id = value
+      else if (field === 'event') event = value
+      else if (field === 'data') data.push(value)
+    }
+    if (data.length > 0) this.onEvent?.({ id, event, data: data.join('\n') })
+  }
+}
+
+function createState() {
   return {
-    sessionId: binding.sessionId,
-    inboxId: binding.inboxId,
-    baseUrl: binding.baseUrl,
-    tokenFile: binding.tokenFile ?? null,
-    minPriority: binding.minPriority ?? null,
+    connection: 'idle',
+    lastRevision: 0,
+    injectedRevision: 0,
+    ackedRevision: 0,
+    pendingRevision: 0,
+    lastEventAt: null,
+    lastError: null,
+    targetSessionId: null,
   }
 }
 
-/** Per-session bindings. Nothing is bound until the Agent calls the bind tool. */
-export function createBindingRegistry(ctx, config = {}) {
-  const bindings = new Map()
-  const lastDeliveries = new Map()
+/**
+ * One inbox = one SSE stream. Source items are just panel entries; there is no per-source
+ * subscription. The panel is a work signal; after a successful followup we advance the
+ * server read cursor so the same panel is not injected repeatedly.
+ */
+export function createInboxClient(ctx, config = {}) {
+  const state = createState()
+  const fetchImpl = config.fetchImpl ?? fetch
+  let stopped = true
+  let abort = null
+  let pending = null
+  let retryTimer = null
+  let pumpTimer = null
+  let injecting = false
+  let retryMs = Math.max(200, Number(config.reconnectMinMs ?? 1000))
+  const pumpMs = Math.max(100, Number(config.pumpMs ?? 500))
 
-  const bind = (input = {}) => {
-    const sessionId = String(input.sessionId ?? '').trim()
-    if (!sessionId) {
-      throw new Error('sessionId 不能为空；默认使用调用工具的 agent.id')
-    }
-    const binding = {
-      sessionId,
-      inboxId: String(input.inboxId ?? config.inboxId ?? 'bma3'),
-      baseUrl: String(input.baseUrl ?? config.baseUrl ?? '').replace(/\/$/, ''),
-      tokenFile: input.tokenFile ?? config.tokenFile,
-      token: input.token,
-      tokenEnv: input.tokenEnv ?? config.tokenEnv,
-      minPriority: Number.isInteger(input.minPriority) ? input.minPriority : config.minPriority,
-    }
-    if (!binding.baseUrl) {
-      throw new Error('baseUrl 不能为空')
-    }
-    bindings.set(sessionId, binding)
-    return publicBinding(binding)
+  const status = () => ({
+    ...state,
+    pendingRevision: pending?.revision ?? 0,
+    connected: state.connection === 'open',
+  })
+
+  const findAgent = () => {
+    const agents = ctx?.agents
+    if (state.targetSessionId) return agents?.get?.(state.targetSessionId)
+    return agents?.list?.().find((candidate) => candidate?.status === 'idle')
   }
 
-  const unbind = (sessionId) => bindings.delete(String(sessionId ?? ''))
-  const get = (sessionId) => bindings.get(String(sessionId ?? ''))
-  const list = () => [...bindings.values()].map(publicBinding)
+  const wake = async (panel) => {
+    if (!panel || !Array.isArray(panel.items) || panel.items.length === 0) return false
+    if (panel.revision <= state.injectedRevision) return false
+    const agent = findAgent()
+    if (!agent || agent.status !== 'idle' || typeof agent.followup !== 'function') return false
+    const text = renderPanel(panel)
+    await agent.followup({
+      id: `bma3-inbox-${panel.revision}`,
+      role: 'user',
+      content: [{ type: 'text', text }],
+      source: { kind: 'bma3-inbox', revision: panel.revision },
+    })
+    state.injectedRevision = Math.max(state.injectedRevision, panel.revision)
+    state.lastError = null
+    try {
+      await ack(panel.revision)
+    } catch (error) {
+      state.lastError = `ack: ${error?.message ?? error}`
+    }
+    return true
+  }
 
-  const pollAll = async ({ fetchImpl = fetch, now = new Date() } = {}) => {
-    let injected = 0
-    for (const binding of bindings.values()) {
-      injected += await pollOnce({
-        ctx, config: binding, fetchImpl, now,
-        onInjected: (delivery) => lastDeliveries.set(binding.sessionId, {
-          ...binding, deliveryId: delivery.id,
-        }),
+  const pump = async () => {
+    if (stopped || injecting || !pending) return
+    injecting = true
+    try {
+      const panel = pending
+      const injected = await wake(panel)
+      if (injected && pending === panel) pending = null
+    } catch (error) {
+      state.lastError = `wake: ${error?.message ?? error}`
+    } finally {
+      injecting = false
+    }
+  }
+
+  const ack = async (revision = state.lastRevision) => {
+    const response = await fetchImpl(endpoint(config, '/ack'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenFor(config)}`,
+      },
+      body: JSON.stringify({ revision }),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const body = await response.json()
+    state.ackedRevision = Number(body?.ackedRevision ?? revision)
+    return body
+  }
+
+  const handleEvent = async ({ id, event, data }) => {
+    state.lastEventAt = new Date().toISOString()
+    if (event === 'heartbeat') {
+      state.lastRevision = Number(id) || state.lastRevision
+      return
+    }
+    if (event !== 'panel') return
+    let panel
+    try {
+      panel = JSON.parse(data)
+    } catch {
+      state.lastError = 'invalid panel JSON'
+      return
+    }
+    state.lastRevision = Number(panel?.revision ?? id ?? 0)
+    if (Array.isArray(panel?.items) && panel.items.length === 0) {
+      pending = null
+      return
+    }
+    if (panel.revision > state.injectedRevision) {
+      pending = panel
+      await pump()
+    }
+  }
+
+  const scheduleReconnect = () => {
+    if (stopped) return
+    state.connection = 'retrying'
+    const delay = retryMs
+    retryMs = Math.min(Math.max(retryMs * 2, 1000), Number(config.reconnectMaxMs ?? 30000))
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      void connect()
+    }, delay)
+    retryTimer.unref?.()
+  }
+
+  const readStream = async (response) => {
+    const reader = response.body?.getReader?.()
+    if (!reader) throw new Error('SSE response body is not readable')
+    const decoder = new TextDecoder()
+    const parser = new SseParser((event) => { void handleEvent(event) })
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      parser.push(decoder.decode(value, { stream: true }))
+    }
+    parser.push(decoder.decode())
+  }
+
+  const connect = async () => {
+    if (stopped) return
+    state.connection = 'connecting'
+    abort = new AbortController()
+    try {
+      const response = await fetchImpl(endpoint(config, '/events'), {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${tokenFor(config)}`,
+          ...(state.lastRevision > 0 ? { 'Last-Event-ID': String(state.lastRevision) } : {}),
+        },
+        signal: abort.signal,
       })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      retryMs = Math.max(200, Number(config.reconnectMinMs ?? 1000))
+      state.connection = 'open'
+      state.lastError = null
+      await readStream(response)
+      if (!stopped) throw new Error('SSE stream ended')
+    } catch (error) {
+      if (!stopped) {
+        state.lastError = error?.name === 'AbortError' ? state.lastError : (error?.message ?? String(error))
+        scheduleReconnect()
+      }
     }
-    return injected
   }
 
-  const lastDelivery = (sessionId) => lastDeliveries.get(String(sessionId ?? ''))
-  const clearLast = (sessionId) => lastDeliveries.delete(String(sessionId ?? ''))
-  return { bind, unbind, get, list, pollAll, lastDelivery, clearLast,
-    clear: () => { bindings.clear(); lastDeliveries.clear() } }
+  const start = () => {
+    if (!stopped) return
+    stopped = false
+    pumpTimer = setInterval(() => { void pump() }, pumpMs)
+    pumpTimer.unref?.()
+    void connect()
+  }
+
+  const stop = () => {
+    stopped = true
+    abort?.abort()
+    abort = null
+    if (retryTimer) clearTimeout(retryTimer)
+    if (pumpTimer) clearInterval(pumpTimer)
+    retryTimer = null
+    pumpTimer = null
+    state.connection = 'closed'
+  }
+
+  if (config.sessionId) state.targetSessionId = String(config.sessionId)
+  return { start, stop, status, ack: (revision) => ack(revision), bind: (sessionId) => {
+    state.targetSessionId = String(sessionId ?? '').trim() || null
+    return status()
+  }, unbind: () => {
+    state.targetSessionId = null
+    return status()
+  }, connect }
 }
 
-
-/** DSH tool registry requires an explicit canonical output contract. */
 const OUTPUT = {
   schema: {
     type: 'object',
     properties: {
-      text: { type: 'string', description: 'Human-readable Inbox binding result.' },
+      text: { type: 'string', description: 'Human-readable Inbox status.' },
     },
     required: ['text'],
     additionalProperties: false,
@@ -167,123 +309,56 @@ const BIND_SCHEMA = {
   properties: {
     sessionId: {
       type: 'string',
-      description: 'Target DSH session id; defaults to the calling session.',
-    },
-    inboxId: { type: 'string', description: 'Inbox id, default bma3.' },
-    baseUrl: { type: 'string', description: 'Optional BMA3 Inbox API base URL.' },
-    tokenFile: { type: 'string', description: 'Optional absolute path to the 0600 Inbox token.' },
-    minPriority: {
-      type: 'integer',
-      description: 'Only wake for items at or above this priority; use 200 to ignore ordinary group traffic.',
-    },
-  },
-  additionalProperties: false,
-}
-
-const STATUS_SCHEMA = {
-  type: 'object',
-  properties: {
-    sessionId: {
-      type: 'string',
-      description: 'Optional session to inspect; omit to show the caller and all bindings.',
+      description: 'Target DSH session id for this one inbox panel; omit to use the calling session.',
     },
   },
   additionalProperties: false,
 }
 
 export function apply(ctx, config = {}) {
-  const registry = createBindingRegistry(ctx, config)
+  const client = createInboxClient(ctx, config)
   const tools = ctx?.tools ?? ctx?.get?.('tools')
   if (tools?.register) {
     const register = (definition) => ctx.effect(() => tools.register(definition))
     register({
       name: 'bma3_inbox_bind',
       description:
-        'Bind this DSH session (or an explicit sessionId) to a BMA3 Inbox. Nothing is bound by default; the Agent chooses whether to receive wake injections.',
+        'Set the DSH session that receives this inbox panel. There is one inbox SSE, not a subscription per source.',
       parameters: BIND_SCHEMA,
       output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
         const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
-        const binding = registry.bind({ ...args, sessionId: target })
-        return { text: `已绑定 ${binding.sessionId} 到 ${binding.inboxId} (${binding.baseUrl})` }
+        if (!target) throw new Error('sessionId 不能为空')
+        return { text: JSON.stringify(client.bind(target), null, 2) }
       },
     })
     register({
       name: 'bma3_inbox_unbind',
-      description: 'Remove the BMA3 Inbox wake binding for this session (or an explicit sessionId).',
-      parameters: STATUS_SCHEMA,
+      description: 'Clear the target DSH session; the inbox SSE connection stays available.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: OUTPUT,
-      execute: async (args = {}, exec = {}) => {
-        const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
-        const removed = registry.unbind(target)
-        return { text: removed ? `已解绑 ${target}` : `${target} 当前没有绑定` }
-      },
+      execute: async () => ({ text: JSON.stringify(client.unbind(), null, 2) }),
     })
     register({
       name: 'bma3_inbox_ack',
-      description:
-        'Ack the last BMA3 Inbox delivery injected into this session. The delivery id stays internal; the Agent never has to maintain it.',
+      description: 'Advance the Inbox panel read cursor to the current revision.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: OUTPUT,
-      execute: async (_args = {}, exec = {}) => {
-        const target = String(exec.agent?.id ?? '').trim()
-        const last = registry.lastDelivery(target)
-        if (!last) {
-          return { text: `${target} 当前没有待 ack 的 delivery` }
-        }
-        const url = `${last.baseUrl}/v1/inboxes/${encodeURIComponent(last.inboxId)}`
-          + `/deliveries/${encodeURIComponent(last.deliveryId)}/ack`
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${tokenFor(last)}`,
-          },
-          body: '{}',
-        })
-        if (!response.ok) {
-          throw new Error(`bma3 inbox ack: HTTP ${response.status}`)
-        }
-        const body = await response.json()
-        registry.clearLast(target)
-        return { text: JSON.stringify(body) }
-      },
+      execute: async () => ({ text: JSON.stringify(await client.ack(), null, 2) }),
     })
     register({
       name: 'bma3_inbox_status',
       description:
-        'Read BMA3 Inbox bindings without exposing tokens: whether the caller is bound and the list of bound sessions.',
-      parameters: STATUS_SCHEMA,
+        'Read the one-inbox SSE connection and panel cursor without exposing tokens.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: OUTPUT,
-      execute: async (args = {}, exec = {}) => {
-        const caller = String(exec.agent?.id ?? '')
-        const target = String(args.sessionId ?? caller).trim()
-        const current = registry.get(target)
-        const all = registry.list()
-        return {
-          text: JSON.stringify({
-            sessionId: target,
-            bound: current !== undefined,
-            current: current ?? null,
-            bindings: all,
-          }, null, 2),
-        }
-      },
+      execute: async () => ({ text: JSON.stringify(client.status(), null, 2) }),
     })
   }
 
   if (config.autoStart !== false) {
-    const intervalMs = Math.max(200, Number(config.intervalMs ?? 1000))
-    const timer = setInterval(() => {
-      registry.pollAll().catch(() => {
-        // Service may be starting; the next tick retries.
-      })
-    }, intervalMs)
-    timer.unref?.()
-    ctx?.effect?.(() => () => {
-      clearInterval(timer)
-      registry.clear()
-    })
+    client.start()
+    ctx?.effect?.(() => () => client.stop())
   }
-  return registry
+  return client
 }

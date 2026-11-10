@@ -6,6 +6,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.mosire.bma3.inbox.core.Delivery;
+import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -81,6 +82,22 @@ public final class InboxHttpServer implements AutoCloseable {
                 send(exchange, 200, mapper.writeValueAsString(service.status()));
                 return;
             }
+            if ("panel".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
+                send(exchange, 200, mapper.writeValueAsString(service.panel()));
+                return;
+            }
+            if ("events".equals(parts[4]) && parts.length == 5
+                    && "GET".equals(exchange.getRequestMethod())) {
+                streamEvents(exchange);
+                return;
+            }
+            if ("ack".equals(parts[4]) && parts.length == 5
+                    && "POST".equals(exchange.getRequestMethod())) {
+                long requested = requestedRevision(exchange);
+                send(exchange, 200, mapper.writeValueAsString(
+                        requested < 0 ? service.ackPanel() : service.ackPanel(requested)));
+                return;
+            }
             if ("items".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
                 send(exchange, 200, mapper.writeValueAsString(service.list()));
                 return;
@@ -107,6 +124,72 @@ public final class InboxHttpServer implements AutoCloseable {
         } finally {
             exchange.close();
         }
+    }
+
+    /**
+     * One SSE stream per inbox. The event id is the panel revision; a reconnect always gets a
+     * fresh bounded snapshot, so a missed event cannot hide messages.
+     */
+    private void streamEvents(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.getResponseHeaders().set("Connection", "keep-alive");
+        exchange.getResponseHeaders().set("X-Accel-Buffering", "no");
+        exchange.sendResponseHeaders(200, 0);
+        OutputStream output = exchange.getResponseBody();
+        long last = parseRevision(exchange.getRequestHeaders().getFirst("Last-Event-ID"));
+        try {
+            InboxPanel snapshot = service.panel();
+            writeEvent(output, "panel", snapshot.revision(), mapper.writeValueAsString(snapshot));
+            last = Math.max(last, snapshot.revision());
+            while (!Thread.currentThread().isInterrupted()) {
+                InboxPanel next = service.awaitPanel(last, java.time.Duration.ofSeconds(15));
+                if (next == null) {
+                    writeEvent(output, "heartbeat", last,
+                            "{\"revision\":" + last + "}");
+                    continue;
+                }
+                writeEvent(output, "panel", next.revision(), mapper.writeValueAsString(next));
+                last = Math.max(last, next.revision());
+            }
+        } catch (IOException disconnected) {
+            // Client closed the SSE; the panel itself is unaffected.
+        } finally {
+            exchange.close();
+        }
+    }
+
+    private static void writeEvent(OutputStream output, String event, long id, String data)
+            throws IOException {
+        String frame = "id: " + id + "\n"
+                + "event: " + event + "\n"
+                + "data: " + data + "\n\n";
+        output.write(frame.getBytes(StandardCharsets.UTF_8));
+        output.flush();
+    }
+
+    private static long parseRevision(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    /** Reads the optional ack revision; -1 means "ack the current panel". */
+    private long requestedRevision(HttpExchange exchange) throws IOException {
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        if (body.length == 0) {
+            return -1L;
+        }
+        var node = mapper.readTree(body);
+        if (!node.has("revision")) {
+            return -1L;
+        }
+        return node.path("revision").asLong(-1L);
     }
 
     private Instant now(HttpExchange exchange) throws IOException {

@@ -59,7 +59,11 @@ public final class OneBot11Codec {
                 case "text" -> data.path("text").asText("");
                 case "reply" -> data.path("id").asText("");
                 case "at" -> data.path("qq").asText("");
-                case "image" -> data.path("url").asText(data.path("file").asText("[image]"));
+                case "image" -> "[图片]";
+                case "file" -> "[文件]";
+                case "record" -> "[语音]";
+                case "video" -> "[视频]";
+                case "forward" -> "[合并转发]";
                 default -> data.path("text").asText("[" + type + "]");
             };
             segments.add(new Segment(type, text));

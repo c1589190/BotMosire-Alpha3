@@ -1,18 +1,19 @@
 import { apply as applyInbox } from './lib/inbox.js'
 import { apply as applyPersona } from './lib/persona.js'
 import { apply as applyPreset } from './lib/preset.js'
+import { apply as applySelf } from './lib/self.js'
 
 /** Cordis must provide these services before apply() touches ctx.tools/ctx.agents. */
-export const inject = ['tools', 'agents']
+export const inject = ['tools', 'agents', 'systemPrompt']
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bma3-dsh'
 
 /** Components the package can mount. */
-export const MODULES = Object.freeze(['inbox', 'persona', 'preset'])
+export const MODULES = Object.freeze(['inbox', 'persona', 'preset', 'self'])
 
 /**
- * One package, three independent loader rows. `inbox` failure must not prevent the role prompt
+ * One package, four modules. `self` is mounted inside the BMA3 preset; `persona` is legacy. `inbox` failure must not prevent the role prompt
  * or tool preset from mounting; each module resolves only the services it needs.
  *
  * @param {any} ctx Cordis context.
@@ -30,6 +31,10 @@ export function apply(ctx, config = {}) {
   }
   if (module === 'preset') {
     applyPreset(ctx, config)
+    return
+  }
+  if (module === 'self') {
+    applySelf(ctx, config)
     return
   }
   const logger = ctx?.logger?.('bma3-dsh')

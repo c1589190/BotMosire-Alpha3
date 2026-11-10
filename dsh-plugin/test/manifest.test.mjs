@@ -10,6 +10,7 @@ test('manifest exposes one bundle with three loader rows', async () => {
   assert.ok(pkg.exports['./inbox'])
   assert.ok(pkg.exports['./persona'])
   assert.ok(pkg.exports['./preset'])
+  assert.ok(pkg.exports['./self'])
 
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(patch, /bma3-inbox/)

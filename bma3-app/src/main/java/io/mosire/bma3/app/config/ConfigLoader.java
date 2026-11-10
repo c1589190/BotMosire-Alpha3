@@ -45,6 +45,10 @@ public final class ConfigLoader {
             return config;
         } catch (IOException failure) {
             throw new ConfigException("config", "读取失败: " + failure.getMessage());
+        } catch (ConfigException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new ConfigException("config", failure.getMessage());
         }
     }
 
@@ -105,18 +109,30 @@ public final class ConfigLoader {
         }
 
         JsonNode inbox = node.path("inbox");
+        JsonNode inboxDisplay = inbox.path("display");
+        JsonNode send = node.path("qqconnect").path("send");
         JsonNode webconnect = node.path("webconnect");
         List<String> allowedHosts = new ArrayList<>();
         for (JsonNode host : webconnect.path("allowedHosts")) {
             allowedHosts.add(host.asText());
         }
         JsonNode weighting = node.path("weighting");
+        JsonNode signals = weighting.path("signals");
         JsonNode logging = node.path("logging");
         return new AppConfig(
                 Path.of(dataDir),
                 serverConfig,
-                new AppConfig.QqConnect(accounts),
-                new AppConfig.Inbox(text(inbox, "inboxId", "bma3"), integer(inbox, "httpPort", 46500)),
+                new AppConfig.QqConnect(accounts,
+                        new AppConfig.QqConnect.Send(
+                                integer(send, "maxTextChars", 3000),
+                                text(send, "overflow", "reject"))),
+                new AppConfig.Inbox(
+                        text(inbox, "inboxId", "bma3"),
+                        integer(inbox, "httpPort", 46500),
+                        new AppConfig.Inbox.Display(
+                                integer(inboxDisplay, "maxMessagesPerItem", 6),
+                                integer(inboxDisplay, "maxItemsPerPanel", 6),
+                                inboxDisplay.path("includeOmittedCount").asBoolean(true))),
                 new AppConfig.Webconnect(webconnect.path("enabled").asBoolean(false),
                         text(webconnect, "binary", "/snap/bin/chromium"),
                         webconnect.path("headless").asBoolean(true),
@@ -126,7 +142,13 @@ public final class ConfigLoader {
                         integer(weighting, "groupSourceWeight", 0),
                         integer(weighting, "notifyThreshold", 200),
                         integer(weighting, "normalDelaySeconds", 30),
-                        integer(weighting, "importantDelaySeconds", 1)),
+                        integer(weighting, "importantDelaySeconds", 1),
+                        integerMap(weighting.path("platformWeights")),
+                        new AppConfig.Weighting.SignalWeights(
+                                integer(signals, "mention", 300),
+                                integer(signals, "reply", 300),
+                                integer(signals, "name", 200),
+                                integer(signals, "command", 300))),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 
@@ -143,6 +165,15 @@ public final class ConfigLoader {
         }
         matcher.appendTail(output);
         return output.toString();
+    }
+
+    private static java.util.Map<String, Integer> integerMap(JsonNode node) {
+        if (!node.isObject()) {
+            return null;
+        }
+        java.util.Map<String, Integer> values = new java.util.LinkedHashMap<>();
+        node.fields().forEachRemaining(entry -> values.put(entry.getKey(), entry.getValue().asInt()));
+        return values;
     }
 
     private static String text(JsonNode node, String field, String fallback) {

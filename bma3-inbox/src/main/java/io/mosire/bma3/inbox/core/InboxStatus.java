@@ -7,5 +7,12 @@ public record InboxStatus(
         int acked,
         int undelivered,
         int remaining,
-        int remainingImportant) {
+        int remainingImportant,
+        long panelRevision,
+        long ackedRevision,
+        int unread) {
+
+    public int remaining() {
+        return available + delivered;
+    }
 }

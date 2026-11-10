@@ -1,0 +1,206 @@
+import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { test } from 'node:test'
+
+import { apply } from '../lib/self.js'
+
+function workspace() {
+  return mkdtempSync(path.join(tmpdir(), 'bma3-self-'))
+}
+
+function fakeHarness(cwd, names) {
+  const sections = []
+  const restrictions = []
+  const tools = []
+  let onCreated
+  const listeners = new Map()
+  const agentCtx = {
+    systemPrompt: {
+      section(section) {
+        sections.push(section)
+        return () => {}
+      },
+      getSectionOrder() {
+        return 0
+      },
+    },
+    tools: {
+      definitions() {
+        return names.map((name) => ({ name }))
+      },
+      restrict(filter) {
+        restrictions.push(filter)
+        return () => {}
+      },
+      register(definition) {
+        tools.push(definition)
+        return () => {}
+      },
+    },
+    effect(fn) {
+      return fn()
+    },
+    on(event, fn) {
+      listeners.set(event, fn)
+      return () => {}
+    },
+  }
+  const ctx = {
+    on(event, fn) {
+      if (event === 'agent/created') onCreated = fn
+      return () => {}
+    },
+  }
+  const agent = { session: { header: { cwd } }, ctx: agentCtx }
+  apply(ctx)
+  return {
+    agent,
+    sections,
+    restrictions,
+    tools,
+    listeners,
+    async created() {
+      await onCreated({ agent })
+    },
+  }
+}
+
+const GLOBAL_NAMES = [
+  'mcp_connector_catalog',
+  'mcp_probe',
+  'mcp__bma3__inbox_list',
+  'mcp__bma3__qq_thread_list',
+  'mcp__bma3__qq_conversation_send',
+  'bash',
+  'read_image',
+  'subagent',
+  'subagent_fork',
+  'send_message',
+  'interrupt_agent',
+  'list_agents',
+  'unrelated_tool',
+]
+
+test('loads systemprompt.md dynamically and keeps the persona section scoped', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '第一版人设')
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+
+  assert.equal(h.sections.length, 1)
+  assert.equal(h.sections[0].name, 'deployment:persona-prefix')
+  assert.equal(h.sections[0].complete, false)
+  assert.equal(h.sections[0].interpolate, false)
+  assert.equal(h.sections[0].text(), '第一版人设')
+
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '第二版人设，长度不同')
+  assert.equal(h.sections[0].text(), '第二版人设，长度不同')
+})
+
+test('default groups include MCP, bma3, terminal, image and subagent; lock survives config edits', async () => {
+  const cwd = workspace()
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+
+  const first = h.restrictions.at(-1)
+  assert.ok(first, 'tool restriction was applied')
+  for (const name of [
+    'mcp_connector_catalog',
+    'mcp_probe',
+    'mcp__bma3__inbox_list',
+    'mcp__bma3__qq_thread_list',
+    'mcp__bma3__qq_conversation_send',
+    'bash',
+    'read_image',
+    'subagent',
+    'subagent_fork',
+    'send_message',
+    'interrupt_agent',
+    'list_agents',
+  ]) {
+    assert.ok(first.allow.includes(name), `default group should include ${name}`)
+  }
+  assert.ok(!first.allow.includes('unrelated_tool'))
+
+  writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
+    schemaVersion: 1,
+    defaultTools: [],
+  }))
+  const reload = h.tools.find((tool) => tool.name === 'bma3_self_reload')
+  assert.ok(reload, 'self reload tool is registered')
+  await reload.execute({}, {})
+
+  const locked = h.restrictions.at(-1)
+  assert.deepEqual(locked.allow, ['bash', 'read_image'])
+})
+
+test('invalid agentconfig falls back to defaults without failing agent creation', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'agentconfig.json'), '{not-json')
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+
+  const allow = h.restrictions.at(-1).allow
+  assert.ok(allow.includes('mcp_connector_catalog'))
+  assert.ok(allow.includes('mcp__bma3__inbox_list'))
+  assert.ok(allow.includes('bash'))
+  assert.ok(allow.includes('read_image'))
+
+  const status = h.tools.find((tool) => tool.name === 'bma3_self_status')
+  const result = await status.execute({}, {})
+  assert.match(result.text, /配置读取失败/)
+})
+
+test('reload re-applies a changed default group and reports status', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
+    schemaVersion: 1,
+    defaultTools: ['bma3_core'],
+  }))
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+
+  let allow = h.restrictions.at(-1).allow
+  assert.ok(allow.includes('mcp__bma3__inbox_list'))
+  assert.ok(allow.includes('bash'))
+  assert.ok(allow.includes('read_image'))
+  assert.ok(!allow.includes('mcp_connector_catalog'))
+  assert.ok(!allow.includes('subagent'))
+
+  writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
+    schemaVersion: 1,
+    defaultTools: ['mcp_admin', 'subagent'],
+  }))
+  const reload = h.tools.find((tool) => tool.name === 'bma3_self_reload')
+  const result = await reload.execute({}, {})
+  allow = h.restrictions.at(-1).allow
+  assert.ok(allow.includes('mcp_connector_catalog'))
+  assert.ok(allow.includes('subagent'))
+  assert.ok(allow.includes('bash'))
+  assert.ok(allow.includes('read_image'))
+  assert.ok(!allow.includes('mcp__bma3__inbox_list'))
+  assert.equal(JSON.parse(result.text).ok, true)
+})
+
+
+test('reload remounts the persona section when complete mode changes', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
+    schemaVersion: 1,
+    prompt: { complete: true },
+  }))
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+  assert.equal(h.sections[0].complete, true)
+
+  writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
+    schemaVersion: 1,
+    prompt: { complete: false },
+  }))
+  const reload = h.tools.find((tool) => tool.name === 'bma3_self_reload')
+  await reload.execute({}, {})
+  assert.equal(h.sections.length, 2)
+  assert.equal(h.sections[1].complete, false)
+})

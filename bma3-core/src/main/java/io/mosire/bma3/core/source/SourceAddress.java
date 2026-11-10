@@ -40,6 +40,27 @@ public record SourceAddress(String value) {
         return List.copyOf(Arrays.asList(tokens).subList(1, tokens.length));
     }
 
+    /** Alias for adapter code: everything after the platform, opaque to the Inbox. */
+    public List<String> route() {
+        return segments();
+    }
+
+    /** Last route token, useful for a generic display fallback. */
+    public String lastSegment() {
+        List<String> segments = segments();
+        return segments.isEmpty() ? "" : segments.getLast();
+    }
+
+    public boolean isPlatform(String candidate) {
+        return platform().equals(candidate);
+    }
+
+    /** Generic fallback used when no adapter labeler is registered. */
+    public String displayFallback() {
+        String last = lastSegment();
+        return last.isBlank() ? platform() : platform() + " · " + last;
+    }
+
     private String[] tokens() {
         return value.split("/", -1);
     }

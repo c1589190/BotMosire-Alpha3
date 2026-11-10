@@ -42,10 +42,32 @@ public record AppConfig(
         }
     }
 
-    public record QqConnect(List<Account> accounts) {
+    public record QqConnect(List<Account> accounts, Send send) {
 
         public QqConnect {
             accounts = accounts == null ? List.of() : List.copyOf(accounts);
+            send = send == null ? Send.defaults() : send;
+        }
+
+        public QqConnect(List<Account> accounts) {
+            this(accounts, Send.defaults());
+        }
+
+        public record Send(int maxTextChars, String overflow) {
+
+            public Send {
+                overflow = overflow == null || overflow.isBlank() ? "reject" : overflow;
+                if (maxTextChars < 1 || maxTextChars > 3000) {
+                    throw new IllegalArgumentException("qqconnect.send.maxTextChars 必须在 1..3000");
+                }
+                if (!"reject".equals(overflow) && !"split".equals(overflow)) {
+                    throw new IllegalArgumentException("qqconnect.send.overflow 必须是 reject/split");
+                }
+            }
+
+            public static Send defaults() {
+                return new Send(3000, "reject");
+            }
         }
     }
 
@@ -66,12 +88,15 @@ public record AppConfig(
     }
 
     /**
-     * Last iibot priority model: source weight decides the priority level; signals are
-     * diagnostics only. Normal messages wait; important messages use the short delay.
+     * Generic priority model: platform defaults plus per-source weight/threshold, user note
+     * and adapter signals. Signals are no longer diagnostics-only; they can break the
+     * default group silence (for example an @ mention).
      */
     public record Weighting(int privateSourceWeight, int groupSourceWeight,
                             int notifyThreshold, long normalDelaySeconds,
-                            long importantDelaySeconds) {
+                            long importantDelaySeconds,
+                            java.util.Map<String, Integer> platformWeights,
+                            SignalWeights signals) {
 
         public Weighting {
             if (privateSourceWeight < -1000 || privateSourceWeight > 1000
@@ -83,21 +108,81 @@ public record AppConfig(
                     || importantDelaySeconds < 0 || importantDelaySeconds > 600) {
                 throw new IllegalArgumentException("weighting 延迟必须在 0..600 秒");
             }
+            java.util.Map<String, Integer> weights = new java.util.LinkedHashMap<>();
+            if (platformWeights != null) {
+                platformWeights.forEach((platform, weight) -> {
+                    if (platform == null || platform.isBlank()
+                            || weight == null || weight < -1000 || weight > 1000) {
+                        throw new IllegalArgumentException("weighting.platformWeights 非法: " + platform);
+                    }
+                    weights.put(platform, weight);
+                });
+            }
+            weights.putIfAbsent("qq_private", privateSourceWeight);
+            weights.putIfAbsent("qq_group", groupSourceWeight);
+            platformWeights = java.util.Map.copyOf(weights);
+            signals = signals == null ? SignalWeights.defaults() : signals;
+        }
+
+        public Weighting(int privateSourceWeight, int groupSourceWeight,
+                         int notifyThreshold, long normalDelaySeconds,
+                         long importantDelaySeconds) {
+            this(privateSourceWeight, groupSourceWeight, notifyThreshold,
+                    normalDelaySeconds, importantDelaySeconds, null, null);
         }
 
         public static Weighting defaults() {
             return new Weighting(300, 0, 200, 30, 1);
         }
+
+        public int platformWeight(String platform) {
+            return platformWeights.getOrDefault(platform, 0);
+        }
+
+        public record SignalWeights(int mention, int reply, int name, int command) {
+
+            public SignalWeights {
+                if (mention < 0 || reply < 0 || name < 0 || command < 0) {
+                    throw new IllegalArgumentException("weighting.signals 不能为负");
+                }
+            }
+
+            public static SignalWeights defaults() {
+                return new SignalWeights(300, 300, 200, 300);
+            }
+        }
     }
 
-    public record Inbox(String inboxId, int httpPort) {
+    public record Inbox(String inboxId, int httpPort, Display display) {
 
         public Inbox {
             inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
+            display = display == null ? Display.defaults() : display;
+        }
+
+        public Inbox(String inboxId, int httpPort) {
+            this(inboxId, httpPort, Display.defaults());
         }
 
         public static Inbox defaults() {
-            return new Inbox("bma3", 46500);
+            return new Inbox("bma3", 46500, Display.defaults());
+        }
+
+        public record Display(int maxMessagesPerItem, int maxItemsPerPanel,
+                              boolean includeOmittedCount) {
+
+            public Display {
+                if (maxMessagesPerItem < 4 || maxMessagesPerItem > 8) {
+                    throw new IllegalArgumentException("inbox.display.maxMessagesPerItem 必须在 4..8");
+                }
+                if (maxItemsPerPanel < 4 || maxItemsPerPanel > 8) {
+                    throw new IllegalArgumentException("inbox.display.maxItemsPerPanel 必须在 4..8");
+                }
+            }
+
+            public static Display defaults() {
+                return new Display(6, 6, true);
+            }
         }
     }
 

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "prompt": {
+    "complete": false,
+    "maxBytes": 32768
+  },
+  "defaultTools": [
+    "mcp_admin",
+    "bma3_core",
+    "terminal",
+    "image",
+    "subagent"
+  ]
+}

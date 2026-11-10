@@ -1,16 +1,15 @@
-# STATUS —— 更新时间：2026-11-09 20:24 (UTC+8)
+# STATUS —— 更新时间：2026-11-10 21:25 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-1. **Plan 1 + webconnect 已实现**：Java 21 独立服务、core SQLite 消息板、AgentLib MCP、OneBot 11 正向 WS、账号热插拔、QQ AgentTools、Inbox、app、DSH 薄插件、jpackage；另加 Selenium/系统 Chromium 的 `browser_*` 工具。
-2. **进行中**：webconnect 实测收尾；真实 LLBot/DSH/systemd 联调仍待授权。
-3. **未开始（后续 Plan）**：B 站登录/私信/视频工具、Linux 桌面控制、Web 管理面。
+1. **Inbox 总面板 / SSE / 通用来源 / 通用优先级 / 发送硬限**：Java 侧已实现，DSH 插件已切到单 SSE 注入；Mock/回环测试 PASS。
+2. **未完成验收**：真实 QQ/LLBot、真实 DSH 宿主加载、systemd 常驻、SSE 长连接断开重连实测均 `NOT_RUN`。
+3. **人设**：2026-11-10 已实现 DSH 插件侧 `self` loader：工作区 `systemprompt.md` 动态 section、`agentconfig.json` 默认工具组、`bma3_self_status/reload`；preset 组合固定 terminal/read_image，spawn 子 Agent 走 `minimal`。Mock/fake 测试 PASS；真实 DSH preset 激活/远端 `NOT_RUN`。
 
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`（从 `main` 的 `2ecc94a` 起）。
-- 产品代码：`bma3-core` / `bma3-agentlib` / `bma3-qqconnect` / `bma3-inbox` / `bma3-webconnect` / `bma3-app`；DSH 插件在 `dsh-plugin/`；打包脚本在 `packaging/`。Plan 1 + webconnect 在 `feat/bma3-plan-1`。
+- 分支：`feat/bma3-plan-1`；HEAD：`53b13a1`（本轮改动未提交，工作树 dirty）。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`；未 push。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
@@ -18,64 +17,56 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Maven 全量测试 | `./mvnw -q test` | **PASS**：16 suites / 31 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 默认跳过，2026-11-09 21:00） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：5 tests / 0 fail（2026-11-09 20:05） |
-| jpackage smoke | `bash packaging/smoke.sh` | **PASS**：app-image 启动，`/healthz` 200（2026-11-09 20:24，含 Selenium 依赖） |
-| 文档相对链接 | 一次性 Python 链接检查 | **PASS**：checked=47 / missing=0 / rc=0（2026-11-09 20:05） |
+| Java 全量测试 | `./mvnw -q test` | **PASS**：19 suites / 50 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke 跳过，2026-11-10 20:49） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：13 tests / 0 fail（2026-11-10 21:25） |
+| 离线打包 | `./mvnw -o -q -pl bma3-app -am package -DskipTests` | **PASS**：`bma3-app/target/bma3-app-0.0.2.jar` 53MB，含 AgentLib 0.2.5 |
+| packaging/smoke.sh | — | `NOT_RUN`（本轮未重跑） |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
-| 真实 DSH 宿主加载 | — | `NOT_RUN` |
-| systemd 实际安装/开机常驻 | — | `NOT_RUN`（只跑 `install.sh --dry-run`） |
-| 邻居项目测试复跑 | — | `NOT_RUN`（只读调查，未构建） |
+| 真实 DSH 宿主加载 / SSE 长连接 / BMA3 preset 激活 | — | `NOT_RUN` |
+| systemd 实际安装/开机常驻 | — | `NOT_RUN` |
 
 ## 当前有效设计 / 维护入口
 
-- 设计裁定：D-001..D-008（[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)）。
-- 设计基线：[`../superpowers/specs/2026-11-09-bma3-foundation-design.md`](../superpowers/specs/2026-11-09-bma3-foundation-design.md)。
-- 实施计划：[`../superpowers/plans/2026-11-09-bma3-foundation-plan.md`](../superpowers/plans/2026-11-09-bma3-foundation-plan.md)（Task 1..13 已执行）。
-- 文档系统：[`../AGENTS.md`](../AGENTS.md)。
-- 继承调查：[`../superpowers/reports/2026-11-09-neighbor-DevMosire-iiBot-survey.md`](../superpowers/reports/2026-11-09-neighbor-DevMosire-iiBot-survey.md)。
-- Bot 工作流前置调查：[`../superpowers/reports/2026-11-09-bot-workflow-design-survey.md`](../superpowers/reports/2026-11-09-bot-workflow-design-survey.md)。
-- AgentLib 变更需求：[`../upstream/agentlib-change-requests.md`](../upstream/agentlib-change-requests.md)。
+- 专题设计：[`../superpowers/specs/2026-11-10-inbox-panel-sse-design.md`](../superpowers/specs/2026-11-10-inbox-panel-sse-design.md)。
+- 设计裁定：D-009..D-016（[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)）。
+- 维护裁定：M-002（[`MAINTENANCE_RULINGS.md`](MAINTENANCE_RULINGS.md)）。
+- 实施计划：[`../superpowers/plans/2026-11-10-inbox-panel-sse-plan.md`](../superpowers/plans/2026-11-10-inbox-panel-sse-plan.md)。
+- 事故复核：[`../superpowers/reports/2026-11-10-remote-bma3-incident-investigation.md`](../superpowers/reports/2026-11-10-remote-bma3-incident-investigation.md)。
+- B 站复用调查：[`../superpowers/reports/2026-11-10-dsh-bili-whale-investigation.md`](../superpowers/reports/2026-11-10-dsh-bili-whale-investigation.md)（结论：只复用其 `tools/` CLI，不装其 DSH 插件；B 站范围/Node 依赖/写策略待用户裁定）。
+- 人设自加载调查：[`../superpowers/reports/2026-11-10-persona-self-reload-investigation.md`](../superpowers/reports/2026-11-10-persona-self-reload-investigation.md)（结论：静态 preset + `agent/created` 动态 `systemPrompt.section`；默认工具组由 preset 组合提供，子 Agent 用 `minimal`；权限面归 DSH；preset 首轮后不可切换）。
 
 ## 已实现的关键行为
 
-- `qqconnect`：单正向 WS、token header、事件/动作同连接、账号 registry 热插拔（增删/换 endpoint 只影响对应账号）、QQ read/send/ack 工具；新增 `qq_conversation_send_image`，图片限定在 data 目录下、≤8MB、以 `base64://` 发送，适合把二维码截图发给用户扫。
-- `inbox`：单 inbox `available → delivered → acked`、重试/`undelivered`、delivery ack、HTTP status/items/due/ack、`inbox_status/list/ack` 工具。
-- `app`：加载 `config/app.yaml`、校验、Bearer MCP、health、Inbox HTTP、ConfigWatcher 对 QQ 账号做 reconcile；fake OneBot → 消息板 → Inbox → MCP read/ack/send 集成测试通过。
-- `webconnect`：Selenium + 系统 Chromium，`browser_open/snapshot/click/type/text/screenshot/browser_video_frames`；B 站已通过扫码完成登录（重启后 profile 仍保持），视频 `BV1EPnG6DEJC` 真实抽帧成功（duration=890s）；`browser_video_frames` 已进 MCP。
-- DSH：一个 npm 包三个 loader row（inbox/persona/preset），独立配置/失败域；未接真实 DSH。
-- 打包：jlink + jpackage app-image、tar + SHA256、用户级 systemd unit 安装骨架；未实际安装 systemd。
+- **Inbox 总面板**：一个 inbox 一条 SSE；source 只是面板条目，没有 per-source 订阅/lease；`InboxService` 的 append/due/ack 已串行化。
+- **有界窗口**：每个 item 只保留最近 N 条 entry（N=4..8，默认 6），panel 只取 priority 最高的前 M 个 item（M=4..8，默认 6）；`includeOmittedCount` 控制省略计数；旧 `summary` 不再无限增长。
+- **SSE**：`GET /v1/inboxes/{inbox}/events`，snapshot/panel/heartbeat，`Last-Event-ID`；`POST /ack` 推进面板读游标，不阻塞新事件。
+- **通用来源**：`SourceAddress` + `SourceView` + `SourceLabeler`/`SourceLabels`；QQ labeler 输出 `QQ群 955...`/`QQ私聊 366...`；未知平台回退 `platform · 最后一段`；Inbox 不 switch 平台。
+- **通用优先级**：`PriorityResolver` = platform 默认权重 + per-source weight/threshold + 用户备注 + mention/command 信号（reply/name 接口保留但未实现，标 `NOT_RUN`）；群内 @ 可突破群默认静音。
+- **关系摘要**：`InboxEntry` 带 `[@qq]`/`[引用 #id]`/`[图片]`/`[合并转发]` 等 marker；图片 URL/rkey 不再进新消息正文；wake 不写“去看 history”。
+- **发送硬限**：`QqSendSupport` 统一出口；`maxTextChars` 默认 3000、可配置；按 code point 计数；reject/split；`qq_conversation_send` 也走统一出口。
+- **配置热重载**：`inbox.display.*`、`qqconnect.send.*`、`weighting.platformWeights/signals` 由 `ConfigWatcher` 更新 `RuntimePolicy`；非法配置保留 last-known-good。
+- **DSH 插件**：`lib/inbox.js` 改成单 SSE 客户端；启动自动连接、断线 backoff、目标会话可选、注入成功后自动 ack、状态含 connection/lastRevision/lastError。
+- **人设/工具面**：`lib/self.js` 在 `agent/created` 注册 `deployment:persona-prefix` 动态 section（每步按 mtime/size 读 `systemprompt.md`）；`agentconfig.json` 解析 `mcp_admin`/`bma3_core`/`terminal`/`image`/`subagent` 默认组并 apply tool restriction；`bma3_self_status/reload` 为 scoped tools；`bash`/`pwsh`/`read_image` 由 preset composition 固定，agentconfig 无 lock 字段。
 
 ## 未验证 / 风险 / blocker
 
-- **未验证**：真实 LLBot 连接、真实 QQ 收发、真实 DSH 插件加载/followup、systemd 开机常驻均 `NOT_RUN`。
-- **未验证**：AgentLib P0（HTTP MCP 认证钩子、source 批量注册、取消）未合并；当前用单条 `register`、`Bma3McpServer` Bearer 包装、工具内超时兜住。
-- **限制**：`ConfigWatcher` 当前只对 QQ 账号做 reconcile；server 端口/路径、MCP/Inbox token、日志级别不会热切换。
-- **限制**：`OneBot11Client` 暂无自动重连；断线后需要下一次 `reconcile`/配置变更触发重连。
-- **限制**：DSH 插件未接真实宿主；`lib/inbox.js` 以轮询 due 方式工作，未做 SSE/occupancy。
-- **限制**：Selenium 需要匹配 ChromeDriver；本机通过 `BMA3_CHROMEDRIVER` 指定，Selenium Manager 自动下载曾非常慢。
-- **限制**：Snap Chromium 无法读取 `/tmp` 页面/配置；浏览器 profile 必须放 home 下（本机已验证）。
-- **限制**：B 站已登录成功；私信/评论/视频播放控制未做。
-- **已确认**：B 站登录 profile 在 app 重启后保持（同一 `data/browser` 目录）；本次 live MCP 工具共 15 个。
-- **0.0.1-hotfix1**：QQ 工具面从 5 个扩到 21 个（账号诊断、thread/recent/history/message、reply/private send、user note、source weight、group/friend 目录），Inbox+浏览器合计 31 个 MCP 工具；用户备注/来源权重已接入 ingest priority。
-- **AgentLib**：已迁移到 `agentlib-mosire 0.2.5`，使用 `ToolRegistry.registerAll(sourceId, tools)` 原子注册；native Bearer/TLS 面尚未替换现有回环代理。源码构建依赖本地安装的 AgentLib 0.2.5。
-- **易用性差距**：已完成只读调查，见 [`iibot 易用性差距报告`](../superpowers/reports/2026-11-09-iibot-usability-gap.md)；会话导航、用户备注、来源权重、账号诊断、reply/分片等仍是缺口。
-- **Inbox 注入格式**：wake 是 `[INBOX_HOST_EVENT]` 的有界通知（preview 800 chars），完整内容只存服务端；不再把整段 delivery.text 注入。
-- **Inbox 注入格式细节**：已按 iibot 推送契约（D-002/D-015）改为服务端按 thread 维护 active item，`text` 为单条服务端拼接文本（`[HH:mm] #seq sender：body`），插件原样注入，不再加 `[BMA3 Inbox]` 包装或 delivery 元数据；新增 `bma3_inbox_ack`，deliveryId 只在插件内部保存。
-- **Inbox 优先级**：按 iibot 最后一版：`priority = max(来源权重, 人级备注)`；私聊 300 / 群 0 / 阈值 200；重要 1s、普通 30s 延迟；同一批只注入最高 priority，私聊唤醒不再混入普通群消息。当前 BMA3 未实现人级备注，先把来源权重与阈值/延迟对齐。
-- **DSH 注入实测**：`@mosire/bma3-dsh` 已 link 进 `web` profile 并绑定当前 `session-50ec...`；插件已加载并轮询 BMA3 Inbox。发现未 ack 的旧 delivery 会阻塞新 delivery；ack 后新 delivery 正常生成。`tokenFile` 支持已加入插件。
-- **限制**：普通群消息（priority < 200）只进消息板，不进 Inbox、不唤醒；绑定另支持 `minPriority` 过滤。
-- **已修**：DSH 插件不再写死 `sessionId`，默认不绑定；新增 `bma3_inbox_bind` / `bma3_inbox_unbind` / `bma3_inbox_status`，由 Agent 显式绑定当前 `agent.id`。插件测试 7/7。DSH 需重启一次加载新插件代码。
-- **风险**：加入 Selenium 后 `bma3-app` app-image 约 109 MB（tar 85 MB）；JVM + jlink + Selenium 比 Go/Node 重。
-- **限制**：webconnect 只做公开页浏览/点击/截图；B 站登录、私信、视频播放工具未做。
-- **限制**：Chromium 点击新标签页需要 300ms 切换；本机已加，但只做了首页/热门页实测。
-- **blocker**：无硬阻塞；下一步是真实 LLBot/DSH 验收，或继续做 B 站登录/私信工具。
+- **真实联调**：SSE + DSH 宿主 + 真实 QQ 面板注入、自动 ack、断线重连均 `NOT_RUN`；不能把 fake/回环测试写成真实验收。
+- **旧数据迁移**：`inbox_item` 新列/`inbox_meta` 已做 additive migration；旧 `summary` 行不会自动进入新面板（`event_revision=0`），需要手动清理/ack 或等新消息覆盖；远端 7 个巨型 item 的处置未执行。
+- **信号缺口**：reply-to-bot 需要出站外显 message_id 索引；name 需要 bot 昵称；QQ 首版只做 mention/command。
+- **WS 重连/readiness 未改**：`OneBot11Client`/`AccountRegistry` 还没有自动重连与真实连接状态；P1-6 仍开放。
+- **旧图片 URL 未清洗**：新消息不再把 image URL 写进正文，但旧 `bot.db` 的 105 条 URL 仍在；需要单独迁移/清洗。
+- **多消费者**：ack 游标是单面板全局的；多 DSH 会话同时连同一 inbox 需要 per-consumer 游标，未做。
+- **平台 adapter**：B 站/微信只有 source/label/priority 通用接口，实际 adapter 未实现；B 站复用调查已完成，但未写 spec/代码。
+- **人设**：插件侧实现完成，`npm test` 13/13；真实 DSH 会话中 BMA3 preset 注册、Agent 创建读取 `systemprompt.md`、tool restriction 实际生效、minimal 子 Agent 工具面均 `NOT_RUN`；本机 web profile 的 `bma3-preset` 仍 disabled。
+- **远端部署**：本机 jar 可构建，但远端替换路径/权限未提供；未 push/commit。bma3 MCP/Inbox 都只绑回环，跨机 DSH 不能直连；同机部署或 SSH 隧道。`bma3-dsh` 插件自带 `bma3_inbox_bind/ack/status`（HTTP/SSE），但 `inbox_list`/`qq_*` 等完整工具仍需 MCP client（`dsh-mcp-connector` 是管理/配置层，实际 transport 由 `@deepseek-ai/dsh-mcp-client` 提供）。
 
 ## 下一步
 
-1. 在授权后启动真实 LLBot，验证连接/收发/热插拔；在 DSH 测试 profile 安装 `dsh-plugin` 验证三 row。
-2. 真实 systemd 安装/重启验收。
-3. 之后做 B 站登录/私信/视频工具。
+1. 用临时 `config/app.yaml` 启动真实 bma3 + 真实 LLBot/DSH，验证 SSE snapshot/panel、注入文本、自动 ack、断线重连；结果写证据。
+2. 备份远端 `inbox.db`/`bot.db`，再部署新 jar；旧 7 个巨型 item 先手动清理/ack，不直接恢复唤醒。
+3. 真实联调通过后，再做 persona spec（用户暂缓）。
+4. 若用户确认 B 站方向：先写 Bili CLI sidecar spec（只读/事件/写分层、隔离环境、owner-only 边界），再实现；未确认前不写 B 站产品代码。
+5. 人设实测：在临时 DSH profile 启用 `bma3-preset`，选择 BMA3，创建会话验证 `systemprompt.md` 首轮读取、改文件下一步生效、`agentconfig.json` 默认组、`bash/read_image` 不可被 config 删除、`subagent` 走 `minimal`；远端同样验证。
 
 ```bash
 git status --short --branch

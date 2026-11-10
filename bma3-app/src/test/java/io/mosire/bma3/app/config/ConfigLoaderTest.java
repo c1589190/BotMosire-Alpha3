@@ -24,6 +24,11 @@ class ConfigLoaderTest {
         assertThat(config.server().port()).isEqualTo(8765);
         assertThat(config.server().mcpPath()).isEqualTo("/mcp");
         assertThat(config.inbox().inboxId()).isEqualTo("bma3");
+        assertThat(config.inbox().display().maxMessagesPerItem()).isEqualTo(6);
+        assertThat(config.inbox().display().maxItemsPerPanel()).isEqualTo(6);
+        assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(3000);
+        assertThat(config.weighting().platformWeight("qq_private")).isEqualTo(300);
+        assertThat(config.weighting().platformWeight("bilibili")).isZero();
         assertThat(config.logging().level()).isEqualTo("INFO");
     }
 
@@ -41,6 +46,63 @@ class ConfigLoaderTest {
 
         assertThat(config.dataDir()).isEqualTo(Path.of("/srv/bma3"));
         assertThat(config.server().tokenEnv()).isEqualTo("BMA3_TEST_TOKEN");
+    }
+
+    @Test
+    void parsesDisplaySendAndPlatformWeights() throws Exception {
+        writeConfig("""
+                inbox:
+                  display:
+                    maxMessagesPerItem: 4
+                    maxItemsPerPanel: 8
+                    includeOmittedCount: false
+                qqconnect:
+                  send:
+                    maxTextChars: 2800
+                    overflow: split
+                weighting:
+                  platformWeights:
+                    qq_group: 50
+                    bilibili: 120
+                  signals:
+                    mention: 250
+                """);
+
+        AppConfig config = ConfigLoader.load(tempDir);
+        assertThat(config.inbox().display().maxMessagesPerItem()).isEqualTo(4);
+        assertThat(config.inbox().display().maxItemsPerPanel()).isEqualTo(8);
+        assertThat(config.inbox().display().includeOmittedCount()).isFalse();
+        assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(2800);
+        assertThat(config.qqconnect().send().overflow()).isEqualTo("split");
+        assertThat(config.weighting().platformWeight("qq_group")).isEqualTo(50);
+        assertThat(config.weighting().platformWeight("bilibili")).isEqualTo(120);
+        assertThat(config.weighting().signals().mention()).isEqualTo(250);
+    }
+
+    @Test
+    void rejectsInvalidDisplayRange() throws Exception {
+        writeConfig("""
+                inbox:
+                  display:
+                    maxMessagesPerItem: 2
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(tempDir))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("maxMessagesPerItem");
+    }
+
+    @Test
+    void rejectsInvalidSendLimit() throws Exception {
+        writeConfig("""
+                qqconnect:
+                  send:
+                    maxTextChars: 4000
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(tempDir))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("maxTextChars");
     }
 
     @Test

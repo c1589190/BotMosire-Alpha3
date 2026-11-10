@@ -23,6 +23,16 @@ public interface InboxStore extends AutoCloseable {
 
     List<Delivery> deliveries();
 
+    /** Monotonic panel revision, persisted across restarts. */
+    long panelRevision();
+
+    void savePanelRevision(long revision);
+
+    /** Last panel revision acknowledged by the Agent. */
+    long ackedRevision();
+
+    void saveAckedRevision(long revision);
+
     @Override
     void close();
 }

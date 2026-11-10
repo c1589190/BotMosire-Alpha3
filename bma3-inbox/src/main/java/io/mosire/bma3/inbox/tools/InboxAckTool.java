@@ -7,7 +7,7 @@ import io.mosire.bma3.inbox.core.InboxService;
 import java.util.List;
 import java.util.Map;
 
-/** Acknowledges one delivery and closes its covered items. */
+/** Advances the panel read cursor, or acknowledges a legacy delivery by id. */
 public final class InboxAckTool implements AgentTool {
 
     private final InboxService service;
@@ -23,25 +23,25 @@ public final class InboxAckTool implements AgentTool {
 
     @Override
     public String description() {
-        return "确认一条已处理的 delivery；幂等，重复 ack 不报错。";
+        return "推进 Inbox 面板读游标；可选 deliveryId 用于兼容旧 delivery。";
     }
 
     @Override
     public Map<String, Object> jsonSchema() {
         return Map.of("type", "object", "properties", Map.of(
-                "deliveryId", Map.of("type", "string")), "required", List.of("deliveryId"));
+                "deliveryId", Map.of("type", "string")));
     }
 
     @Override
     public ToolResult execute(ToolContext context) {
         Object raw = context.arguments().get("deliveryId");
-        if (!(raw instanceof String deliveryId) || deliveryId.isBlank()) {
-            return ToolResult.error("INVALID_ARGUMENT", "deliveryId 不能为空");
+        if (raw instanceof String deliveryId && !deliveryId.isBlank()) {
+            try {
+                return InboxTools.json(service.ack(deliveryId));
+            } catch (IllegalArgumentException failure) {
+                return ToolResult.error("DELIVERY_NOT_FOUND", "delivery 不存在: " + deliveryId);
+            }
         }
-        try {
-            return InboxTools.json(service.ack(deliveryId));
-        } catch (IllegalArgumentException failure) {
-            return ToolResult.error("DELIVERY_NOT_FOUND", "delivery 不存在: " + deliveryId);
-        }
+        return InboxTools.json(service.ackPanel());
     }
 }

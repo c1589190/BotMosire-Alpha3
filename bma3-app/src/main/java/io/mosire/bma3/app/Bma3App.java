@@ -9,8 +9,14 @@ import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.source.SourceAddress;
 import io.mosire.bma3.core.store.AppendResult;
 import io.mosire.bma3.core.store.SqliteMessageBoardStore;
+import io.mosire.bma3.app.priority.PriorityDecision;
+import io.mosire.bma3.app.priority.PriorityResolver;
+import io.mosire.bma3.core.priority.PrioritySignals;
+import io.mosire.bma3.core.source.SourceLabels;
+import io.mosire.bma3.core.source.SourceView;
 import io.mosire.bma3.inbox.core.AppendItem;
 import io.mosire.bma3.inbox.core.DeliveryPolicy;
+import io.mosire.bma3.inbox.core.InboxEntry;
 import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.SqliteInboxStore;
 import io.mosire.bma3.inbox.http.InboxHttpServer;
@@ -21,6 +27,9 @@ import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
 import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqExtrasStore;
+import io.mosire.bma3.qqconnect.tools.QqSendPolicy;
+import io.mosire.bma3.qqconnect.tools.QqSignalExtractor;
+import io.mosire.bma3.qqconnect.tools.QqSourceLabeler;
 import io.mosire.bma3.qqconnect.tools.QqTools;
 import io.mosire.bma3.webconnect.BrowserOptions;
 import io.mosire.bma3.webconnect.BrowserService;
@@ -29,13 +38,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Composition root for the one BMA3 service process. */
 public final class Bma3App implements AutoCloseable {
@@ -94,19 +101,28 @@ public final class Bma3App implements AutoCloseable {
         SqliteInboxStore inboxStore = new SqliteInboxStore(
                 config.dataDir().resolve("inbox.db"));
         AppConfig.Weighting weighting = config.weighting();
+        AtomicReference<io.mosire.bma3.app.config.RuntimePolicy> runtime =
+                new AtomicReference<>(io.mosire.bma3.app.config.RuntimePolicy.from(config));
+        SourceLabels sourceLabels = SourceLabels.builder()
+                .register(new QqSourceLabeler()).build();
+        PriorityResolver priorities = new PriorityResolver(() -> runtime.get().weighting());
         DeliveryPolicy deliveryPolicy = new DeliveryPolicy(
                 weighting.notifyThreshold(),
                 Duration.ofSeconds(weighting.importantDelaySeconds()),
                 Duration.ofSeconds(weighting.normalDelaySeconds()),
                 Duration.ofMinutes(10), 3);
-        InboxService inboxService = new InboxService(inboxStore, deliveryPolicy);
+        InboxService inboxService = new InboxService(
+                inboxStore, deliveryPolicy, config.inbox().inboxId(),
+                () -> runtime.get().display().maxMessagesPerItem(),
+                () -> runtime.get().display().maxItemsPerPanel(),
+                () -> runtime.get().display().includeOmittedCount());
         HealthServer health = new HealthServer();
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), mcpToken, inboxService);
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
         AccountRegistry accounts = new AccountRegistry(
-                event -> ingest(board, inboxService, weighting, qqExtras, event));
+                event -> ingest(board, inboxService, priorities, qqExtras, sourceLabels, event));
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
@@ -114,12 +130,18 @@ public final class Bma3App implements AutoCloseable {
             inboxHttp.start();
             List<AccountConfig> resolved = resolveAccounts(config, env);
             accounts.reconcile(resolved);
-            watcher = ConfigWatcher.watch(configRoot, env,
-                    next -> accounts.reconcile(resolveAccounts(next, env)));
+            watcher = ConfigWatcher.watch(configRoot, env, next -> {
+                accounts.reconcile(resolveAccounts(next, env));
+                runtime.set(io.mosire.bma3.app.config.RuntimePolicy.from(next));
+            });
 
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(new QqToolContext(
-                    accounts, board, board, config.dataDir(), qqExtras)));
+                    accounts, board, board, config.dataDir(), qqExtras,
+                    () -> {
+                        var send = runtime.get().send();
+                        return QqSendPolicy.from(send.maxTextChars(), send.overflow());
+                    })));
             tools.addAll(InboxTools.all(inboxService));
             if (config.webconnect().enabled()) {
                 browser = new BrowserService(new BrowserOptions(
@@ -132,7 +154,7 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.1-hotfix1", tools);
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.2", tools);
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, qqExtras, watcher);
@@ -157,10 +179,11 @@ public final class Bma3App implements AutoCloseable {
     }
 
     private static void ingest(SqliteMessageBoardStore board, InboxService inboxService,
-                               AppConfig.Weighting weighting, QqExtrasStore extras,
-                               AccountEvent accountEvent) {
+                               PriorityResolver priorities, QqExtrasStore extras,
+                               SourceLabels sourceLabels, AccountEvent accountEvent) {
         OneBotEvent event = accountEvent.event();
         SourceAddress source = event.source(accountEvent.accountId());
+        SourceView view = sourceLabels.view(source);
         AppendResult appended = board.append(new InboundMessage(
                 source,
                 Long.toString(event.messageId()),
@@ -170,70 +193,57 @@ public final class Bma3App implements AutoCloseable {
         if (!appended.created()) {
             return;
         }
-        String summary = renderLine(event, appended.message().localSeq(), extras,
-                source.accountId());
-        boolean privateChat = "qq_private".equals(source.platform());
-        int priority = privateChat
-                ? weighting.privateSourceWeight() : weighting.groupSourceWeight();
         var sourcePolicy = extras.sourceWeight(source.format()).orElse(null);
-        if (sourcePolicy != null) {
-            priority = sourcePolicy.weight();
-        }
         var note = extras.note(source.accountId(), Long.toString(event.userId())).orElse(null);
-        if (note != null) {
-            priority = Math.max(priority, note.priority());
-        }
-        if (!privateChat && priority < weighting.notifyThreshold()) {
-            // Keep ordinary group traffic on the message board; it must not wake a session.
-            // Group wake needs an explicit source policy/user-note priority above the threshold.
+        PrioritySignals signals = QqSignalExtractor.signals(event);
+        PriorityDecision decision = priorities.resolve(
+                view.platform(),
+                sourcePolicy == null ? null : sourcePolicy.weight(),
+                sourcePolicy == null ? null : sourcePolicy.notifyThreshold(),
+                note == null ? null : note.priority(),
+                signals);
+        if (!decision.notified()) {
+            // Ordinary traffic stays on the message board; only notify-worthy items enter the panel.
             return;
         }
-        // The Inbox delivery policy applies the important/normal delay from priority;
-        // availableAt stays the raw arrival time so the delay is not applied twice.
-        inboxService.appendOrMerge(new AppendItem(source.format(), summary, priority, Instant.now()));
+        InboxEntry entry = entry(event, appended.message().localSeq(), note);
+        inboxService.appendOrMerge(AppendItem.of(view, entry, decision.priority(), Instant.now()));
     }
 
-    private static String renderLine(OneBotEvent event, long localSeq,
-                                    QqExtrasStore extras, String accountId) {
-        var when = event.at().atZone(ZoneId.systemDefault());
-        String stamp = when.toLocalDate().equals(LocalDate.now(ZoneId.systemDefault()))
-                ? when.format(DateTimeFormatter.ofPattern("HH:mm"))
-                : when.format(DateTimeFormatter.ofPattern("MM-dd HH:mm"));
+    private static InboxEntry entry(OneBotEvent event, long localSeq,
+                                    QqExtrasStore.UserNote note) {
         String sender = event.senderName() == null || event.senderName().isBlank()
                 ? Long.toString(event.userId()) : event.senderName();
-        var note = extras.note(accountId, Long.toString(event.userId())).orElse(null);
         if (note != null && !note.displayName().isBlank()) {
             sender = note.displayName();
         }
-        String qualifier = "";
-        if (note != null && !note.tags().isEmpty()) {
-            qualifier = "（" + note.tags().stream().map(tag -> "#" + tag)
-                    .reduce((a, b) -> a + " " + b).orElse("") + "）";
-        }
-        String body = event.text().isBlank() ? segmentsText(event) : event.text();
-        return "[" + stamp + "] #" + localSeq + " " + sender + qualifier + "：" + body;
-    }
-
-    private static String segmentsText(OneBotEvent event) {
-        StringBuilder text = new StringBuilder();
+        StringBuilder body = new StringBuilder();
+        List<String> markers = new ArrayList<>();
         for (var segment : event.segments()) {
-            String rendered = switch (segment.type()) {
-                case "image" -> "[图片]";
-                case "file" -> "[文件]";
-                case "record" -> "[语音]";
-                case "video" -> "[视频]";
-                case "at" -> segment.text() == null || segment.text().isBlank()
-                        ? "[@]" : "[@" + segment.text() + "]";
-                default -> segment.text() == null ? "" : segment.text();
-            };
-            if (!rendered.isBlank()) {
-                if (text.length() > 0) {
-                    text.append(' ');
+            String type = segment.type();
+            if ("text".equals(type)) {
+                if (segment.text() != null && !segment.text().isBlank()) {
+                    if (body.length() > 0) {
+                        body.append('\n');
+                    }
+                    body.append(segment.text());
                 }
-                text.append(rendered);
+                continue;
+            }
+            switch (type) {
+                case "at" -> markers.add(segment.text() == null || segment.text().isBlank()
+                        ? "[@]" : "[@" + segment.text() + "]");
+                case "reply" -> markers.add(segment.text() == null || segment.text().isBlank()
+                        ? "[引用]" : "[引用 #" + segment.text() + "]");
+                case "image" -> markers.add("[图片]");
+                case "file" -> markers.add("[文件]");
+                case "record" -> markers.add("[语音]");
+                case "video" -> markers.add("[视频]");
+                case "forward" -> markers.add("[合并转发]");
+                default -> markers.add("[" + type + "]");
             }
         }
-        return text.isEmpty() ? "[非文本消息]" : text.toString();
+        return new InboxEntry(localSeq, event.at(), sender, body.toString(), markers);
     }
 
     private static List<AccountConfig> resolveAccounts(AppConfig config,
@@ -290,6 +300,9 @@ public final class Bma3App implements AutoCloseable {
         accounts.close();
         if (mcp != null) {
             mcp.close();
+        }
+        if (inboxService != null) {
+            inboxService.close();
         }
         inboxHttp.close();
         health.close();

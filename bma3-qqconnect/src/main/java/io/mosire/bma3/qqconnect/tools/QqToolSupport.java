@@ -161,6 +161,9 @@ final class QqToolSupport {
         if (message.startsWith("ACCOUNT_NOT_FOUND:")) {
             return ToolResult.error("ACCOUNT_NOT_FOUND", message);
         }
+        if (message.startsWith("TEXT_TOO_LONG:")) {
+            return ToolResult.error("TEXT_TOO_LONG", message);
+        }
         return ToolResult.error("INVALID_ARGUMENT", message);
     }
 

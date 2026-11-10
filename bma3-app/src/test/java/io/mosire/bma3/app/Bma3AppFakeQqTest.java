@@ -99,7 +99,7 @@ class Bma3AppFakeQqTest {
                     "qq_conversation_send",
                     Map.of("source", "qq_private/bot-1/20002", "text", "reply")));
             assertThat(sent.isError()).isFalse();
-            assertThat(mapper.readTree(text(sent)).path("state").asText()).isEqualTo("SENT");
+            assertThat(mapper.readTree(text(sent)).get(0).path("state").asText()).isEqualTo("SENT");
         } finally {
             if (mcp != null) {
                 mcp.closeGracefully();
@@ -107,6 +107,59 @@ class Bma3AppFakeQqTest {
             if (app != null) {
                 app.close();
             }
+            oneBot.stop();
+        }
+    }
+
+    @Test
+    void groupMentionEntersTheBoundedPanelWithRelationMarkers() throws Exception {
+        FakeOneBotServer oneBot = new FakeOneBotServer();
+        oneBot.start();
+        oneBot.awaitStarted(Duration.ofSeconds(3));
+        Bma3App app = null;
+        try {
+            AppConfig config = new AppConfig(
+                    tempDir,
+                    new AppConfig.Server("127.0.0.1", 0, "/mcp", "BMA3_TEST_TOKEN"),
+                    new AppConfig.QqConnect(List.of(new AppConfig.Account(
+                            "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
+                    new AppConfig.Inbox("bma3", 0),
+                    AppConfig.Webconnect.defaults(),
+                    new AppConfig.Weighting(300, 0, 200, 30, 1,
+                            java.util.Map.of("qq_private", 300, "qq_group", 0),
+                            new AppConfig.Weighting.SignalWeights(300, 300, 200, 300)),
+                    new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
+            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
+
+            oneBot.send("""
+                    {"post_type":"message","message_type":"group","self_id":10001,
+                     "group_id":955432692,"user_id":20002,"message_id":9002,
+                     "time":1762700001,
+                     "message":[
+                       {"type":"at","data":{"qq":"10001"}},
+                       {"type":"text","data":{"text":"欢迎回来？"}},
+                       {"type":"reply","data":{"id":"8000"}},
+                       {"type":"image","data":{"url":"https://multimedia.nt.qq.com.cn/download?rkey=SECRET"}}
+                     ],
+                     "sender":{"nickname":"LvtN"}}
+                    """);
+
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (app.inboxService().panel().items().isEmpty()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            var panel = app.inboxService().panel();
+            assertThat(panel.items()).hasSize(1);
+            var item = panel.items().getFirst();
+            assertThat(item.sourceLabel()).isEqualTo("QQ群 955432692");
+            assertThat(item.priority()).isEqualTo(300);
+            String line = item.entries().getLast().line();
+            assertThat(line).contains("LvtN").contains("欢迎回来？")
+                    .contains("[@10001]").contains("[引用 #8000]").contains("[图片]");
+            assertThat(line).doesNotContain("multimedia.nt.qq.com.cn").doesNotContain("rkey");
+        } finally {
+            if (app != null) app.close();
             oneBot.stop();
         }
     }

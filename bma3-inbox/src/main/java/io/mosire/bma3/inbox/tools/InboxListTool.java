@@ -6,7 +6,7 @@ import io.mosire.agentlib.tool.ToolResult;
 import io.mosire.bma3.inbox.core.InboxService;
 import java.util.Map;
 
-/** Lists compact inbox items; full content stays in the message board. */
+/** Returns the bounded aggregate panel; full content stays in the message board. */
 public final class InboxListTool implements AgentTool {
 
     private final InboxService service;
@@ -22,7 +22,7 @@ public final class InboxListTool implements AgentTool {
 
     @Override
     public String description() {
-        return "列出当前 Inbox 的未完成条目（source/summary/priority/status），不含正文。";
+        return "返回 Inbox 总面板：最多 top M 个来源窗口，每个窗口最近 N 条消息；完整正文在消息板。";
     }
 
     @Override
@@ -32,6 +32,6 @@ public final class InboxListTool implements AgentTool {
 
     @Override
     public ToolResult execute(ToolContext context) {
-        return InboxTools.json(service.list());
+        return InboxTools.json(service.panel());
     }
 }

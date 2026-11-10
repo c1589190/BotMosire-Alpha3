@@ -30,6 +30,28 @@ class SourceAddressTest {
     }
 
     @Test
+    void acceptsGenericPlatformRoutes() {
+        SourceAddress bili = SourceAddress.parse("bilibili/12345");
+        assertThat(bili.platform()).isEqualTo("bilibili");
+        assertThat(bili.accountId()).isEmpty();
+        assertThat(bili.route()).containsExactly("12345");
+        assertThat(bili.lastSegment()).isEqualTo("12345");
+
+        SourceAddress wechat = SourceAddress.parse("wechat/acct-1/chat-9");
+        assertThat(wechat.platform()).isEqualTo("wechat");
+        assertThat(wechat.accountId()).isEqualTo("acct-1");
+        assertThat(wechat.route()).containsExactly("acct-1", "chat-9");
+    }
+
+    @Test
+    void sourceLabelsFallBackForUnknownPlatforms() {
+        SourceLabels labels = SourceLabels.empty();
+        SourceAddress bili = SourceAddress.parse("bilibili/12345");
+        assertThat(labels.label(bili)).isEqualTo("bilibili · 12345");
+        assertThat(labels.view(bili).label()).isEqualTo("bilibili · 12345");
+    }
+
+    @Test
     void rejectsMalformedAddresses() {
         assertThatThrownBy(() -> SourceAddress.parse(null))
                 .isInstanceOf(IllegalArgumentException.class);

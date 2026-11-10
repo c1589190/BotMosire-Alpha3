@@ -1,107 +1,146 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { apply, pollOnce, wakeText } from '../lib/inbox.js'
+import { apply, createInboxClient, renderPanel, SseParser } from '../lib/inbox.js'
 
-test('wakeText is a bounded notification, not the full content', () => {
-  const text = wakeText({ id: 'dlv-1', text: 'hello\nworld', itemIds: ['itm-1'] })
-  assert.match(text, /^\[INBOX_HOST_EVENT\]/)
-  assert.match(text, /inbox=bma3 items=1 important=false/)
-  assert.match(text, /hello world/)
-  const long = wakeText({ id: 'dlv-2', text: 'x'.repeat(5000), itemIds: ['itm-1'] })
-  assert.ok(long.length < 1200)
-  assert.match(long, /已截断/)
+test('renderPanel shows bounded windows, source labels and relation markers', () => {
+  const text = renderPanel({
+    inboxId: 'bma3',
+    revision: 42,
+    totalItems: 3,
+    omittedItems: 1,
+    items: [
+      {
+        source: 'qq_group/bot-1/955432692',
+        sourceLabel: 'QQ群 955432692',
+        priority: 300,
+        totalMessages: 128,
+        omittedMessages: 122,
+        entries: [
+          { line: '[20:08] #101 LvtN：欢迎回来？ [@3924945183] [图片]' },
+        ],
+      },
+    ],
+  })
+  assert.match(text, /^\[INBOX_PANEL\] inbox=bma3 rev=42 unread=3 items=1\/3/)
+  assert.match(text, /\[QQ群 955432692\] priority=300 total=128 shown=1/)
+  assert.match(text, /\[@3924945183\]/)
+  assert.match(text, /\[图片\]/)
+  assert.match(text, /省略 122 条/)
+  assert.match(text, /另有 1 个来源未显示/)
+  assert.doesNotMatch(text, /history|完整内容在服务端|请调用 inbox_list/)
 })
 
-test('no session is bound until the bind tool is called', async () => {
+test('SseParser handles frames split across chunks', () => {
+  const events = []
+  const parser = new SseParser((event) => events.push(event))
+  parser.push('id: 7\nevent: panel\ndata: {"rev')
+  parser.push('ision":7}\n\nid: 8\nevent: heartbeat\ndata: {"revision":8}\n\n')
+  assert.equal(events.length, 2)
+  assert.equal(events[0].event, 'panel')
+  assert.equal(events[0].id, '7')
+  assert.deepEqual(JSON.parse(events[0].data), { revision: 7 })
+  assert.equal(events[1].event, 'heartbeat')
+})
+
+test('apply exposes one-panel tools and does not leak the token', async () => {
   const definitions = []
   const ctx = {
     tools: { register: (definition) => { definitions.push(definition); return () => {} } },
     effect: (callback) => callback(),
     agents: { get: () => undefined, list: () => [] },
   }
-  const registry = apply(ctx, {
+  const calls = []
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init })
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { ackedRevision: 42 } },
+    }
+  }
+  const client = apply(ctx, {
     autoStart: false,
     baseUrl: 'http://127.0.0.1:18766',
     inboxId: 'bma3',
+    token: 'secret-token',
+    fetchImpl,
   })
-  assert.equal(registry.list().length, 0)
   assert.deepEqual(definitions.map((definition) => definition.name).sort(), [
     'bma3_inbox_ack', 'bma3_inbox_bind', 'bma3_inbox_status', 'bma3_inbox_unbind',
   ])
-
   const bind = definitions.find((definition) => definition.name === 'bma3_inbox_bind')
-  const unbind = definitions.find((definition) => definition.name === 'bma3_inbox_unbind')
-  const status = definitions.find((definition) => definition.name === 'bma3_inbox_status')
   await bind.execute({}, { agent: { id: 'session-1' } })
-  assert.equal(registry.list().length, 1)
-  assert.equal(registry.list()[0].sessionId, 'session-1')
-  const state = JSON.parse((await status.execute({}, { agent: { id: 'session-1' } })).text)
-  assert.equal(state.bound, true)
-  await unbind.execute({}, { agent: { id: 'session-1' } })
-  assert.equal(registry.list().length, 0)
+  assert.equal(client.status().targetSessionId, 'session-1')
+
+  const ack = definitions.find((definition) => definition.name === 'bma3_inbox_ack')
+  const result = await ack.execute({}, { agent: { id: 'session-1' } })
+  assert.equal(JSON.parse(result.text).ackedRevision, 42)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].url, /\/v1\/inboxes\/bma3\/ack$/)
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-token')
+  assert.doesNotMatch(JSON.stringify(client.status()), /secret-token/)
 })
 
-test('a busy session is not woken and does not consume a delivery', async () => {
-  const agent = { id: 'session-1', status: 'active', followup: () => { throw new Error('must not wake') } }
-  const ctx = { agents: { get: () => agent, list: () => [agent] } }
-  let fetched = false
-  const count = await pollOnce({
-    ctx,
-    config: { baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', sessionId: 'session-1' },
-    fetchImpl: async () => { fetched = true; return { ok: true, json: async () => [] } },
-  })
-  assert.equal(count, 0)
-  assert.equal(fetched, false)
-})
 
-test('pollOnce injects each due delivery into an idle agent', async () => {
-  const calls = []
+test('one SSE panel wakes an idle agent and advances the cursor', async () => {
+  const messages = []
   const agent = {
     id: 'session-1',
     status: 'idle',
-    followup(message) {
-      calls.push(message)
-    },
+    followup(message) { messages.push(message) },
   }
-  const ctx = {
-    agents: {
-      list: () => [agent],
-      get: (id) => (id === agent.id ? agent : undefined),
-    },
-  }
-  const fetchImpl = async (url, init) => {
-    assert.match(url, /\/deliveries\/due$/)
-    assert.equal(init.headers.Authorization, 'Bearer test-token')
-    return {
-      ok: true,
-      async json() {
-        return [
-          { id: 'dlv-1', text: 'first' },
-          { id: 'dlv-2', text: 'second' },
-        ]
-      },
+  const ctx = { agents: { get: () => agent, list: () => [agent] } }
+  let controller
+  let ackCalls = 0
+  const body = new ReadableStream({
+    start(next) { controller = next },
+  })
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/events')) {
+      return { ok: true, status: 200, body }
     }
+    if (url.endsWith('/ack')) {
+      ackCalls += 1
+      return { ok: true, status: 200, json: async () => ({ ackedRevision: 7 }) }
+    }
+    throw new Error(`unexpected URL ${url}`)
   }
-
-  process.env.BMA3_TEST_INBOX_TOKEN = 'test-token'
-  let count
+  const client = createInboxClient(ctx, {
+    baseUrl: 'http://127.0.0.1:18766',
+    inboxId: 'bma3',
+    token: 'secret',
+    fetchImpl,
+    pumpMs: 10,
+  })
   try {
-    count = await pollOnce({
-      ctx,
-      config: {
-        baseUrl: 'http://127.0.0.1:46500',
+    client.start()
+    controller.enqueue(new TextEncoder().encode(
+      'id: 7\nevent: panel\ndata: ' + JSON.stringify({
         inboxId: 'bma3',
-        tokenEnv: 'BMA3_TEST_INBOX_TOKEN',
-      },
-      fetchImpl,
-    })
+        revision: 7,
+        totalItems: 1,
+        includeOmittedCount: true,
+        items: [{
+          source: 'qq_group/bot-1/955432692',
+          sourceLabel: 'QQ群 955432692',
+          priority: 300,
+          totalMessages: 2,
+          omittedMessages: 0,
+          entries: [{ line: '[20:08] #101 LvtN：欢迎回来？ [@3924945183]' }],
+        }],
+      }) + '\n\n'))
+    const deadline = Date.now() + 2000
+    while (messages.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(messages.length, 1)
+    assert.match(messages[0].content[0].text, /^\[INBOX_PANEL\]/)
+    assert.match(messages[0].content[0].text, /QQ群 955432692/)
+    assert.match(messages[0].content[0].text, /\[@3924945183\]/)
+    assert.equal(ackCalls, 1)
   } finally {
-    delete process.env.BMA3_TEST_INBOX_TOKEN
+    client.stop()
+    controller.close()
   }
-
-  assert.equal(count, 2)
-  assert.equal(calls.length, 2)
-  assert.match(calls[0].content[0].text, /first/)
-  assert.equal(calls[0].source.deliveryId, 'dlv-1')
 })

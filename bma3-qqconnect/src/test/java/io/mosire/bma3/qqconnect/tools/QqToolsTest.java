@@ -102,7 +102,7 @@ class QqToolsTest {
             ToolResult sent = tool(tools, "qq_conversation_send").execute(
                     call(Map.of("source", source.format(), "text", "reply")));
             assertThat(sent.success()).isTrue();
-            assertThat(mapper.readTree(sent.message()).path("state").asText()).isEqualTo("SENT");
+            assertThat(mapper.readTree(sent.message()).get(0).path("state").asText()).isEqualTo("SENT");
             assertThat(client.sentAction).isEqualTo("send_private_msg");
             assertThat(client.sentParams.path("user_id").asLong()).isEqualTo(20002L);
 
@@ -129,8 +129,31 @@ class QqToolsTest {
             ToolResult unknown = tool(tools, "qq_conversation_send").execute(
                     call(Map.of("source", source.format(), "text", "reply-2")));
             assertThat(unknown.success()).isTrue();
-            assertThat(mapper.readTree(unknown.message()).path("state").asText())
+            assertThat(mapper.readTree(unknown.message()).get(0).path("state").asText())
                     .isEqualTo("UNKNOWN");
+
+            client.failure = null;
+            client.response = mapper.readTree("""
+                    {"status":"ok","retcode":0,"data":{"message_id":778}}
+                    """);
+            ToolResult exactLimit = tool(tools, "qq_conversation_send").execute(
+                    call(Map.of("source", source.format(), "text", "😀".repeat(3000))));
+            assertThat(exactLimit.success()).isTrue();
+            assertThat(mapper.readTree(exactLimit.message()).get(0).path("state").asText())
+                    .isEqualTo("SENT");
+
+            ToolResult tooLong = tool(tools, "qq_conversation_send").execute(
+                    call(Map.of("source", source.format(), "text", "😀".repeat(3001))));
+            assertThat(tooLong.success()).isFalse();
+            assertThat(tooLong.code()).isEqualTo("TEXT_TOO_LONG");
+
+            Path qrText = tempDir.resolve("qr-text.png");
+            Files.write(qrText, new byte[]{(byte) 0x89, 'P', 'N', 'G'});
+            ToolResult imageTooLong = tool(tools, "qq_conversation_send_image").execute(
+                    call(Map.of("source", source.format(), "imagePath", qrText.toString(),
+                            "text", "x".repeat(3001))));
+            assertThat(imageTooLong.success()).isFalse();
+            assertThat(imageTooLong.code()).isEqualTo("TEXT_TOO_LONG");
 
             ToolResult mismatch = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", "qq_private/bot-2/20002")));

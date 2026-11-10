@@ -72,6 +72,7 @@ public final class QqConversationSendImageTool implements AgentTool {
                 throw new IllegalArgumentException("INVALID_ARGUMENT: 图片大小必须在 1B..8MB");
             }
             String text = text(toolContext);
+            QqSendSupport.validateText(text, context);
             String encoded = "base64://" + Base64.getEncoder().encodeToString(Files.readAllBytes(image));
             List<Map<String, Object>> message = new ArrayList<>();
             if (!text.isBlank()) {

@@ -25,7 +25,7 @@ public final class QqReplyTool implements AgentTool {
 
     @Override
     public String description() {
-        return "在已有 source 中引用回复一条 QQ 消息；超长文本按 2000 字切片。";
+        return "在已有 source 中引用回复一条 QQ 消息；超长文本按配置上限切片。";
     }
 
     @Override

@@ -12,18 +12,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** Shared outbound send path with 2000-char chunking and the three-state result. */
+/** Shared outbound text path: configured hard limit, chunking and three-state results. */
 final class QqSendSupport {
-
-    static final int MAX_TEXT = 2000;
 
     private QqSendSupport() {
     }
 
     static String sendText(QqToolContext context, SourceAddress source, String text,
                            String replyToMessageId, String actionName) {
+        QqSendPolicy policy = context.policy();
+        List<String> chunks = chunks(text, policy);
         OneBot11Client client = QqToolSupport.client(context, source);
-        List<String> chunks = chunks(text);
         StringBuilder states = new StringBuilder("[");
         for (int index = 0; index < chunks.size(); index++) {
             String chunk = chunks.get(index);
@@ -71,10 +70,32 @@ final class QqSendSupport {
         return states.toString();
     }
 
-    private static List<String> chunks(String text) {
+    static void validateText(String text, QqToolContext context) {
+        QqSendPolicy policy = context.policy();
+        int count = text == null ? 0 : text.codePointCount(0, text.length());
+        if (count > policy.maxTextChars()) {
+            throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
+                    + " max=" + policy.maxTextChars());
+        }
+    }
+
+    static List<String> chunks(String text, QqSendPolicy policy) {
+        String value = text == null ? "" : text;
+        int count = value.codePointCount(0, value.length());
+        if (count <= policy.maxTextChars()) {
+            return List.of(value);
+        }
+        if ("reject".equals(policy.overflow())) {
+            throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
+                    + " max=" + policy.maxTextChars());
+        }
         List<String> chunks = new ArrayList<>();
-        for (int start = 0; start < text.length(); start += MAX_TEXT) {
-            chunks.add(text.substring(start, Math.min(text.length(), start + MAX_TEXT)));
+        int start = 0;
+        while (start < value.length()) {
+            int end = value.offsetByCodePoints(start,
+                    Math.min(policy.maxTextChars(), value.codePointCount(start, value.length())));
+            chunks.add(value.substring(start, end));
+            start = end;
         }
         return chunks.isEmpty() ? List.of("") : chunks;
     }

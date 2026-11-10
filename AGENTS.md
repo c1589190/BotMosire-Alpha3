@@ -1,15 +1,15 @@
 # AGENTS.md — BotMosire-Alpha3
 
-> **更新时间**：2026-11-09（Plan 1 已实现）
+> **更新时间**：2026-11-10（Inbox 面板/SSE 已实现，真实联调 NOT_RUN）
 > **定位**：单仓项目；DevMosire-iiBot 的继承与重构。
-> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）与 Plan 2 的 webconnect（Selenium + 系统 Chromium）已实现；B 站已扫码登录成功，视频逐帧查看器、QQ 图片发送已实现并实测；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`。
+> **当前阶段**：Plan 1（core / agentlib / qqconnect / inbox / app / DSH 插件 / jpackage）与 Plan 2 的 webconnect（Selenium + 系统 Chromium）已实现；2026-11-10 已实现 Inbox 总面板/SSE、通用来源与优先级、发送硬限；真实 LLBot/DSH/systemd 联调仍 `NOT_RUN`。
 > **远端**：<https://github.com/c1589190/BotMosire-Alpha3>
 > **继承来源（只读参考）**：`/home/cna/DevMosire-iiBot`
 
 ## 0. 冲突顺序
 
 1. 用户当次明确指令。
-2. 用户设计裁定：`docs/superpowers/DESIGN_RULINGS.md`（D-001..D-008）。
+2. 用户设计裁定：`docs/superpowers/DESIGN_RULINGS.md`（D-001..D-016）。
 3. 项目维护裁定：`docs/agents/MAINTENANCE_RULINGS.md`、`docs/AGENTS.md`。
 4. 当前有效的专题设计：`docs/superpowers/specs/**`。
 5. 本文件。
@@ -19,7 +19,8 @@
 ## 1. 当前阶段（硬约束）
 
 - 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
-- 当前门禁：`./mvnw -q test` PASS（16 suites / 29 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（5 tests）；`packaging/smoke.sh` PASS。
+- 当前门禁：`./mvnw -q test` PASS（19 suites / 50 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（13 tests）；`packaging/smoke.sh` 本轮 `NOT_RUN`。
+- 已实现：DSH 插件侧 BMA3 preset / 工作区人设 loader / 默认工具组 / `minimal` 子 Agent（`dsh-plugin/lib/self.js`）；真实 DSH preset 激活与远端联调仍 `NOT_RUN`。
 - 未开始：B 站登录/私信/视频工具、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
 - **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**
 
@@ -46,6 +47,9 @@
 8. **真实联调不冒充通过**：Mock/fake/回环测试不能写成真实 QQ/宿主验收；没跑写 `NOT_RUN`。
 9. **只改本项目**：不跨项目 `git add -A`；不把继承来源的文件复制进来冒充本项目成果。
 10. **提交/推送按当次指令**：初始化骨架允许一次本地提交；此后 `commit`/`push` 需用户明确授权，不 force push、不改写已推送历史。
+11. **Inbox 是总面板/窗口预览**：一个 inbox 一条 SSE；source 只是条目，不存在 per-source 订阅/lease；完整事实在消息板；查看限制走配置。
+12. **来源通用**：`platform/...` 为 opaque source；显示名由 `SourceLabeler` 提供，Inbox 不 switch 平台；优先级由统一 resolver 计算。
+13. **发送硬限**：所有文本发送经统一出口，默认 3000 字、可配置；绕过出口视为违反“发送必须经消息板”。
 
 ## 4. 文档路由
 
@@ -54,6 +58,7 @@
 | 文档放哪、谁说了算、怎么取代 | [`docs/AGENTS.md`](docs/AGENTS.md) |
 | 当前状态、未验证项、下一步 | [`docs/agents/STATUS.md`](docs/agents/STATUS.md) |
 | 用户设计裁定（D-xxx，逐字原话） | [`docs/superpowers/DESIGN_RULINGS.md`](docs/superpowers/DESIGN_RULINGS.md) |
+| Inbox 面板/SSE/来源/优先级设计 | [`docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md`](docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md) |
 | 用户维护裁定（M-xxx） | [`docs/agents/MAINTENANCE_RULINGS.md`](docs/agents/MAINTENANCE_RULINGS.md) |
 | 工作流 / 验证 / 本机环境 | [`docs/agents/WORKFLOW.md`](docs/agents/WORKFLOW.md)、[`VERIFICATION.md`](docs/agents/VERIFICATION.md)、[`ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md) |
 | Skill 规范与登记 | [`docs/agents/SKILLS.md`](docs/agents/SKILLS.md)、`.agents/skills/` |
@@ -81,7 +86,7 @@ BotMosire-Alpha3/
 ├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
 ├── bma3-webconnect/     # Selenium + 系统 Chromium 浏览器 AgentTools
 ├── bma3-app/            # 组合根：config/logging/MCP/health/Main
-├── dsh-plugin/          # @mosire/bma3-dsh，三个 loader row
+├── dsh-plugin/          # @mosire/bma3-dsh，四个模块（inbox/preset/self/persona-legacy）
 ├── packaging/           # jlink/jpackage + 用户级 installer
 ├── docs/                # 维护/设计/上游契约
 └── .agents/             # 工程 Skill 与决策解释（当前无 active Skill）
