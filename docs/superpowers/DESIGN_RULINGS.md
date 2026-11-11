@@ -62,6 +62,8 @@
 - 工具面：QQ 16 + Inbox 6 + 配置 2 = 24 个；`inbox_ack` 只剩 itemIds/indices/range/revision。
 - `dsh-plugin/lib/self.js` 的默认工具组补上 `inbox_items/inbox_get/inbox_wait/qq_media_view/qq_conversation_history/qq_message_get/get_config/set_config`。
 
+| D-037 | 2026-11-11 | 本会话用户消息 | 「我的原话就是当前目录下的systemprompt.md作为直接的系统提示词注入对话，不注入其他东西」（并对"额外补安全约束"的提议明确否决） | `systemprompt.md` = 完整 system prompt：`self` 模块的 `prompt.complete` 默认 `true`（整份替换），插件不拼接任何默认人设/安全约束；文件缺失或为空时**不挂任何 section**；只有显式 `complete:false` 才退化为叠加；见 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md) §12 与 `dsh-plugin/README.md` |
+
 ## D-017..D-028 代码环境语义
 
 > 按 M-002：每条裁定除决定本身外，必须能定位到模块、数据结构、状态机、配置、并发/失败模式与验收。完整实现细节在 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md)。

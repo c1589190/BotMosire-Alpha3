@@ -83,7 +83,7 @@ const GLOBAL_NAMES = [
   'unrelated_tool',
 ]
 
-test('loads systemprompt.md dynamically and keeps the persona section scoped', async () => {
+test('systemprompt.md is injected as the complete system prompt by default', async () => {
   const cwd = workspace()
   writeFileSync(path.join(cwd, 'systemprompt.md'), '第一版人设')
   const h = fakeHarness(cwd, GLOBAL_NAMES)
@@ -91,7 +91,7 @@ test('loads systemprompt.md dynamically and keeps the persona section scoped', a
 
   assert.equal(h.sections.length, 1)
   assert.equal(h.sections[0].name, 'deployment:persona-prefix')
-  assert.equal(h.sections[0].complete, false)
+  assert.equal(h.sections[0].complete, true, '默认整份替换，不叠加 DSH 默认提示词')
   assert.equal(h.sections[0].interpolate, false)
   assert.equal(h.sections[0].text(), '第一版人设')
 
@@ -136,6 +136,17 @@ test('default groups include MCP, bma3, terminal, image and subagent; lock survi
   assert.deepEqual(locked.allow, ['bash', 'read_image'])
 })
 
+test('a missing systemprompt.md injects nothing at all', async () => {
+  const cwd = workspace()
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+  await h.created()
+
+  assert.equal(h.sections.length, 0, '没有文件就不能塞任何内置人设')
+
+  const status = h.tools.find((tool) => tool.name === 'bma3_self_status')
+  assert.match((await status.execute({}, {})).text, /缺少 systemprompt\.md/)
+})
+
 test('invalid agentconfig falls back to defaults without failing agent creation', async () => {
   const cwd = workspace()
   writeFileSync(path.join(cwd, 'agentconfig.json'), '{not-json')
@@ -155,6 +166,7 @@ test('invalid agentconfig falls back to defaults without failing agent creation'
 
 test('reload re-applies a changed default group and reports status', async () => {
   const cwd = workspace()
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '一句话人设')
   writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
     schemaVersion: 1,
     defaultTools: ['bma3_core'],
@@ -185,8 +197,9 @@ test('reload re-applies a changed default group and reports status', async () =>
 })
 
 
-test('reload remounts the persona section when complete mode changes', async () => {
+test('an explicit complete:false opts back into additive mode', async () => {
   const cwd = workspace()
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '一句话人设')
   writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
     schemaVersion: 1,
     prompt: { complete: true },

@@ -1,7 +1,8 @@
-# STATUS —— 更新时间：2026-11-11 19:49 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 20:28 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
+0. **0.0.3-hotfix1**：人设语义修正——`systemprompt.md` 是完整 system prompt（`complete` 默认 `true`），插件不拼任何内置内容；随 `v0.0.3-hotfix1` 发布。
 1. **0.0.3 批次 1（已完成）**：优先级规则 + 三档推送时序 + `set_config` 写入口 + 消息模型（发送人/结构化段/平台 id）。
 2. **0.0.3 批次 2（已完成）**：`qq_media_view` + `fileId` + `downloads` 落盘 + 上限/超时配置（D-019）。
 3. **0.0.3 批次 3（已完成）**：`inbox_items`/`inbox_get`/`inbox_wait`、逐条 ack（序号/范围/itemId + revision 校验）、注入筛选 + 时钟重置、保留期（D-020/D-029..D-032）。
@@ -12,9 +13,9 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-early`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix1`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-early`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.3-hotfix1`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁

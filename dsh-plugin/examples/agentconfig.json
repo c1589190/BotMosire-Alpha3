@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "prompt": {
-    "complete": false,
+    "complete": true,
     "maxBytes": 32768
   },
   "defaultTools": [

@@ -12,9 +12,12 @@ BMA3 的 DSH 薄插件：Inbox SSE 唤醒、工作区人设、默认工具面。
 <workspace>/agentconfig.json
 ```
 
-- `systemprompt.md`：人设正文；每次模型 step 组装前按 mtime/size 重读。
-- `agentconfig.json`：默认工具组；不含任何 `lock` 字段。Agent 可以改它，也可以用
-  `bma3_self_reload` 立即重读。
+- `systemprompt.md`：**就是完整的 system prompt**。默认 `complete:true`——它整份替换 DSH 默认提示词，
+  插件不拼接任何内置台词、不加安全约束；每次 step 组装前按 mtime/size 重读。
+  文件缺失/为空时**不挂任何 section**（宁可什么都不注入，也不塞内置人设）。
+  只有你在 `agentconfig.json` 里显式写 `"prompt": {"complete": false}` 才会退化成"插一段、保留 DSH 默认提示词"。
+- `agentconfig.json`：默认工具组 + `prompt.complete`（默认 `true`）；不含任何 `lock` 字段。
+  Agent 可以改它，也可以用 `bma3_self_reload` 立即重读（`complete` 翻转会在下一次 reload 重挂 section）。
 
 ## 默认工具面
 

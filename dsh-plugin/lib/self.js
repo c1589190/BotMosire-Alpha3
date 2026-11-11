@@ -93,7 +93,9 @@ export function normalizeConfig(raw) {
   return {
     schemaVersion: 1,
     prompt: {
-      complete: prompt?.complete === true,
+      // 默认 true：systemprompt.md 就是完整的 system prompt，不拼任何默认内容。
+      // 只有显式写 complete:false 才退化成「插一段、保留 DSH 默认提示词」。
+      complete: prompt?.complete !== false,
       maxBytes: clamp(Math.round(maxBytes), 4096, CONFIG_MAX_BYTES),
     },
     defaultTools: raw?.defaultTools === undefined
@@ -156,7 +158,7 @@ export class SelfState {
     this.configPath = path.join(this.cwd, CONFIG_FILE)
     this.pluginConfig = pluginConfig ?? {}
     this.config = normalizeConfig({})
-    this.prompt = DEFAULT_PROMPT
+    this.prompt = null
     this.promptStat = null
     this.errors = { config: null, prompt: null, tools: null }
     this.restriction = null
@@ -218,8 +220,10 @@ export class SelfState {
       this.errors.prompt = null
     } catch (error) {
       if (error.code !== 'ENOENT') this.errors.prompt = `系统提示词不可用：${error.message}`
+      else this.errors.prompt = '缺少 systemprompt.md'
     }
-    return this.prompt || DEFAULT_PROMPT
+    // 没有可用文件就返回 null：宁可什么都不注入，也不塞一段内置人设。
+    return this.prompt || null
   }
 
   status(agentCtx) {
@@ -231,7 +235,7 @@ export class SelfState {
       ok: Object.values(this.errors).every((item) => item == null),
       cwd: this.cwd,
       promptPath: this.promptPath,
-      promptHash: hash(this.prompt || DEFAULT_PROMPT),
+      promptHash: hash(this.prompt || ''),
       promptComplete: this.config.prompt.complete,
       configPath: this.configPath,
       configHash: hash(JSON.stringify(this.config)),
@@ -353,7 +357,6 @@ export function apply(ctx, _config = {}) {
     state.loadInitial()
 
     let sectionDisposer = null
-    let sectionComplete = null
     const mountPrompt = () => {
       if (!agent.ctx?.systemPrompt?.section) return
       if (sectionDisposer) {
@@ -362,23 +365,23 @@ export function apply(ctx, _config = {}) {
         } catch {
           // Agent disposal may have already unwound the section.
         }
+        sectionDisposer = null
       }
+      // systemprompt.md 缺失/为空 ⇒ 不挂任何 section，绝不注入内置替身。
+      if (!state.promptText()) return
       const order = agent.ctx.systemPrompt.getSectionOrder
         ? agent.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')
         : 0
-      sectionComplete = state.config.prompt.complete
       sectionDisposer = agent.ctx.effect?.(() => agent.ctx.systemPrompt.section({
         name: 'deployment:persona-prefix',
         order,
-        text: () => state.promptText(),
-        complete: sectionComplete,
+        text: () => state.promptText() ?? '',
+        complete: state.config.prompt.complete,
         interpolate: false,
       }), 'bma3-self.prompt') ?? null
     }
     mountPrompt()
-    state.onReload = () => {
-      if (state.config.prompt.complete !== sectionComplete) mountPrompt()
-    }
+    state.onReload = () => mountPrompt()
 
     registerSelfTools(agent.ctx, state)
     state.applyToolPolicy(agent.ctx)
