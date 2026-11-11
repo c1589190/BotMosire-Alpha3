@@ -1,4 +1,4 @@
-# BMA3 DSH bundle. One package, four modules: inbox/preset are active rows; self lives inside the preset; persona is legacy.
+# BMA3 DSH bundle. One package, three modules: inbox/preset are loader rows; self lives inside the preset.
 - insert:
     - id: bma3-inbox
       name: '@mosire/bma3-dsh'
@@ -8,16 +8,6 @@
         inboxId: bma3
         tokenEnv: BMA3_INBOX_TOKEN
         autoStart: true
-
-    # Legacy row: the persona now lives inside the BMA3 preset (module: self).
-    # Keep it inert so profiles created with the old bundle cannot double-register
-    # a complete system prompt.
-    - id: bma3-persona
-      name: '@mosire/bma3-dsh'
-      disabled: true
-      config:
-        module: persona
-        prompt: 你是 BMA3 的角色。
 
     - id: bma3-preset
       name: '@mosire/bma3-dsh'

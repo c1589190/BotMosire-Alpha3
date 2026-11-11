@@ -3,11 +3,10 @@
   "version": "0.0.3-hotfix3",
   "private": true,
   "type": "module",
-  "description": "BMA3 thin DSH bundle: Inbox wake injection, role prompt and tool preset.",
+  "description": "BMA3 thin DSH bundle: Inbox wake injection, role prompt (self) and tool preset.",
   "exports": {
     ".": "./index.js",
     "./inbox": "./lib/inbox.js",
-    "./persona": "./lib/persona.js",
     "./preset": "./lib/preset.js",
     "./self": "./lib/self.js",
     "./package.json": "./package.json"

@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-11 22:42 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 22:56 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -25,7 +25,7 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 21 / webconnect 4（1 skipped）/ app 23 = **78 tests, 0 fail**（2026-11-11） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：17 tests |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：17 tests（含 complete 段唯一性回归） |
 | 本地真进程端到端（假 OneBot） | `tools/e2e-local/drive*.py` | **PASS 27/27**：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
 | 统一真环境回归（真 jar + 真插件客户端） | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> <injectPort>` | **PASS 9/9**：8 个低优先来源 → 推 6 条 → 插件按 itemIds ack 6 条 → 剩 2 条下一轮补推 → 两次 ack 合计 8 条、无刷屏 |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
@@ -62,6 +62,11 @@
 ## 未验证 / 风险 / blocker
 
 - **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
+- **hotfix3 引入、待发版的回归**：`self` 默认改成 `complete: true` 后，与 legacy `persona` 模块注册的
+  `bma3-persona` complete 段同时生效 → DSH 报 `multiple complete prompt sections are active`，整轮失败；
+  而 legacy 模块**从不释放**自己的 section（`persona.js` 丢弃了 `systemPrompt.section()` 的 disposer），
+  所以每次重载后老会话都会复发。修法：删除 `persona` 模块与其 loader 行；`self` 额外注册同名空段
+  `bma3-persona` 遮蔽旧段（scoped 遮蔽 global），热重载即可恢复、不必重启。
 - **0.0.3-hotfix2 实测发现、hotfix3 修掉的两个真 bug**：
   ⑤ **窗口外条目被"标记已推送"吞掉**：`flushPending()` 把整批 pending 都标成 delivered，而面板只渲染 top-M → 窗口外的条目再也不会推；
   ⑥ **ack 范围过大**：`POST /ack {revision}` 会 ack 所有 `eventRevision ≤ revision` 的条目，包括没进窗口、从未显示的 → 低优先级消息被静默吃掉。

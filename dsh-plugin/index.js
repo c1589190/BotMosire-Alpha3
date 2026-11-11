@@ -1,5 +1,4 @@
 import { apply as applyInbox } from './lib/inbox.js'
-import { apply as applyPersona } from './lib/persona.js'
 import { apply as applyPreset } from './lib/preset.js'
 import { apply as applySelf } from './lib/self.js'
 
@@ -10,11 +9,14 @@ export const inject = ['tools', 'agents', 'systemPrompt', 'agentPresets']
 export const name = 'bma3-dsh'
 
 /** Components the package can mount. */
-export const MODULES = Object.freeze(['inbox', 'persona', 'preset', 'self'])
+export const MODULES = Object.freeze(['inbox', 'preset', 'self'])
 
 /**
- * One package, four modules. `self` is mounted inside the BMA3 preset; `persona` is legacy. `inbox` failure must not prevent the role prompt
- * or tool preset from mounting; each module resolves only the services it needs.
+ * One package, three modules. `self` is mounted inside the BMA3 preset and owns the persona.
+ * The old `persona` module was removed: it registered a second *complete* system-prompt
+ * section (`bma3-persona`) and never released it, which made every reload end in
+ * "multiple complete prompt sections are active". `inbox` failure must not prevent the role
+ * prompt or tool preset from mounting; each module resolves only the services it needs.
  *
  * @param {any} ctx Cordis context.
  * @param {{module?: string}} [config] Loader row config.
@@ -23,10 +25,6 @@ export function apply(ctx, config = {}) {
   const module = config?.module ?? 'inbox'
   if (module === 'inbox') {
     applyInbox(ctx, config)
-    return
-  }
-  if (module === 'persona') {
-    applyPersona(ctx, config)
     return
   }
   if (module === 'preset') {

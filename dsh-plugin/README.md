@@ -61,4 +61,10 @@ terminal，且不挂本插件的人设 loader。`subagent_fork` 继承父 preset
 ## 启用
 
 DSH profile 里启用 `bma3-preset` loader row，选择 **BMA3** preset。旧的全局
-`bma3-persona` row 已标记 disabled；人设现在只由 preset 内的 `self` 模块注册。
+`bma3-persona` loader 行与 `persona` 模块**已删除**（它会注册第二个 complete system-prompt 段，
+且从不释放自己注册的 section，导致插件每次重载后老会话报
+`multiple complete prompt sections are active`）。人设现在只由 preset 内的 `self` 模块注册，
+段名是 DSH 预留的 `deployment:persona-prefix`（scoped 遮蔽部署级人设）。
+
+`self` 还会在 agent scope 注册一个**同名空段** `bma3-persona`：旧进程里那个没被释放的
+global complete 段会被它遮蔽，于是热重载后老会话不需要重启就能恢复。

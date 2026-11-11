@@ -89,14 +89,20 @@ test('systemprompt.md is injected as the complete system prompt by default', asy
   const h = fakeHarness(cwd, GLOBAL_NAMES)
   await h.created()
 
-  assert.equal(h.sections.length, 1)
-  assert.equal(h.sections[0].name, 'deployment:persona-prefix')
-  assert.equal(h.sections[0].complete, true, '默认整份替换，不叠加 DSH 默认提示词')
-  assert.equal(h.sections[0].interpolate, false)
-  assert.equal(h.sections[0].text(), '第一版人设')
+  const persona = h.sections.find((section) => section.name === 'deployment:persona-prefix')
+  const shadow = h.sections.find((section) => section.name === 'bma3-persona')
+  assert.ok(persona, '人设 section 必须叫 DSH 预留的 deployment:persona-prefix')
+  assert.equal(persona.complete, true, '默认整份替换，不叠加 DSH 默认提示词')
+  assert.equal(persona.interpolate, false)
+  assert.equal(persona.text(), '第一版人设')
+  assert.ok(shadow, '必须挂一个同名空段遮蔽旧 persona 模块留下的 complete 段')
+  assert.equal(shadow.complete, false)
+  assert.equal(shadow.text, '', '影子段必须为空文本')
+  assert.equal(h.sections.filter((section) => section.complete === true).length, 1,
+    'DSH 只允许一个 complete 段，多一个整轮就失败')
 
   writeFileSync(path.join(cwd, 'systemprompt.md'), '第二版人设，长度不同')
-  assert.equal(h.sections[0].text(), '第二版人设，长度不同')
+  assert.equal(persona.text(), '第二版人设，长度不同')
 })
 
 test('default groups include MCP, bma3, terminal, image and subagent; lock survives config edits', async () => {
@@ -155,7 +161,8 @@ test('a missing systemprompt.md injects nothing at all', async () => {
   const h = fakeHarness(cwd, GLOBAL_NAMES)
   await h.created()
 
-  assert.equal(h.sections.length, 0, '没有文件就不能塞任何内置人设')
+  assert.equal(h.sections.filter((section) => section.complete === true).length, 0,
+    '没有文件就不能塞任何内置人设')
 
   const status = h.tools.find((tool) => tool.name === 'bma3_self_status')
   assert.match((await status.execute({}, {})).text, /缺少 systemprompt\.md/)
@@ -220,7 +227,8 @@ test('an explicit complete:false opts back into additive mode', async () => {
   }))
   const h = fakeHarness(cwd, GLOBAL_NAMES)
   await h.created()
-  assert.equal(h.sections[0].complete, true)
+  assert.equal(h.sections.find((section) => section.name === 'deployment:persona-prefix').complete,
+    true)
 
   writeFileSync(path.join(cwd, 'agentconfig.json'), JSON.stringify({
     schemaVersion: 1,
@@ -228,6 +236,35 @@ test('an explicit complete:false opts back into additive mode', async () => {
   }))
   const reload = h.tools.find((tool) => tool.name === 'bma3_self_reload')
   await reload.execute({}, {})
-  assert.equal(h.sections.length, 2)
-  assert.equal(h.sections[1].complete, false)
+  const latest = h.sections.filter((section) => section.name === 'deployment:persona-prefix').at(-1)
+  assert.equal(latest.complete, false, '显式 complete:false 才退化成叠加')
+})
+
+test('a stale global bma3-persona complete section is shadowed, never doubled', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '一句话人设')
+  const h = fakeHarness(cwd, GLOBAL_NAMES)
+
+  // 旧 persona 模块当年注册在 global 层且没有 disposer：重载后它仍留在会话里。
+  const staleGlobal = {
+    name: 'bma3-persona',
+    order: 0,
+    complete: true,
+    text: '旧版大肥鱼人设',
+  }
+  await h.created()
+
+  // DSH 规则（dsh-system-prompt）：scoped section 遮蔽同名 global section，
+  // 只有"有效"的 complete 段计入；多于一个则整轮组装失败。
+  const effective = [
+    ...['staleGlobal'].map(() => staleGlobal)
+      .filter((global) => !h.sections.some((section) => section.name === global.name)),
+    ...h.sections,
+  ]
+  const complete = effective.filter((section) => section.complete === true)
+  assert.equal(complete.length, 1,
+    '必须只剩一个 complete 段，否则 DSH 报 multiple complete prompt sections')
+  assert.equal(complete[0].name, 'deployment:persona-prefix')
+  assert.ok(effective.some((section) => section.name === 'bma3-persona'),
+    '影子段要占住旧名字')
 })

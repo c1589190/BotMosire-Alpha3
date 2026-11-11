@@ -13,6 +13,8 @@ export const DEFAULT_TOOL_GROUPS = Object.freeze([
 export const LOCKED_TOOL_BASENAMES = Object.freeze(['bash', 'pwsh', 'read_image'])
 export const PRESET_PROVIDED_GROUPS = Object.freeze(['terminal', 'image', 'subagent'])
 
+const LEGACY_PERSONA_SECTION = 'bma3-persona'
+const PERSONA_SECTION = 'deployment:persona-prefix'
 const CONFIG_FILE = 'agentconfig.json'
 const PROMPT_FILE = 'systemprompt.md'
 const DEFAULT_MAX_BYTES = 32768
@@ -240,6 +242,8 @@ export class SelfState {
       promptPath: this.promptPath,
       promptHash: hash(this.prompt || ''),
       promptComplete: this.config.prompt.complete,
+      promptSection: PERSONA_SECTION,
+      legacyPersonaShadowed: true,
       configPath: this.configPath,
       configHash: hash(JSON.stringify(this.config)),
       defaultTools: this.config.defaultTools,
@@ -359,6 +363,32 @@ export function apply(ctx, _config = {}) {
     const state = new SelfState(cwd)
     state.loadInitial()
 
+    /**
+     * 旧 `persona` 模块注册的 global complete 段（名字就叫 bma3-persona）当年没有保存
+     * `systemPrompt.section()` 返回的 disposer，所以插件重载它也卸载不掉。结果是：
+     * 老会话里留着旧的 complete 段，重载后 self 又挂一个 complete 段
+     * ⇒ DSH 判定 "multiple complete prompt sections are active"，每一轮都失败。
+     *
+     * 这里在 **agent scope** 注册一个同名空段（非 complete）。DSH 规定 scoped section
+     * 遮蔽同名 global section，于是旧段失效，只剩 deployment:persona-prefix 一个 complete。
+     * 新进程里它只是一个空段，无副作用。
+     */
+    const mountLegacyShadow = () => {
+      const systemPrompt = agent.ctx?.systemPrompt
+      if (!systemPrompt?.section) return
+      try {
+        agent.ctx.effect?.(() => systemPrompt.section({
+          name: LEGACY_PERSONA_SECTION,
+          order: 0,
+          text: '',
+          complete: false,
+          interpolate: false,
+        }), 'bma3-self.legacy-shadow')
+      } catch (error) {
+        state.errors.prompt = `旧 persona 兼容段挂载失败：${error.message}`
+      }
+    }
+
     let sectionDisposer = null
     const mountPrompt = () => {
       if (!agent.ctx?.systemPrompt?.section) return
@@ -376,7 +406,7 @@ export function apply(ctx, _config = {}) {
         ? agent.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX')
         : 0
       sectionDisposer = agent.ctx.effect?.(() => agent.ctx.systemPrompt.section({
-        name: 'deployment:persona-prefix',
+        name: PERSONA_SECTION,
         order,
         text: () => state.promptText() ?? '',
         complete: state.config.prompt.complete,
@@ -384,6 +414,7 @@ export function apply(ctx, _config = {}) {
       }), 'bma3-self.prompt') ?? null
     }
     mountPrompt()
+    mountLegacyShadow()
     state.onReload = () => mountPrompt()
 
     registerSelfTools(agent.ctx, state)
