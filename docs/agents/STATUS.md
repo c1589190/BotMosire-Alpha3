@@ -1,8 +1,9 @@
-# STATUS —— 更新时间：2026-11-11 22:58 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 23:05 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
+0. **0.0.3-hotfix5（待发版）**：修 `bma3_` 前缀把 scope-local 工具（`bma3_self_status/reload`）拉进 `tools.restrict()` 的 allow，导致 DSH 抛 "names unknown global tool"、整条工具策略失效（bash 等被状态未定义）。修法：allow 里剔除 scope-local 名字；测试桩改成严格模拟 DSH 的 restrict 校验。
+0a. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
 0a. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
 0a. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
 0b. **0.0.3-hotfix1**：人设语义修正——`systemprompt.md` 是完整 system prompt（`complete` 默认 `true`），插件不拼任何内置内容；随 `v0.0.3-hotfix1` 发布。

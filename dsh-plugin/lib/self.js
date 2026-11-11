@@ -42,6 +42,8 @@ const BASIC_BMA3_BASENAMES = new Set([
   'qq_group_list',
   'qq_friend_list',
 ])
+/** Registered on the agent's own layer: exempt from restrictions, and NOT restrictable. */
+const SCOPED_BMA3_TOOLS = new Set(['bma3_self_status', 'bma3_self_reload'])
 const SUBAGENT_BASENAMES = new Set([
   'subagent',
   'subagent_fork',
@@ -144,6 +146,10 @@ export function resolveToolGroups(groups, globalNames) {
   for (const name of names) {
     if (LOCKED_TOOL_BASENAMES.includes(baseName(name))) allow.add(name)
   }
+  // `tools.restrict()` only accepts restrictable (global/inherited) names; naming a scope-local
+  // tool makes the whole restrict() call throw. Our own scoped tools are exempt anyway, so drop
+  // them instead of poisoning the allow list.
+  for (const name of SCOPED_BMA3_TOOLS) allow.delete(name)
   return { allow: [...allow].sort(), missing: [...missing].sort() }
 }
 

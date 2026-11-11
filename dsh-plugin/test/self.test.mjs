@@ -26,19 +26,32 @@ function fakeHarness(cwd, names) {
         return 0
       },
     },
-    tools: {
-      definitions() {
-        return names.map((name) => ({ name }))
-      },
-      restrict(filter) {
-        restrictions.push(filter)
-        return () => {}
-      },
-      register(definition) {
-        tools.push(definition)
-        return () => {}
-      },
-    },
+    tools: (() => {
+      // 尽量贴近 DSH 的语义：
+      //  - definitions() 返回全局 + 该 agent 自己的 scoped 注册
+      //  - restrict() 只接受"可限制的"（全局/继承）名字；出现 scope-local 或未知全局名字就抛
+      const scoped = new Set()
+      const restrictable = new Set(names)
+      return {
+        definitions() {
+          return [...names, ...scoped].map((name) => ({ name }))
+        },
+        restrict(filter) {
+          const unknown = [...filter.allow ?? [], ...filter.deny ?? []]
+            .filter((name) => scoped.has(name) || !restrictable.has(name))
+          if (unknown.length > 0) {
+            throw new Error(`tools.restrict() names unknown global tool ${unknown.join(', ')}`)
+          }
+          restrictions.push(filter)
+          return () => {}
+        },
+        register(definition) {
+          scoped.add(definition.name)
+          tools.push(definition)
+          return () => { scoped.delete(definition.name) }
+        },
+      }
+    })(),
     effect(fn) {
       return fn()
     },
@@ -267,4 +280,22 @@ test('a stale global bma3-persona complete section is shadowed, never doubled', 
   assert.equal(complete[0].name, 'deployment:persona-prefix')
   assert.ok(effective.some((section) => section.name === 'bma3-persona'),
     '影子段要占住旧名字')
+})
+
+test('the allow list never names scope-local tools (tools.restrict would throw)', async () => {
+  const cwd = workspace()
+  writeFileSync(path.join(cwd, 'systemprompt.md'), '人设')
+  // GLOBAL_NAMES 里有 bash/read_image；插件自己会注册 bma3_self_status/reload（scope-local）。
+  const h = fakeHarness(cwd, [...GLOBAL_NAMES, 'bma3_inbox'])
+  await h.created()
+
+  const applied = h.restrictions.at(-1)
+  assert.ok(applied, 'restrict 必须成功应用，不能因为 scope-local 名字整条策略失败')
+  assert.ok(applied.allow.includes('bash'), 'bash 必须留在 allow 里')
+  assert.ok(applied.allow.includes('bma3_inbox'), 'bma3_inbox 必须留在 allow 里')
+  assert.ok(!applied.allow.includes('bma3_self_status'), 'scope-local 工具不能出现在 allow')
+  const status = JSON.parse((await h.tools.find((tool) => tool.name === 'bma3_self_status')
+    .execute({}, {})).text)
+  assert.equal(status.error, null, '工具策略不能报错')
+  assert.ok(status.allow.includes('bash'))
 })
