@@ -3,7 +3,7 @@
 > **状态**：已实现（2026-11-11）· **类型**：项目设计（专题）
 > **需求原话**：见 [`../DESIGN_RULINGS.md`](../DESIGN_RULINGS.md) D-017..D-028（逐字）
 > **取代**：`2026-11-10-inbox-panel-sse-design.md` §8（优先级公式）、§9 之外的推送时机；不取代 D-009/D-010（N/M 截断）与 D-011（Inbox 不带 URL）
-> **本批未做**：媒体查看/下载（D-019）、批量 ack（D-020 后半）、`inbox_get`/`inbox_wait`、OneBot/MCP 错误可诊断性 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)
+> **本批未做**：批量 ack（D-020 后半）、`inbox_get`/`inbox_wait`、OneBot/MCP 错误可诊断性 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)
 
 ## 1. 一句话模型
 
@@ -132,7 +132,45 @@ total 300 ≥ immediateThreshold 300 ⇒ 立即推送
 - 事件 id 仍是 `panel.revision`（客户端按 revision 去重，插件无需改动）；
 - `pull` 语义不变（`GET /panel` 返回实时全量未 ack 视图，工具侧不受延迟影响）。
 
-## 6. 配置
+## 6. 媒体查看（D-019）
+
+### 6.1 fileId
+
+`MediaId` = `source + messageId + segmentIndex` 的 base64url 编码，形如 `file-…`。
+不建新表：消息板里那三样就是全部依据。它同时是安全边界 —— 查看工具**只接受 fileId**，
+不接受 URL，所以"看媒体"不会退化成任意 URL 抓取代理。
+
+读取工具在 `includeSegments=true` 时对媒体段输出 `fileId`；`messageId` 取平台 id
+（`external_message_id`，缺省回退板内 id）。
+
+### 6.2 解析顺序
+
+1. 用平台 id 在消息板找到那条消息、取第 `index` 段；
+2. 刷新链接：`get_msg` → 该段 `data.url`；失败再 `get_image {file}`；再失败回退库里存的 url
+   （QQ 的 CDN 链接带 rkey，会过期，所以**优先问平台要新的**）；
+3. 下载：硬上限 `maxDownloadBytes`，超限直接 `MEDIA_TOO_LARGE`，不写盘；
+4. 文本（`text/*`、json/xml，或能按 UTF-8 解码且无 NUL）且 ≤ `maxInlineBytes` ⇒ 内联返回；
+5. 其余（含图片）⇒ 写到 `<media.dir>`（默认 `<dataDir>/downloads`），返回本地 `path`，
+   图片附 `hint: 用 read_image 打开`。
+
+### 6.3 配置
+
+```yaml
+qqconnect:
+  media:
+    dir: ""                  # 空 = <dataDir>/downloads
+    maxInlineBytes: 65536
+    maxDownloadBytes: 33554432
+    timeoutSeconds: 20
+```
+
+### 6.4 不变量
+
+- 工具入参没有 URL；文件名由 `MediaId` 哈希生成，不使用平台提供的字符串；
+- URL/rkey 不进日志、不进 Inbox、不进 `chat_message.text`；
+- 超过下载上限失败而不是截断（不静默产出半个文件）。
+
+## 7. 配置
 
 ```yaml
 weighting:
@@ -163,7 +201,7 @@ qqconnect:
       selfName: "BotMosire"
 ```
 
-## 7. `set_config` / `get_config`
+## 8. `set_config` / `get_config`
 
 - `set_config { patch: {点分路径: 值}, unset: [路径] }`；
 - 写入前把候选树序列化到临时目录并用 `ConfigLoader` 完整校验 —— **非法配置不落盘**；
@@ -171,7 +209,7 @@ qqconnect:
 - **无白名单**（D-028）：端口/host 这类非热重载项写进去不会生效，返回 `reloaded:false` 并提示需重启；
 - `get_config` 只返回非敏感值（token 只以环境变量名出现）。
 
-## 8. 不变量
+## 9. 不变量
 
 1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。
 2. `qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三工具**不存在**。
@@ -181,7 +219,7 @@ qqconnect:
 6. `broadcast` 批次的锚点是最早的 pending 项，后到者不重置。
 7. 出站消息只有发送成功后才有 `external_message_id`；`UNKNOWN` 不重发。
 
-## 9. 验收判据（本批已覆盖）
+## 10. 验收判据（本批已覆盖）
 
 | # | 判据 | 证据 |
 |---|---|---|
@@ -195,9 +233,10 @@ qqconnect:
 | 8 | `set_config` 生效并热重载；非法 patch 不动文件 | `SetConfigToolTest`（3 例） |
 | 9 | 出站发送成功后 `externalMessageId`/`self` 可读 | `QqToolsTest` |
 | 10 | 图片 URL 只在 `includeSegments` 时出现，正文仍 `[图片]` | `OneBot11CodecTest.keepsStructuredPayloadForMediaAndRelations`、`QqToolsTest` |
-| 11 | `./mvnw -q test` PASS（65 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
+| 11 | 图片先刷新链接再落盘、文本内联、超限失败、坏 fileId 不发网络请求 | `QqMediaViewToolTest`（4 例） |
+| 12 | `./mvnw -q test` PASS（69 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
 
-## 10. 风险 / 未验证
+## 11. 风险 / 未验证
 
 - **真实 LLBot/DSH 联调 `NOT_RUN`**：`get_login_info`、`external_message_id` 回写、SSE 推送节奏都只有 fake/回环证据。
 - **重启后推送状态丢失**：`pushedItems` 是内存表，重启后所有未 ack item 会重新进入 pending（按 `updatedAt + delay` 计算，通常立即 flush 一次）。这是有意的"宁重推不漏推"，但需真实环境观察。

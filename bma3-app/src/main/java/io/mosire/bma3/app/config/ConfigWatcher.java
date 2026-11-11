@@ -26,13 +26,13 @@ public final class ConfigWatcher implements AutoCloseable {
     private final Consumer<AppConfig> listener;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
-    private volatile long lastModified;
+    private volatile String lastSignature;
 
     private ConfigWatcher(Path root, Map<String, String> env, Consumer<AppConfig> listener) {
         this.root = root;
         this.env = Map.copyOf(env);
         this.listener = listener;
-        this.lastModified = modifiedAt();
+        this.lastSignature = signature();
         this.scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "bma3-config-watch");
             thread.setDaemon(true);
@@ -54,11 +54,11 @@ public final class ConfigWatcher implements AutoCloseable {
         if (closed.get()) {
             return;
         }
-        long modified = modifiedAt();
-        if (modified == lastModified) {
+        String current = signature();
+        if (current.equals(lastSignature)) {
             return;
         }
-        lastModified = modified;
+        lastSignature = current;
         try {
             AppConfig config = ConfigLoader.load(root, env);
             listener.accept(config);
@@ -69,16 +69,21 @@ public final class ConfigWatcher implements AutoCloseable {
         }
     }
 
-    private long modifiedAt() {
+    /**
+     * Change signature: modification time <b>plus size</b>. Two writes inside the same millisecond
+     * would otherwise look identical on filesystems with coarse timestamps, and an atomic replace
+     * that keeps the size unchanged is still caught by the mtime component.
+     */
+    private String signature() {
         Path file = ConfigLoader.configFile(root);
         try {
             if (!Files.exists(file)) {
-                return -1L;
+                return "missing";
             }
             FileTime time = Files.getLastModifiedTime(file);
-            return time.toMillis();
+            return time.toMillis() + ":" + Files.size(file);
         } catch (Exception failure) {
-            return -2L;
+            return "unreadable";
         }
     }
 

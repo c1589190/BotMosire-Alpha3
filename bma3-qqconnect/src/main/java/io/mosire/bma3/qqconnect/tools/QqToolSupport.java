@@ -38,6 +38,7 @@ final class QqToolSupport {
                 new QqConversationReadTool(context),
                 new QqConversationSendTool(context),
                 new QqConversationSendImageTool(context),
+                new QqMediaViewTool(context),
                 new QqReplyTool(context),
                 new QqPrivateSendTool(context),
                 new QqUserNoteGetTool(context),
@@ -104,16 +105,29 @@ final class QqToolSupport {
         sender.put("name", message.inbound().senderName());
         node.put("text", messageText(message));
         if (includeSegments) {
+            String lookupId = lookupId(message);
             ArrayNode segments = node.putArray("segments");
-            for (Segment segment : message.inbound().segments()) {
+            List<Segment> source = message.inbound().segments();
+            for (int index = 0; index < source.size(); index++) {
+                Segment segment = source.get(index);
                 ObjectNode item = segments.addObject();
                 item.put("type", segment.type());
                 item.put("text", segment.text());
+                if (QqMediaSupport.isMedia(segment.type())) {
+                    item.put("fileId", io.mosire.bma3.core.media.MediaId.of(
+                            message.inbound().source().format(), lookupId, index).encode());
+                }
                 var data = item.putObject("data");
                 segment.data().forEach(data::put);
             }
         }
         return node;
+    }
+
+    /** The id a media file id must encode: the platform id when known, else the board id. */
+    private static String lookupId(Message message) {
+        return message.externalMessageId().isBlank()
+                ? message.inbound().messageId() : message.externalMessageId();
     }
 
     static boolean includeSegments(ToolContext context) {

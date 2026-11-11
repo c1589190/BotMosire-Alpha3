@@ -113,6 +113,7 @@ public final class ConfigLoader {
         JsonNode inbox = node.path("inbox");
         JsonNode inboxDisplay = inbox.path("display");
         JsonNode send = node.path("qqconnect").path("send");
+        JsonNode media = node.path("qqconnect").path("media");
         JsonNode webconnect = node.path("webconnect");
         List<String> allowedHosts = new ArrayList<>();
         for (JsonNode host : webconnect.path("allowedHosts")) {
@@ -126,7 +127,12 @@ public final class ConfigLoader {
                 new AppConfig.QqConnect(accounts,
                         new AppConfig.QqConnect.Send(
                                 integer(send, "maxTextChars", 3000),
-                                text(send, "overflow", "reject"))),
+                                text(send, "overflow", "reject")),
+                        new AppConfig.QqConnect.Media(
+                                text(media, "dir", ""),
+                                integer(media, "maxInlineBytes", 65536),
+                                integer(media, "maxDownloadBytes", 33_554_432),
+                                integer(media, "timeoutSeconds", 20))),
                 new AppConfig.Inbox(
                         text(inbox, "inboxId", "bma3"),
                         integer(inbox, "httpPort", 46500),

@@ -161,6 +161,14 @@ public final class Bma3App implements AutoCloseable {
                     () -> {
                         var send = runtime.get().send();
                         return QqSendPolicy.from(send.maxTextChars(), send.overflow());
+                    },
+                    () -> {
+                        var media = runtime.get().media();
+                        Path dir = media.dir().isBlank()
+                                ? config.dataDir().resolve("downloads") : Path.of(media.dir());
+                        return new io.mosire.bma3.qqconnect.tools.QqMediaPolicy(dir,
+                                media.maxInlineBytes(), media.maxDownloadBytes(),
+                                Duration.ofSeconds(media.timeoutSeconds()));
                     })));
             tools.addAll(InboxTools.all(inboxService));
             tools.add(new GetConfigTool(configTools));

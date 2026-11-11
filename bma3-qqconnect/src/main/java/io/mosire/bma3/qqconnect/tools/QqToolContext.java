@@ -13,26 +13,38 @@ public record QqToolContext(
         ConsumerConversationStore consumers,
         Path imageRoot,
         QqExtrasStore extras,
-        Supplier<QqSendPolicy> sendPolicy) {
+        Supplier<QqSendPolicy> sendPolicy,
+        Supplier<QqMediaPolicy> mediaPolicy) {
 
     public QqToolContext {
         sendPolicy = sendPolicy == null ? QqSendPolicy::defaults : sendPolicy;
+        mediaPolicy = mediaPolicy == null
+                ? () -> QqMediaPolicy.defaults(imageRoot == null ? Path.of(".") : imageRoot)
+                : mediaPolicy;
+    }
+
+    public QqMediaPolicy media() {
+        QqMediaPolicy policy = mediaPolicy.get();
+        return policy == null
+                ? QqMediaPolicy.defaults(imageRoot == null ? Path.of(".") : imageRoot)
+                : policy;
     }
 
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
                          ConsumerConversationStore consumers) {
-        this(accounts, board, consumers, Path.of(".").toAbsolutePath().normalize(), null, null);
+        this(accounts, board, consumers, Path.of(".").toAbsolutePath().normalize(), null, null,
+                null);
     }
 
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
                          ConsumerConversationStore consumers, Path imageRoot) {
-        this(accounts, board, consumers, imageRoot, null, null);
+        this(accounts, board, consumers, imageRoot, null, null, null);
     }
 
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
                          ConsumerConversationStore consumers, Path imageRoot,
                          QqExtrasStore extras) {
-        this(accounts, board, consumers, imageRoot, extras, null);
+        this(accounts, board, consumers, imageRoot, extras, null, null);
     }
 
     public QqSendPolicy policy() {

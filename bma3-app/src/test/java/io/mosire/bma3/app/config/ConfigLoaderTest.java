@@ -27,6 +27,9 @@ class ConfigLoaderTest {
         assertThat(config.inbox().display().maxMessagesPerItem()).isEqualTo(6);
         assertThat(config.inbox().display().maxItemsPerPanel()).isEqualTo(6);
         assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(3000);
+        assertThat(config.qqconnect().media().dir()).isEmpty();
+        assertThat(config.qqconnect().media().maxInlineBytes()).isEqualTo(65536L);
+        assertThat(config.qqconnect().media().maxDownloadBytes()).isEqualTo(33_554_432L);
         assertThat(config.weighting().sourcePriority()).containsEntry("qq_private", 300);
         assertThat(config.weighting().sourcePriority()).containsEntry("qq_group", 200);
         assertThat(config.weighting().sourcePriority().getOrDefault("bilibili", 0)).isZero();

@@ -17,10 +17,11 @@
 
 - 事件/编码：`src/main/java/io/mosire/bma3/qqconnect/onebot/*`
 - 发送：`src/main/java/io/mosire/bma3/qqconnect/tools/QqSendSupport.java`
+- 媒体：`tools/{QqMediaSupport,QqMediaViewTool,QqMediaPolicy}.java`（fileId → 刷新链接 → 有上限下载）
 - 来源标签：`src/main/java/io/mosire/bma3/qqconnect/tools/QqSourceLabeler.java`
 - 设计：`../docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md`
 
 ## 验证
 
 - `./mvnw -q -pl bma3-qqconnect -am test`
-- 覆盖：3000/3001 字、emoji code point、图片占位 + 结构化 payload、@/reply marker、发送回写平台 id、发送人字段。
+- 覆盖：3000/3001 字、emoji code point、图片占位 + 结构化 payload、@/reply marker、发送回写平台 id、发送人字段、媒体查看（内联/落盘/超限/坏 id）。

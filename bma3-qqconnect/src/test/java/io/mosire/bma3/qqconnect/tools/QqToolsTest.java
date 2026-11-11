@@ -59,7 +59,7 @@ class QqToolsTest {
                             "qq_thread_list", "qq_conversation_history",
                             "qq_recent_messages", "qq_message_get",
                             "qq_conversation_read", "qq_conversation_send",
-                            "qq_conversation_send_image", "qq_reply", "qq_private_send",
+                            "qq_conversation_send_image", "qq_media_view", "qq_reply", "qq_private_send",
                             "qq_user_note_get", "qq_user_note_list", "qq_user_note_upsert",
                             "qq_conversation_ack");
 

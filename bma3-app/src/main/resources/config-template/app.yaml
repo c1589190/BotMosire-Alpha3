@@ -14,10 +14,22 @@ qqconnect:
       enabled: false
       # selfQq / selfName 可省：启动时用 get_login_info 自动学习
       # selfName: BotMosire
+  send:
+    maxTextChars: 3000   # 1..3000
+    overflow: reject     # reject | split
+  media:
+    dir: ""                  # 空 = <dataDir>/downloads
+    maxInlineBytes: 65536    # 文本装得下就直接回
+    maxDownloadBytes: 33554432
+    timeoutSeconds: 20
 
 inbox:
   inboxId: bma3
   httpPort: 46500
+  display:
+    maxMessagesPerItem: 6   # 4..8
+    maxItemsPerPanel: 6     # 4..8
+    includeOmittedCount: true
 
 # 分数 = 最具体的来源规则 + 命中的属性加分（加法）。
 # < dropBelow: 丢弃（不落消息板）；>= immediateThreshold: 走 importantDelaySeconds，其余走 normalDelaySeconds。

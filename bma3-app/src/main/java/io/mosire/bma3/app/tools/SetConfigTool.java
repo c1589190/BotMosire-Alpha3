@@ -28,7 +28,7 @@ import java.util.Map;
 public final class SetConfigTool implements AgentTool {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final Duration RELOAD_TIMEOUT = Duration.ofSeconds(3);
+    private static final Duration RELOAD_TIMEOUT = Duration.ofSeconds(5);
 
     private final ConfigToolContext context;
 

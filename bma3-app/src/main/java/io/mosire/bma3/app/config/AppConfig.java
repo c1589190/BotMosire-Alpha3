@@ -42,15 +42,45 @@ public record AppConfig(
         }
     }
 
-    public record QqConnect(List<Account> accounts, Send send) {
+    public record QqConnect(List<Account> accounts, Send send, Media media) {
 
         public QqConnect {
             accounts = accounts == null ? List.of() : List.copyOf(accounts);
             send = send == null ? Send.defaults() : send;
+            media = media == null ? Media.defaults() : media;
         }
 
         public QqConnect(List<Account> accounts) {
-            this(accounts, Send.defaults());
+            this(accounts, Send.defaults(), Media.defaults());
+        }
+
+        public QqConnect(List<Account> accounts, Send send) {
+            this(accounts, send, Media.defaults());
+        }
+
+        /**
+         * On-demand media limits. {@code dir} blank means {@code <dataDir>/downloads}; the file id
+         * itself is never a path, so nothing here can be influenced by a remote peer.
+         */
+        public record Media(String dir, long maxInlineBytes, long maxDownloadBytes,
+                            int timeoutSeconds) {
+
+            public Media {
+                dir = dir == null ? "" : dir;
+                if (maxInlineBytes <= 0) {
+                    throw new IllegalArgumentException("qqconnect.media.maxInlineBytes 必须为正");
+                }
+                if (maxDownloadBytes <= 0) {
+                    throw new IllegalArgumentException("qqconnect.media.maxDownloadBytes 必须为正");
+                }
+                if (timeoutSeconds < 1 || timeoutSeconds > 300) {
+                    throw new IllegalArgumentException("qqconnect.media.timeoutSeconds 必须在 1..300");
+                }
+            }
+
+            public static Media defaults() {
+                return new Media("", 64L * 1024, 32L * 1024 * 1024, 20);
+            }
         }
 
         public record Send(int maxTextChars, String overflow) {

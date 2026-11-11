@@ -64,6 +64,11 @@ qqconnect:
   send:
     maxTextChars: 3000   # 1..3000
     overflow: reject     # reject | split
+  media:
+    dir: ""                  # 空 = <dataDir>/downloads
+    maxInlineBytes: 65536
+    maxDownloadBytes: 33554432
+    timeoutSeconds: 20
 
 inbox:
   inboxId: bma3
@@ -208,6 +213,7 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 - QQ 账号：`qq_account_list/status/login_info`
 - 会话导航：`qq_thread_list`、`qq_recent_messages`、`qq_conversation_history`、`qq_message_get`
 - 读写：`qq_conversation_read/ack/send/send_image`、`qq_reply`、`qq_private_send`
+- 媒体：`qq_media_view`（按 `fileId` 查看图片/文件；文本可内联，图片等落到 `downloads/` 返回路径）
 - 用户备注：`qq_user_note_get/list/upsert`（只存别名/标签/备注，不存分数）
 - 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；来源规则与属性加分都在这里）
 - 目录：`qq_group_list`、`qq_friend_list`

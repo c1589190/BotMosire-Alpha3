@@ -4,10 +4,11 @@ package io.mosire.bma3.app.config;
 public record RuntimePolicy(
         AppConfig.Inbox.Display display,
         AppConfig.QqConnect.Send send,
+        AppConfig.QqConnect.Media media,
         AppConfig.Weighting weighting) {
 
     public static RuntimePolicy from(AppConfig config) {
         return new RuntimePolicy(config.inbox().display(), config.qqconnect().send(),
-                config.weighting());
+                config.qqconnect().media(), config.weighting());
     }
 }
