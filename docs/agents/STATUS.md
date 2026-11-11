@@ -1,8 +1,9 @@
-# STATUS —— 更新时间：2026-11-11 22:56 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 22:58 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
+0. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
+0a. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
 0a. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
 0b. **0.0.3-hotfix1**：人设语义修正——`systemprompt.md` 是完整 system prompt（`complete` 默认 `true`），插件不拼任何内置内容；随 `v0.0.3-hotfix1` 发布。
 1. **0.0.3 批次 1（已完成）**：优先级规则 + 三档推送时序 + `set_config` 写入口 + 消息模型（发送人/结构化段/平台 id）。
@@ -15,9 +16,9 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix3`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix4`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-hotfix3`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.3-hotfix4`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -62,7 +63,7 @@
 ## 未验证 / 风险 / blocker
 
 - **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
-- **hotfix3 引入、待发版的回归**：`self` 默认改成 `complete: true` 后，与 legacy `persona` 模块注册的
+- **hotfix3 引入、hotfix4 修掉的回归**：`self` 默认改成 `complete: true` 后，与 legacy `persona` 模块注册的
   `bma3-persona` complete 段同时生效 → DSH 报 `multiple complete prompt sections are active`，整轮失败；
   而 legacy 模块**从不释放**自己的 section（`persona.js` 丢弃了 `systemPrompt.section()` 的 disposer），
   所以每次重载后老会话都会复发。修法：删除 `persona` 模块与其 loader 行；`self` 额外注册同名空段
