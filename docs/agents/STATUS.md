@@ -1,8 +1,9 @@
-# STATUS —— 更新时间：2026-11-11 21:15 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 22:42 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
+0. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
+0a. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
 0b. **0.0.3-hotfix1**：人设语义修正——`systemprompt.md` 是完整 system prompt（`complete` 默认 `true`），插件不拼任何内置内容；随 `v0.0.3-hotfix1` 发布。
 1. **0.0.3 批次 1（已完成）**：优先级规则 + 三档推送时序 + `set_config` 写入口 + 消息模型（发送人/结构化段/平台 id）。
 2. **0.0.3 批次 2（已完成）**：`qq_media_view` + `fileId` + `downloads` 落盘 + 上限/超时配置（D-019）。
@@ -14,9 +15,9 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix2`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix3`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-hotfix2`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.3-hotfix3`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -61,7 +62,7 @@
 ## 未验证 / 风险 / blocker
 
 - **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
-- **0.0.3-hotfix2 实测发现并已修的两个真 bug（待发版）**：
+- **0.0.3-hotfix2 实测发现、hotfix3 修掉的两个真 bug**：
   ⑤ **窗口外条目被"标记已推送"吞掉**：`flushPending()` 把整批 pending 都标成 delivered，而面板只渲染 top-M → 窗口外的条目再也不会推；
   ⑥ **ack 范围过大**：`POST /ack {revision}` 会 ack 所有 `eventRevision ≤ revision` 的条目，包括没进窗口、从未显示的 → 低优先级消息被静默吃掉。
   修法：flush 只标记窗口内条目；`nextDue()` 增加"窗口容量"语义（窗口满时窗口外的不算 due，等 ack 腾位）；`ackPanel(revision)` 只 ack 当前处于 delivered 状态的条目；插件 ack 改为按 `itemIds` 精确确认。

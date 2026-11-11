@@ -8,7 +8,7 @@ import java.util.concurrent.CountDownLatch;
 /** CLI entry point used by the jpackage launcher. */
 public final class Main {
 
-    public static final String VERSION = "0.0.3-hotfix2";
+    public static final String VERSION = "0.0.3-hotfix3";
 
     private Main() {
     }

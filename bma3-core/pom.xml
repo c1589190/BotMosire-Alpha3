@@ -6,7 +6,7 @@
   <parent>
     <groupId>io.mosire.bma3</groupId>
     <artifactId>bma3-parent</artifactId>
-    <version>0.0.3-hotfix2</version>
+    <version>0.0.3-hotfix3</version>
   </parent>
   <artifactId>bma3-core</artifactId>
   <name>bma3-core</name>
