@@ -6,7 +6,7 @@
   <parent>
     <groupId>io.mosire.bma3</groupId>
     <artifactId>bma3-parent</artifactId>
-    <version>0.0.3-hotfix5</version>
+    <version>0.0.3-hotfix6</version>
   </parent>
   <artifactId>bma3-webconnect</artifactId>
   <name>bma3-webconnect</name>

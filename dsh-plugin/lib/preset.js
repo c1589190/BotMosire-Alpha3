@@ -1,3 +1,5 @@
+import { hostToolRowName } from './host-tools.js'
+
 export const PRESET_ID = 'bma3'
 
 /**
@@ -21,17 +23,17 @@ export function presetDefinition() {
       },
       {
         id: 'tool-bash',
-        name: '@deepseek-ai/dsh-tool-bash',
+        name: hostToolRowName('@deepseek-ai/dsh-tool-bash'),
         disabled: process.platform === 'win32',
       },
       {
         id: 'tool-pwsh',
-        name: '@deepseek-ai/dsh-tool-pwsh',
+        name: hostToolRowName('@deepseek-ai/dsh-tool-pwsh'),
         disabled: process.platform !== 'win32',
       },
       {
         id: 'tool-fs',
-        name: '@deepseek-ai/dsh-tool-fs',
+        name: hostToolRowName('@deepseek-ai/dsh-tool-fs'),
         config: {
           read: false,
           readImage: true,
@@ -41,11 +43,11 @@ export function presetDefinition() {
       },
       {
         id: 'tool-subagent-control',
-        name: '@deepseek-ai/dsh-tool-subagent-control',
+        name: hostToolRowName('@deepseek-ai/dsh-tool-subagent-control'),
       },
       {
         id: 'tool-subagent',
-        name: '@deepseek-ai/dsh-tool-subagent',
+        name: hostToolRowName('@deepseek-ai/dsh-tool-subagent'),
         config: {
           provider: 'spawn',
           toolName: 'subagent',

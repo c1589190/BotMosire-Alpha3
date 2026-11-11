@@ -68,3 +68,27 @@ DSH profile 里启用 `bma3-preset` loader row，选择 **BMA3** preset。旧的
 
 `self` 还会在 agent scope 注册一个**同名空段** `bma3-persona`：旧进程里那个没被释放的
 global complete 段会被它遮蔽，于是热重载后老会话不需要重启就能恢复。
+
+## 预设工具行从宿主安装树解析
+
+DSH 的 preset 子行按**声明它的 loader 基点**解析——也就是 profile。profile 里没有 `@deepseek-ai`
+scope，所以早先版本写的裸包名 `@deepseek-ai/dsh-tool-bash` 一律 `ERR_MODULE_NOT_FOUND`，
+bma3 会话因此从建立起就没有 bash / read_image / 子 Agent。
+
+把这些包装进 profile 也解决不了：它们把 `@deepseek-ai/dsh-tools`、`dsh-llm`、`dsh-sandbox`、
+`cordis` 等整个宿主运行时声明成 **peerDependencies**，从 profile 导入会直接失败：
+
+```
+Cannot find package '@deepseek-ai/dsh-tools' imported from .../dsh-tool-bash/lib/index.js
+```
+
+唯一能一起解析的地方是**宿主安装树**。`lib/host-tools.js` 在那里解析这 5 个工具包：
+
+```
+createRequire(process.argv[1]).resolve('@deepseek-ai/dsh-web-app')   # 宿主里声明它们的包
+  → createRequire(<dsh-web-app>/package.json).resolve('@deepseek-ai/dsh-tool-bash')
+  → file:///…/dsh-tool-bash/lib/index.js                              # 作为 preset 行名
+```
+
+解析不到时回退成裸包名（该行挂不上，但不会拖垮整个插件），并在 `bma3_self_status.presetTools`
+里逐项报告解析结果，便于一眼看出是"没解析到"还是"没挂上"。

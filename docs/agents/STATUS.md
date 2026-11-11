@@ -1,8 +1,9 @@
-# STATUS —— 更新时间：2026-11-11 23:12 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 23:25 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix5**：修 `bma3_` 前缀把 scope-local 工具（`bma3_self_status/reload`）拉进 `tools.restrict()` 的 allow，导致 DSH 抛 "names unknown global tool"、整条工具策略失效（bash 等被状态未定义）。修法：allow 里剔除 scope-local 名字；测试桩改成严格模拟 DSH 的 restrict 校验。
+0. **0.0.3-hotfix6**：bma3 预设的 `tool-bash`/`tool-fs`/`tool-subagent*` 子行从来没挂上——preset 子插件从**声明它的 profile** 解析，profile 里没有 `@deepseek-ai` scope，裸包名 `ERR_MODULE_NOT_FOUND`，于是 bma3 会话从建立起就没有 bash/read_image/子 Agent。**把那些包装进 profile 也不行**：它们把 `@deepseek-ai/dsh-tools`、`dsh-llm`、`cordis` 等整个宿主运行时声明为 **peerDependencies**，从 profile 导入直接报 `Cannot find package '@deepseek-ai/dsh-tools'`（已实测）。修法：新增 `dsh-plugin/lib/host-tools.js`，在**宿主安装树**里解析这 5 个包（`createRequire(process.argv[1]) → dsh-web-app → dsh-tool-*`，pnpm store 扫描兜底，均带缓存），preset 行名改为它们入口的 `file:` URL；解析不到时回退裸包名，并由 `bma3_self_status.presetTools` 报出来。
+0a. **0.0.3-hotfix5**：修 `bma3_` 前缀把 scope-local 工具（`bma3_self_status/reload`）拉进 `tools.restrict()` 的 allow，导致 DSH 抛 "names unknown global tool"、整条工具策略失效（bash 等被状态未定义）。修法：allow 里剔除 scope-local 名字；测试桩改成严格模拟 DSH 的 restrict 校验。
 0a. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
 0a. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
 0a. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
@@ -17,9 +18,9 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix5`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix6`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-hotfix5`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.3-hotfix6`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -27,7 +28,7 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 21 / webconnect 4（1 skipped）/ app 23 = **78 tests, 0 fail**（2026-11-11） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：17 tests（含 complete 段唯一性回归） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：20 tests（含 complete 段唯一性、scope-local allow、宿主工具解析回退） |
 | 本地真进程端到端（假 OneBot） | `tools/e2e-local/drive*.py` | **PASS 27/27**：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
 | 统一真环境回归（真 jar + 真插件客户端） | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> <injectPort>` | **PASS 9/9**：8 个低优先来源 → 推 6 条 → 插件按 itemIds ack 6 条 → 剩 2 条下一轮补推 → 两次 ack 合计 8 条、无刷屏 |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
@@ -63,6 +64,7 @@
 
 ## 未验证 / 风险 / blocker
 
+- **预设工具行解析（hotfix6）**：`host-tools.js` 在本机实测 5/5 解析到宿主 `.pnpm` 里的真实入口；但**在真实会话里挂载成功**仍 `NOT_RUN`（需要装上后开一个 bma3 会话看 `bma3_self_status.presetTools` 与工具表）。
 - **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
 - **hotfix3 引入、hotfix4 修掉的回归**：`self` 默认改成 `complete: true` 后，与 legacy `persona` 模块注册的
   `bma3-persona` complete 段同时生效 → DSH 报 `multiple complete prompt sections are active`，整轮失败；

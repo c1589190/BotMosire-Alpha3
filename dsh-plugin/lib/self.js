@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
+import { describeHostTools } from './host-tools.js'
+
 export const DEFAULT_PROMPT = '你是 BMA3 的角色。'
 export const DEFAULT_TOOL_GROUPS = Object.freeze([
   'mcp_admin',
@@ -249,6 +251,7 @@ export class SelfState {
       promptHash: hash(this.prompt || ''),
       promptComplete: this.config.prompt.complete,
       promptSection: PERSONA_SECTION,
+      presetTools: describeHostTools(),
       legacyPersonaShadowed: true,
       configPath: this.configPath,
       configHash: hash(JSON.stringify(this.config)),
