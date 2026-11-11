@@ -47,6 +47,7 @@
 - **消息模型**：`chat_message` 增 `sender_id`/`sender_name`/`segments_json`/`external_message_id`；`Segment` 带 `data` 白名单；出站发送成功后回写平台 id；`qq_reply_to_bot` 靠该索引判定。
 - **读取工具**：`qq_conversation_history`/`qq_conversation_read`/`qq_message_get` 均带 `sender{id,name}`/`externalMessageId`/`self`，`includeSegments=true` 返回结构化段；`read` 不再要求账号在线；旧的误导字段 `from` 已删除。
 - **媒体查看**：`qq_media_view` 只接受 `fileId`（`source+messageId+index` 编码），先 `get_msg`/`get_image` 刷新 rkey 链接再按上限下载；文本 ≤64KB 内联，其余落 `<dataDir>/downloads` 返回路径；坏 id/超限不落盘。
+- **插件侧 inbox 管理**：`bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）一个工具搞定本会话挂载状态与修改；`status` 带 `thisSessionIsTarget` 与 token 来源（不回显 token）。
 - **Inbox 工具面**：`inbox_items`（含 M 之外的条目）、`inbox_get`、`inbox_wait`（只读、默认 20s/硬顶 60s）；`inbox_ack` 逐条 ack（`itemIds`/`indices`/`range` + `revision` 校验，冲突返回 409/`REVISION_CONFLICT`）。
 - **注入筛选与时钟**：`inbox.push.minPriority` 让条目"可见但不唤醒"；每轮 flush 后按 `max(updatedAt, lastFlushAt)` 重排重算。
 - **保留期**：`inbox.retention.maxAgeDays=30` / `maxItems=5000`，只清 ACKED。

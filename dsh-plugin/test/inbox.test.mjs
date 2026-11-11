@@ -66,16 +66,31 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
     token: 'secret-token',
     fetchImpl,
   })
-  assert.deepEqual(definitions.map((definition) => definition.name).sort(), [
-    'bma3_inbox_ack', 'bma3_inbox_bind', 'bma3_inbox_status', 'bma3_inbox_unbind',
-  ])
-  const bind = definitions.find((definition) => definition.name === 'bma3_inbox_bind')
-  await bind.execute({}, { agent: { id: 'session-1' } })
-  assert.equal(client.status().targetSessionId, 'session-1')
+  assert.deepEqual(definitions.map((definition) => definition.name).sort(), ['bma3_inbox'])
+  const inbox = definitions[0]
 
-  const ack = definitions.find((definition) => definition.name === 'bma3_inbox_ack')
-  const result = await ack.execute({}, { agent: { id: 'session-1' } })
-  assert.equal(JSON.parse(result.text).ackedRevision, 42)
+  const initial = JSON.parse((await inbox.execute({}, { agent: { id: 'session-1' } })).text)
+  assert.equal(initial.action, 'status')
+  assert.equal(initial.callingSession, 'session-1')
+  assert.equal(initial.running, false, 'autoStart:false ⇒ 未启动')
+  assert.equal(initial.paused, false)
+  assert.equal(initial.config.tokenSource, 'config')
+  assert.equal(initial.config.inboxId, 'bma3')
+
+  const bound = JSON.parse((await inbox.execute({ action: 'bind' }, { agent: { id: 'session-1' } })).text)
+  assert.equal(bound.targetSessionId, 'session-1')
+  assert.equal(bound.thisSessionIsTarget, true)
+
+  const other = JSON.parse((await inbox.execute({ action: 'status' }, { agent: { id: 'session-2' } })).text)
+  assert.equal(other.thisSessionIsTarget, false, '别的会话要能看出自己不是目标')
+
+  const paused = JSON.parse((await inbox.execute({ action: 'pause' }, { agent: { id: 'session-1' } })).text)
+  assert.equal(paused.paused, true)
+  assert.equal(JSON.parse((await inbox.execute({ action: 'resume' }, {})).text).paused, false)
+  assert.equal(JSON.parse((await inbox.execute({ action: 'unbind' }, {})).text).targetSessionId, null)
+
+  const ack = JSON.parse((await inbox.execute({ action: 'ack' }, { agent: { id: 'session-1' } })).text)
+  assert.equal(ack.ackedRevision, 42)
   assert.equal(calls.length, 1)
   assert.match(calls[0].url, /\/v1\/inboxes\/bma3\/ack$/)
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-token')
@@ -138,6 +153,62 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     assert.match(messages[0].content[0].text, /^\[INBOX_PANEL\]/)
     assert.match(messages[0].content[0].text, /QQ群 955432692/)
     assert.match(messages[0].content[0].text, /\[@3924945183\]/)
+    assert.equal(ackCalls, 1)
+  } finally {
+    client.stop()
+    controller.close()
+  }
+})
+
+test('pause stops injection without dropping the SSE, resume picks the next panel up', async () => {
+  const messages = []
+  const agent = {
+    id: 'session-1',
+    status: 'idle',
+    followup(message) { messages.push(message) },
+  }
+  const ctx = { agents: { get: () => agent, list: () => [agent] } }
+  let controller
+  let ackCalls = 0
+  const body = new ReadableStream({ start(next) { controller = next } })
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/events')) return { ok: true, status: 200, body }
+    if (url.endsWith('/ack')) {
+      ackCalls += 1
+      return { ok: true, status: 200, json: async () => ({ ackedRevision: 9 }) }
+    }
+    throw new Error(`unexpected URL ${url}`)
+  }
+  const client = createInboxClient(ctx, {
+    baseUrl: 'http://127.0.0.1:18766',
+    inboxId: 'bma3',
+    token: 'secret',
+    fetchImpl,
+    pumpMs: 10,
+  })
+  const panel = (revision) => 'id: ' + revision + '\nevent: panel\ndata: ' + JSON.stringify({
+    inboxId: 'bma3', revision, totalItems: 1, includeOmittedCount: true,
+    items: [{
+      source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1', priority: 300,
+      totalMessages: 1, omittedMessages: 0, entries: [{ line: '[12:00] #1 A：hi' }],
+    }],
+  }) + '\n\n'
+  try {
+    client.start()
+    client.pause()
+    controller.enqueue(new TextEncoder().encode(panel(8)))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.equal(messages.length, 0, '暂停期间不能注入')
+    assert.equal(ackCalls, 0, '暂停期间不能自己 ack（否则这条就永远看不到）')
+    assert.equal(client.status().paused, true)
+
+    client.resume()
+    controller.enqueue(new TextEncoder().encode(panel(9)))
+    const deadline = Date.now() + 2000
+    while (messages.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(messages.length, 1)
     assert.equal(ackCalls, 1)
   } finally {
     client.stop()

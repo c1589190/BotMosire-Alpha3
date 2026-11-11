@@ -48,6 +48,15 @@ terminal，且不挂本插件的人设 loader。`subagent_fork` 继承父 preset
 
 - `bma3_self_status`：查看 prompt/config hash、默认组解析结果、缺失组和锁定工具。
 - `bma3_self_reload`：重读两个工作区文件并重新应用默认工具组；下一步生效。
+- `bma3_inbox`：**一个工具管本会话的 inbox 挂载**：
+  - `action=status`（默认）：绑定会话 / 当前调用会话 / `thisSessionIsTarget`、SSE 连接与运行状态、
+    `lastRevision`/`injectedRevision`/`ackedRevision`/`pendingRevision`、`paused`、`lastError`，
+    以及配置来源（`baseUrl`/`inboxId`/`autoStart`/`tokenSource`；token 只报来源，不回显值与路径）。
+  - `action=bind`（可带 `sessionId`，省略=当前会话）/ `unbind`：改目标会话。
+  - `action=pause` / `resume`：暂停/恢复注入。暂停期间**照收 SSE、照更新 revision，但不注入也不 ack**
+    （所以恢复后不会丢那一条）。
+  - `action=start` / `stop`：开关 SSE。
+  - `action=ack`：推进面板读游标。
 
 ## 启用
 

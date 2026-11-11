@@ -11,6 +11,15 @@ function tokenFor(config) {
     ?? ''
 }
 
+/** Where the token comes from — never the value, never the path. */
+function tokenSource(config) {
+  if (config.token) return 'config'
+  if (config.tokenFile) return 'file'
+  if (config.tokenEnv) return `env:${config.tokenEnv}`
+  if (process.env.BMA3_INBOX_TOKEN) return 'env:BMA3_INBOX_TOKEN'
+  return 'none'
+}
+
 function endpoint(config, suffix = '') {
   return `${String(config.baseUrl ?? '').replace(/\/$/, '')}`
     + `/v1/inboxes/${encodeURIComponent(config.inboxId ?? 'bma3')}${suffix}`
@@ -104,6 +113,7 @@ function createState() {
     lastEventAt: null,
     lastError: null,
     targetSessionId: null,
+    paused: false,
   }
 }
 
@@ -128,6 +138,15 @@ export function createInboxClient(ctx, config = {}) {
     ...state,
     pendingRevision: pending?.revision ?? 0,
     connected: state.connection === 'open',
+    running: !stopped,
+    // 配置只报来源，不回显 token 值或文件路径。
+    config: {
+      baseUrl: config.baseUrl ?? null,
+      inboxId: config.inboxId ?? 'bma3',
+      autoStart: config.autoStart !== false,
+      tokenSource: tokenSource(config),
+      sessionId: config.sessionId ? String(config.sessionId) : null,
+    },
   })
 
   const findAgent = () => {
@@ -159,7 +178,7 @@ export function createInboxClient(ctx, config = {}) {
   }
 
   const pump = async () => {
-    if (stopped || injecting || !pending) return
+    if (stopped || state.paused || injecting || !pending) return
     injecting = true
     try {
       const panel = pending
@@ -285,13 +304,34 @@ export function createInboxClient(ctx, config = {}) {
   }
 
   if (config.sessionId) state.targetSessionId = String(config.sessionId)
-  return { start, stop, status, ack: (revision) => ack(revision), bind: (sessionId) => {
-    state.targetSessionId = String(sessionId ?? '').trim() || null
+  const pause = () => {
+    state.paused = true
+    pending = null
     return status()
-  }, unbind: () => {
-    state.targetSessionId = null
+  }
+
+  const resume = () => {
+    state.paused = false
     return status()
-  }, connect }
+  }
+
+  return {
+    start,
+    stop,
+    connect,
+    status,
+    ack: (revision) => ack(revision),
+    pause,
+    resume,
+    bind: (sessionId) => {
+      state.targetSessionId = String(sessionId ?? '').trim() || null
+      return status()
+    },
+    unbind: () => {
+      state.targetSessionId = null
+      return status()
+    },
+  }
 }
 
 const OUTPUT = {
@@ -308,12 +348,18 @@ const OUTPUT = {
   },
 }
 
-const BIND_SCHEMA = {
+const INBOX_SCHEMA = {
   type: 'object',
   properties: {
+    action: {
+      type: 'string',
+      enum: ['status', 'bind', 'unbind', 'pause', 'resume', 'start', 'stop', 'ack'],
+      description: '查看或修改本会话的 inbox 挂载：status 看状态，bind/unbind 改目标会话，'
+        + 'pause/resume 暂停或恢复注入，start/stop 开关 SSE，ack 推进面板游标。默认 status。',
+    },
     sessionId: {
       type: 'string',
-      description: 'Target DSH session id for this one inbox panel; omit to use the calling session.',
+      description: 'bind 时可指定目标 DSH 会话；省略则用调用本工具的会话。',
     },
   },
   additionalProperties: false,
@@ -325,38 +371,60 @@ export function apply(ctx, config = {}) {
   if (tools?.register) {
     const register = (definition) => ctx.effect(() => tools.register(definition))
     register({
-      name: 'bma3_inbox_bind',
+      name: 'bma3_inbox',
       description:
-        'Set the DSH session that receives this inbox panel. There is one inbox SSE, not a subscription per source.',
-      parameters: BIND_SCHEMA,
+        '查看/修改当前会话的 inbox 挂载状态。action=status 返回绑定会话、SSE 连接、游标、暂停标志与配置来源；'
+        + 'bind 把面板绑到指定会话（省略则当前会话）；unbind 解绑；pause/resume 暂停或恢复注入；'
+        + 'start/stop 开关 SSE；ack 推进读游标。不带参数等价 status。',
+      parameters: INBOX_SCHEMA,
       output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
-        const target = String(args.sessionId ?? exec.agent?.id ?? '').trim()
-        if (!target) throw new Error('sessionId 不能为空')
-        return { text: JSON.stringify(client.bind(target), null, 2) }
+        const action = String(args.action ?? 'status').trim() || 'status'
+        const callingSession = exec?.agent?.id ? String(exec.agent.id) : null
+        let value
+        switch (action) {
+          case 'status':
+            value = client.status()
+            break
+          case 'bind': {
+            const target = String(args.sessionId ?? callingSession ?? '').trim()
+            if (!target) throw new Error('sessionId 不能为空：调用方未提供会话 id 时请显式传参')
+            value = client.bind(target)
+            break
+          }
+          case 'unbind':
+            value = client.unbind()
+            break
+          case 'pause':
+            value = client.pause()
+            break
+          case 'resume':
+            value = client.resume()
+            break
+          case 'start':
+            client.start()
+            value = client.status()
+            break
+          case 'stop':
+            client.stop()
+            value = client.status()
+            break
+          case 'ack':
+            value = await client.ack()
+            break
+          default:
+            throw new Error(`未知 action: ${action}`)
+        }
+        return {
+          text: JSON.stringify({
+            action,
+            callingSession,
+            thisSessionIsTarget:
+              value.targetSessionId != null && value.targetSessionId === callingSession,
+            ...value,
+          }, null, 2),
+        }
       },
-    })
-    register({
-      name: 'bma3_inbox_unbind',
-      description: 'Clear the target DSH session; the inbox SSE connection stays available.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      output: OUTPUT,
-      execute: async () => ({ text: JSON.stringify(client.unbind(), null, 2) }),
-    })
-    register({
-      name: 'bma3_inbox_ack',
-      description: 'Advance the Inbox panel read cursor to the current revision.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      output: OUTPUT,
-      execute: async () => ({ text: JSON.stringify(await client.ack(), null, 2) }),
-    })
-    register({
-      name: 'bma3_inbox_status',
-      description:
-        'Read the one-inbox SSE connection and panel cursor without exposing tokens.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      output: OUTPUT,
-      execute: async () => ({ text: JSON.stringify(client.status(), null, 2) }),
     })
   }
 
