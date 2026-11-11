@@ -135,8 +135,9 @@ public final class InboxHttpServer implements AutoCloseable {
             InboxPanel snapshot = service.panel();
             writeEvent(output, "panel", snapshot.revision(), mapper.writeValueAsString(snapshot));
             last = Math.max(last, snapshot.revision());
+            long pushed = snapshot.pushRevision();
             while (!Thread.currentThread().isInterrupted()) {
-                InboxPanel next = service.awaitPush(java.time.Duration.ofSeconds(15));
+                InboxPanel next = service.awaitPush(pushed, java.time.Duration.ofSeconds(15));
                 if (next == null) {
                     writeEvent(output, "heartbeat", last,
                             "{\"revision\":" + last + "}");
@@ -144,6 +145,7 @@ public final class InboxHttpServer implements AutoCloseable {
                 }
                 writeEvent(output, "panel", next.revision(), mapper.writeValueAsString(next));
                 last = Math.max(last, next.revision());
+                pushed = Math.max(pushed, next.pushRevision());
             }
         } catch (IOException disconnected) {
             // Client closed the SSE; the panel itself is unaffected.

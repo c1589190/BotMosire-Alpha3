@@ -54,7 +54,7 @@ public final class InboxWaitTool implements AgentTool {
         int requested = context.arguments().get("timeoutMs") instanceof Number number
                 ? number.intValue() : DEFAULT_TIMEOUT_MS;
         int timeout = Math.max(1, Math.min(MAX_TIMEOUT_MS, requested));
-        InboxPanel panel = service.awaitPush(Duration.ofMillis(timeout));
+        InboxPanel panel = service.awaitPush(service.pushRevision(), Duration.ofMillis(timeout));
         if (panel == null) {
             return InboxTools.json(Map.of(
                     "changed", false,

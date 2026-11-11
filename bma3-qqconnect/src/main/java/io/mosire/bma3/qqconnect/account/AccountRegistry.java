@@ -5,24 +5,25 @@ import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Desired-state account registry. A reconcile adds/removes/restarts only the affected
- * connections; a failed new connection leaves the previous one alive.
+ * Desired-state account registry.
  *
- * <p>Each live connection also learns its own identity ({@code get_login_info}) so priority rules
- * such as "the bot's own nickname was mentioned" and outbound sender attribution do not need the
- * operator to hand-write the bot's QQ number.</p>
+ * <p>Important: reconcile performs slow network work (connect up to 5s, diagnostic probe up to 2s)
+ * and therefore must <b>not</b> hold a lock that inbound ingestion needs. Everything that the
+ * ingest path touches — {@link #self(String)}, {@link #client(AccountId)}, {@link #connected} — is
+ * a concurrent-map read, so a hot reload that re-probes a broken account cannot stall message
+ * ingestion (this exactly happened in the local end-to-end run).</p>
  */
 public final class AccountRegistry implements AutoCloseable {
 
@@ -47,9 +48,11 @@ public final class AccountRegistry implements AutoCloseable {
 
     private final OneBotClientFactory factory;
     private final Consumer<AccountEvent> eventSink;
-    private final Map<String, Holder> active = new HashMap<>();
-    private final Map<String, SelfIdentity> selfIdentities = new HashMap<>();
-    private final Map<String, Fault> faults = new HashMap<>();
+    private final Map<String, Holder> active = new ConcurrentHashMap<>();
+    private final Map<String, SelfIdentity> selfIdentities = new ConcurrentHashMap<>();
+    private final Map<String, Fault> faults = new ConcurrentHashMap<>();
+    /** Accounts the operator asked for, including ones that never connected. */
+    private final Set<String> configured = ConcurrentHashMap.newKeySet();
 
     public AccountRegistry(Consumer<AccountEvent> eventSink) {
         this((config, listener) -> new OneBot11Client(config.endpoint(), config.token(), listener),
@@ -61,21 +64,30 @@ public final class AccountRegistry implements AutoCloseable {
         this.eventSink = eventSink;
     }
 
-    public synchronized ReconcileResult reconcile(List<AccountConfig> desired) {
+    public ReconcileResult reconcile(List<AccountConfig> desired) {
         LinkedHashMap<String, AccountConfig> target = new LinkedHashMap<>();
         List<String> rejected = new ArrayList<>();
         for (AccountConfig config : desired) {
             if (!valid(config)) {
-                rejected.add(config.accountId());
-                faults.put(config.accountId(), new Fault("config", -1,
-                        "endpoint 必须是 ws:// 或 wss://（OneBot 正向 WS）；当前: "
-                                + (config == null ? "null" : config.endpoint()), java.time.Instant.now()));
+                rejected.add(config == null ? "" : config.accountId());
+                if (config != null) {
+                    faults.put(config.accountId(), new Fault("config", -1,
+                            "endpoint 必须是 ws:// 或 wss://（OneBot 正向 WS）；当前: "
+                                    + config.endpoint(), java.time.Instant.now()));
+                }
                 continue;
             }
             if (target.putIfAbsent(config.accountId(), config) != null) {
                 rejected.add(config.accountId());
             }
         }
+        configured.clear();
+        configured.addAll(target.keySet());
+        desired.stream()
+                .filter(config -> config != null && config.accountId() != null
+                        && !config.accountId().isBlank())
+                .map(AccountConfig::accountId)
+                .forEach(configured::add);
 
         List<String> removed = new ArrayList<>();
         Set<String> targetIds = new LinkedHashSet<>(target.keySet());
@@ -100,9 +112,10 @@ public final class AccountRegistry implements AutoCloseable {
                 }
                 continue;
             }
-            if (current.config.equals(config)) {
+            if (current.config().equals(config)) {
                 continue;
             }
+            // Slow path (connect + awaitReady) runs without any registry lock held.
             OneBot11Client replacement = create(config);
             if (replacement == null) {
                 rejected.add(accountId);
@@ -111,8 +124,11 @@ public final class AccountRegistry implements AutoCloseable {
             try {
                 replacement.start();
                 replacement.awaitReady(Duration.ofSeconds(5));
-                current.client.close();
-                active.put(accountId, new Holder(config, replacement));
+                Holder previous = active.put(accountId, new Holder(config, replacement));
+                if (previous != null) {
+                    previous.client().close();
+                }
+                faults.remove(accountId);
                 restarted.add(accountId);
                 learnIdentity(accountId, replacement);
             } catch (RuntimeException failure) {
@@ -124,62 +140,42 @@ public final class AccountRegistry implements AutoCloseable {
         return new ReconcileResult(added, removed, restarted, rejected);
     }
 
-    public synchronized Optional<OneBot11Client> client(AccountId accountId) {
+    public Optional<OneBot11Client> client(AccountId accountId) {
         Holder holder = active.get(accountId.value());
-        return holder == null ? Optional.empty() : Optional.of(holder.client);
+        return holder == null ? Optional.empty() : Optional.of(holder.client());
     }
 
-    public synchronized List<AccountId> accounts() {
+    /** Desired accounts (connected or not), so a failed one still shows up with its lastError. */
+    public List<AccountId> accounts() {
+        if (!configured.isEmpty()) {
+            return configured.stream().map(AccountId::new).toList();
+        }
         return active.keySet().stream().map(AccountId::new).toList();
     }
 
     /** Last known connection fault, cleared on a successful connect. */
-    public synchronized Optional<Fault> fault(String accountId) {
+    public Optional<Fault> fault(String accountId) {
         return Optional.ofNullable(faults.get(accountId));
     }
 
     /** True when the account has a live socket (not merely a registry entry). */
-    public synchronized boolean connected(String accountId) {
+    public boolean connected(String accountId) {
         Holder holder = active.get(accountId);
-        return holder != null && holder.client.connected();
-    }
-
-    /**
-     * Records a connect failure: maps it to an actionable hint and, when the operator allowed it,
-     * probes the same host:port with a plain HTTP GET to tell "HTTP API port" apart from "wrong
-     * path/token".
-     */
-    private void recordFault(String accountId, String phase, RuntimeException failure,
-                             OneBot11Client client) {
-        var diagnosis = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.of(failure);
-        String hint = diagnosis.hint();
-        if (client != null && client.endpoint() != null) {
-            int probe = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.probeHttp(
-                    client.endpoint(), java.time.Duration.ofSeconds(2));
-            if (probe > 0) {
-                hint = hint + "（探测 " + client.endpoint().getHost() + ":"
-                        + (client.endpoint().getPort() > 0 ? client.endpoint().getPort() : 80)
-                        + " 的普通 HTTP 返回 " + probe + "：该端口是 HTTP 服务，不是 WS 端点）";
-            }
-        }
-        faults.put(accountId, new Fault(phase, diagnosis.httpStatus(), hint,
-                java.time.Instant.now()));
-        LOG.error("event=qq_account_connect_failed accountId={} phase={} status={} hint={}",
-                accountId, phase, diagnosis.httpStatus(), hint);
+        return holder != null && holder.client().connected();
     }
 
     /** The bot's own identity for an account, once {@code get_login_info} answered. */
-    public synchronized Optional<SelfIdentity> self(String accountId) {
+    public Optional<SelfIdentity> self(String accountId) {
         return Optional.ofNullable(selfIdentities.get(accountId));
     }
 
     /** Snapshot of learned/overridden identities, for status tools. */
-    public synchronized Map<String, SelfIdentity> selfIdentitySummary() {
+    public Map<String, SelfIdentity> selfIdentitySummary() {
         return Map.copyOf(selfIdentities);
     }
 
     /** Records an identity learned elsewhere (for example an explicit config override). */
-    public synchronized void self(String accountId, SelfIdentity identity) {
+    public void self(String accountId, SelfIdentity identity) {
         if (accountId == null || accountId.isBlank() || identity == null || !identity.known()) {
             return;
         }
@@ -187,7 +183,7 @@ public final class AccountRegistry implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
         for (String accountId : new ArrayList<>(active.keySet())) {
             remove(accountId);
         }
@@ -254,8 +250,32 @@ public final class AccountRegistry implements AutoCloseable {
         Holder holder = active.remove(accountId);
         selfIdentities.remove(accountId);
         if (holder != null) {
-            holder.client.close();
+            holder.client().close();
         }
+    }
+
+    /**
+     * Records a connect failure: maps it to an actionable hint and, when the operator allowed it,
+     * probes the same host:port with a plain HTTP GET to tell "HTTP API port" apart from "wrong
+     * path/token". Runs outside any lock.
+     */
+    private void recordFault(String accountId, String phase, RuntimeException failure,
+                             OneBot11Client client) {
+        var diagnosis = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.of(failure);
+        String hint = diagnosis.hint();
+        if (client != null && client.endpoint() != null) {
+            int probe = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.probeHttp(
+                    client.endpoint(), Duration.ofSeconds(2));
+            if (probe > 0) {
+                hint = hint + "（探测 " + client.endpoint().getHost() + ":"
+                        + (client.endpoint().getPort() > 0 ? client.endpoint().getPort() : 80)
+                        + " 的普通 HTTP 返回 " + probe + "：该端口是 HTTP 服务，不是 WS 端点）";
+            }
+        }
+        faults.put(accountId, new Fault(phase, diagnosis.httpStatus(), hint,
+                java.time.Instant.now()));
+        LOG.error("event=qq_account_connect_failed accountId={} phase={} status={} hint={}",
+                accountId, phase, diagnosis.httpStatus(), hint);
     }
 
     private static boolean valid(AccountConfig config) {

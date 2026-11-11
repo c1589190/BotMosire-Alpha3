@@ -5,6 +5,8 @@ public record InboxStatus(
         int available,
         int acked,
         int remainingImportant,
+        int pendingPush,
+        String nextPushAt,
         long panelRevision,
         long ackedRevision,
         int unread) {

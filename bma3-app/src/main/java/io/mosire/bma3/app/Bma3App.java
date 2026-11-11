@@ -234,6 +234,13 @@ public final class Bma3App implements AutoCloseable {
                 selfName(accounts, current.get(), accountEvent.accountId()), replyToBot);
         PriorityDecision decision = priorities.resolve(sourceKey, senderId,
                 event.senderName(), attributes);
+        if (LOG.isDebugEnabled()) {
+            // Same arithmetic as the decision, so "why did this wake me?" is answerable from logs.
+            LOG.debug("event=qq_message_scored sourceKey={} senderId={} priority={} immediate={} "
+                            + "dropped={} attributes={} reasons={}",
+                    sourceKey, senderId, decision.priority(), decision.immediate(),
+                    decision.dropped(), attributes.keys(), decision.reasons());
+        }
         if (decision.dropped()) {
             LOG.info("event=qq_message_dropped accountId={} sourceKey={} priority={}",
                     accountEvent.accountId(), sourceKey, decision.priority());

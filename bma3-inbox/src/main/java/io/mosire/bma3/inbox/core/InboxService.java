@@ -40,6 +40,12 @@ public final class InboxService {
     private int appendsSincePurge;
     /** itemId -> the item revision that was already handed to a push. */
     private final Map<String, Integer> pushedItems = new HashMap<>();
+    /**
+     * itemId -> when this item first started owing a push. Anchoring on the <b>first</b> message is
+     * what makes "a busy source cannot postpone its own batch" true: merging only refreshes
+     * {@code updatedAt}, so that field must not be the anchor.
+     */
+    private final Map<String, Instant> pendingSince = new HashMap<>();
     /** When the last push round happened; pending items are re-scheduled from here. */
     private Instant lastFlushAt = Instant.EPOCH;
 
@@ -73,7 +79,7 @@ public final class InboxService {
                 summary, entries, 1, revision, request.priority(),
                 ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1);
         store.append(item);
-        afterAppend();
+        afterAppend(item);
         return item;
     }
 
@@ -93,7 +99,7 @@ public final class InboxService {
                     summary, entries, 1, revision, request.priority(),
                     ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1);
             store.append(created);
-            afterAppend();
+            afterAppend(created);
             return created;
         }
 
@@ -113,7 +119,7 @@ public final class InboxService {
                 Math.max(item.priority(), request.priority()), Instant.now(),
                 item.revision() + 1);
         store.update(updated);
-        afterAppend();
+        afterAppend(updated);
         return updated;
     }
 
@@ -160,6 +166,7 @@ public final class InboxService {
             if (item.status() != ItemStatus.ACKED && item.eventRevision() <= target) {
                 store.update(item.withStatus(ItemStatus.ACKED));
                 pushedItems.remove(item.id());
+                pendingSince.remove(item.id());
             }
         }
         ackedRevision = target;
@@ -190,6 +197,7 @@ public final class InboxService {
             }
             store.update(item.withStatus(ItemStatus.ACKED));
             pushedItems.remove(item.id());
+            pendingSince.remove(item.id());
             covered = Math.max(covered, item.eventRevision());
             acked++;
         }
@@ -254,9 +262,14 @@ public final class InboxService {
      *
      * <p>Returns {@code null} on timeout (heartbeat/no change).</p>
      */
-    public synchronized InboxPanel awaitPush(Duration timeout) {
+    public synchronized InboxPanel awaitPush(long lastPushRevision, Duration timeout) {
         long deadline = System.nanoTime() + Math.max(0, timeout.toNanos());
         while (!closed) {
+            // A push that another thread performed while we were waiting is still ours to deliver:
+            // delivery is a cursor (pushRevision), not a race between waiters.
+            if (pushRevision > lastPushRevision) {
+                return panel();
+            }
             Instant due = nextDue();
             if (due == null) {
                 long remaining = Duration.ofNanos(deadline - System.nanoTime()).toMillis();
@@ -307,8 +320,11 @@ public final class InboxService {
             if (pushed != null && pushed == item.revision()) {
                 continue;
             }
-            // After a push round, everything pending is re-scheduled from that round.
-            Instant anchor = item.updatedAt().isAfter(lastFlushAt) ? item.updatedAt() : lastFlushAt;
+            // Anchor = when this item first owed a push (never its latest message), but never
+            // earlier than the last push round.
+            Instant firstPending = pendingSince.computeIfAbsent(item.id(),
+                    id -> item.updatedAt().isAfter(lastFlushAt) ? item.updatedAt() : lastFlushAt);
+            Instant anchor = firstPending.isAfter(lastFlushAt) ? firstPending : lastFlushAt;
             Duration delay = item.priority() >= policy.importantThreshold()
                     ? policy.importantDelay() : policy.normalDelay();
             Instant due = anchor.plus(delay);
@@ -331,6 +347,7 @@ public final class InboxService {
                 continue;
             }
             pushedItems.put(item.id(), item.revision());
+            pendingSince.remove(item.id());
         }
         lastFlushAt = Instant.now();
         pushRevision++;
@@ -357,8 +374,17 @@ public final class InboxService {
                 remainingImportant++;
             }
         }
-        return new InboxStatus(available, acked, remainingImportant,
-                panelRevision, ackedRevision, unread);
+        int pending = 0;
+        for (InboxItem item : store.items()) {
+            Integer pushed = pushedItems.get(item.id());
+            if (item.status() != ItemStatus.ACKED
+                    && (pushed == null || pushed != item.revision())) {
+                pending++;
+            }
+        }
+        Instant next = nextDue();
+        return new InboxStatus(available, acked, remainingImportant, pending,
+                next == null ? "" : next.toString(), panelRevision, ackedRevision, unread);
     }
 
     public synchronized List<ItemSummary> list() {
@@ -374,7 +400,12 @@ public final class InboxService {
         notifyAll();
     }
 
-    private void afterAppend() {
+    private void afterAppend(InboxItem item) {
+        // The batch clock starts at the FIRST message that owes a push; merging more messages into
+        // the same window must not move it (operator ruling: 不重置时间). The entry is dropped when
+        // the item is flushed or acked, so a later message starts a fresh clock.
+        pendingSince.putIfAbsent(item.id(), Instant.now());
+        pendingSince.keySet().removeIf(id -> store.item(id).isEmpty());
         appendsSincePurge++;
         if (appendsSincePurge >= PURGE_EVERY_APPENDS) {
             purgeNow();

@@ -37,15 +37,23 @@ class InboxPushScheduleTest {
                 Instant.now()));
     }
 
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void aLowPriorityItemWaitsForTheBatchDelay() {
         InboxService service = service();
         append(service, "qq_group/1", 200, "群里闲聊");
 
-        assertThat(service.awaitPush(Duration.ofMillis(120)))
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(120)))
                 .as("批次还没到点，不能推")
                 .isNull();
-        InboxPanel pushed = service.awaitPush(Duration.ofSeconds(2));
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         assertThat(pushed).isNotNull();
         assertThat(pushed.items()).hasSize(1);
         assertThat(pushed.revision()).isPositive();
@@ -57,7 +65,7 @@ class InboxPushScheduleTest {
         append(service, "qq_group/1", 200, "群里闲聊");
         append(service, "qq_private/2", 350, "私聊急事");
 
-        InboxPanel pushed = service.awaitPush(Duration.ofSeconds(2));
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         assertThat(pushed).isNotNull();
         assertThat(pushed.items())
                 .as("一条立即项要让所有 pending 一起走，而不是只推它自己")
@@ -77,7 +85,7 @@ class InboxPushScheduleTest {
         append(service, "qq_group/2", 200, "第二条");
 
         long before = System.nanoTime();
-        InboxPanel pushed = service.awaitPush(Duration.ofSeconds(2));
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         long elapsedMillis = Duration.ofNanos(System.nanoTime() - before).toMillis();
 
         assertThat(pushed).isNotNull();
@@ -91,9 +99,9 @@ class InboxPushScheduleTest {
     void anAlreadyPushedItemIsNotPushedAgain() {
         InboxService service = service();
         append(service, "qq_group/1", 200, "群里闲聊");
-        assertThat(service.awaitPush(Duration.ofSeconds(2))).isNotNull();
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofSeconds(2))).isNotNull();
 
-        assertThat(service.awaitPush(Duration.ofMillis(200)))
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(200)))
                 .as("没人 ack 时也不能每一跳都重复唤醒")
                 .isNull();
     }
@@ -102,14 +110,31 @@ class InboxPushScheduleTest {
     void aPushRoundResetsTheClockForWhatComesNext() {
         InboxService service = service();
         append(service, "qq_group/1", 200, "第一批");
-        InboxPanel first = service.awaitPush(Duration.ofSeconds(2));
+        InboxPanel first = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         assertThat(first).isNotNull();
 
         append(service, "qq_group/2", 200, "第二批");
-        assertThat(service.awaitPush(Duration.ofMillis(150)))
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(150)))
                 .as("上一轮推过之后要重新计时，不能拿上一轮的锚点立刻再推")
                 .isNull();
-        assertThat(service.awaitPush(Duration.ofSeconds(2))).isNotNull();
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofSeconds(2))).isNotNull();
+    }
+
+    @Test
+    void aBusySourceDoesNotPostponeItsOwnBatch() {
+        InboxService service = service();
+        long start = System.nanoTime();
+        append(service, "qq_group/1", 200, "第一条");
+        sleep(250L);
+        append(service, "qq_group/1", 200, "第二条");
+
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
+
+        assertThat(pushed).isNotNull();
+        assertThat(elapsedMillis)
+                .as("同一个来源继续发消息只是合并窗口，不能把批次时钟往后推")
+                .isLessThan(600L);
     }
 
     @Test
@@ -120,7 +145,7 @@ class InboxPushScheduleTest {
                 () -> new InboxRuntime(6, 6, true, IMMEDIATE_THRESHOLD, 30, 5000));
         append(service, "qq_group/1", 200, "太低，不推");
 
-        assertThat(service.awaitPush(Duration.ofMillis(500))).isNull();
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(500))).isNull();
         assertThat(service.panel().items()).as("工具侧仍然看得到").hasSize(1);
     }
 
@@ -128,7 +153,7 @@ class InboxPushScheduleTest {
     void ackingRemovesTheItemFromThePanel() {
         InboxService service = service();
         append(service, "qq_group/1", 200, "群里闲聊");
-        InboxPanel pushed = service.awaitPush(Duration.ofSeconds(2));
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         assertThat(pushed).isNotNull();
 
         service.ackPanel(pushed.revision());

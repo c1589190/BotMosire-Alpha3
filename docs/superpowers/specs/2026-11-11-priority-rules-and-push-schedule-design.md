@@ -285,6 +285,11 @@ qqconnect:
 
 ## 12. 不变量
 
+- **推送是游标，不是竞态**：`pushRevision` 是最新一次 flush 的编号；`awaitPush(lastPush, …)` 在入口先检查
+  `pushRevision > lastPush` 并立即返回，因此"某个读者慢/断开"不会让这一轮推送从在线读者眼前消失。
+- **慢路径不持锁**：`AccountRegistry.reconcile()` 的连接/探测在锁外完成；入站只用并发 map 读身份。
+- **批次锚点 = 该条目首次欠推送的时刻**（`pendingSince`），不是它最后一条消息的 `updatedAt`。
+
 1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。
 2. `qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三工具**不存在**。
 3. `< dropBelow` 的消息**不落消息板**。
@@ -313,10 +318,13 @@ qqconnect:
 | 14 | 426/401/404/拒绝/DNS 的 hint；HTTP 探测能确认「这是 HTTP 端口」 | `OneBotDiagnosticsTest`（5 例） |
 | 15 | MCP 401 响应体自带 errorCode/reason/hint 且不含 token | `Bma3McpServerTest` |
 | 16 | 删除 delivery 路径与三个重复工具后全量仍 PASS | `./mvnw -q test` 76 tests / 1 skipped；`dsh-plugin npm test` 14 |
+| 17 | **本地真进程 e2e**（假 OneBot + 真 MCP/HTTP）：三档时序、合并带走、逐条 ack、`set_config` 热重载、丢弃线、媒体下载、诊断 hint、read/ack 游标、引用回写平台 id | `tools/e2e-local/` 四套驱动 **27/27 PASS × 两轮可重复**（2026-11-11） |
 
 ## 14. 风险 / 未验证
 
 - **真实 LLBot/DSH 联调 `NOT_RUN`**：`get_login_info`、`external_message_id` 回写、SSE 推送节奏都只有 fake/回环证据。
+- **e2e 抓到并修掉的四条**（2026-11-11）：同一来源连发把批次时钟后推；连不上的账号从 `qq_account_list` 消失；flush 被旧连接抢走导致在线客户端漏收；热重载持锁卡住入站。
+- **`set_config` 会重写整份 YAML**：注释与键顺序会丢（Jackson 序列化），值不变。
 - **重启后推送状态丢失**：`pushedItems` 是内存表，重启后所有未 ack item 会重新进入 pending（按 `updatedAt + delay` 计算，通常立即 flush 一次）。这是有意的"宁重推不漏推"，但需真实环境观察。
 - **加分叠加可能超预期**：`@bot + 引用 + 喊名字` 会累加；`maxPriority` 只封顶不降噪，最终靠 `dropBelow`/权重。
 - **`self_name` 子串匹配**误命中率高（"小博"、"bot"），默认 `+60` 刻意压在立即线以下。

@@ -59,6 +59,11 @@ final class ConfigView {
         display.put("maxMessagesPerItem", config.inbox().display().maxMessagesPerItem());
         display.put("maxItemsPerPanel", config.inbox().display().maxItemsPerPanel());
         display.put("includeOmittedCount", config.inbox().display().includeOmittedCount());
+        ObjectNode push = inbox.putObject("push");
+        push.put("minPriority", config.inbox().push().minPriority());
+        ObjectNode retention = inbox.putObject("retention");
+        retention.put("maxAgeDays", config.inbox().retention().maxAgeDays());
+        retention.put("maxItems", config.inbox().retention().maxItems());
 
         ObjectNode webconnect = root.putObject("webconnect");
         webconnect.put("enabled", config.webconnect().enabled());

@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-11 22:00 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 19:38 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -23,7 +23,8 @@
 |---|---|---|
 | Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 19 / webconnect 4（1 skipped）/ app 23 = **76 tests, 0 fail**（2026-11-11） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：14 tests |
-| 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
+| 本地真进程端到端（假 OneBot） | `tools/e2e-local/*`（见其 README） | **PASS 27/27 × 两轮可重复**（2026-11-11 19:3x）：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
+| 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
 | 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
 | `packaging/smoke.sh` / systemd | — | `NOT_RUN` |
 
@@ -54,7 +55,12 @@
 
 ## 未验证 / 风险 / blocker
 
-- **真实联调 `NOT_RUN`**：`get_login_info` 学习、平台 id 回写、SSE 推送节奏、`set_config` 热重载都只有 fake/回环证据。
+- **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
+- **e2e 发现并已修的四个真 bug**：
+  ① 同一来源连发会把批次时钟往后推（合并刷新 `updatedAt`）→ 锚定"首次欠推送时刻" `pendingSince`；
+  ② 连不上的账号从 `qq_account_list` 里消失（只列 active）→ 改为列"配置中的账号"；
+  ③ **推送被旧连接抢走**：flush 由"谁先等到"执行，慢/断开的 SSE 读者可能把这一轮推掉，在线客户端收不到 → 改为按 `pushRevision` 投递游标，任何等待者都能补收；
+  ④ **热重载卡住入站**：`reconcile()` 持注册表锁做"连接 5s + 诊断探测 2s"，入站要同一把锁读 bot 身份 → 改成并发 map，慢路径不持锁。
 - **`pushedItems` 是内存表**：重启后未 ack item 会重新进入 pending（按 `updatedAt + delay`），通常立即 flush 一次；宁重推不漏推，需真实环境观察。
 - **`self_name` 子串匹配**误命中率高（"小博"/"bot"），默认 +60 压在立即线以下。
 - **旧库迁移**：`chat_message` 新列是 additive；`qq-extras.db` 打开时 `DROP COLUMN priority` / `DROP TABLE qq_source_weight`；远端库需先备份。
@@ -64,7 +70,7 @@
 
 ## 下一步
 
-1. 批次 5：真实 LLBot/DSH 联调（`get_login_info`、平台 id 回写、推送节奏、逐条 ack、`set_config` 热重载、诊断 hint）。
+1. 批次 5：真实 LLBot/DSH 联调（本地假 OneBot 已 PASS，真机仍 `NOT_RUN`）（`get_login_info`、平台 id 回写、推送节奏、逐条 ack、`set_config` 热重载、诊断 hint）。
 2. 真实宿主验证 MCP 图片通道，再决定媒体是否补 `assetDocIds`（D-035 暂缓）。
 3. 联调通过后再决定 0.0.3 发版与版本号 bump。
 4. 全部就绪后做一次真实 LLBot/DSH 联调，再决定 0.0.3 发版与版本号 bump。
