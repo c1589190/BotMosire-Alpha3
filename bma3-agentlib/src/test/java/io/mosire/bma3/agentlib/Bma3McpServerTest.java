@@ -32,7 +32,7 @@ class Bma3McpServerTest {
     @Test
     void exposesRegisteredToolsThroughLoopbackBearerMcp() {
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "iibot-bot-test", "0.0.3-hotfix1", List.of(new EchoTool()));
+                "iibot-bot-test", "0.0.3-hotfix2", List.of(new EchoTool()));
         McpSyncClient client = null;
         try {
             server.start();
@@ -67,7 +67,7 @@ class Bma3McpServerTest {
                 ? java.util.Optional.of(new ToolAsset("image/png", new byte[]{1, 2, 3}))
                 : java.util.Optional.empty();
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "iibot-bot-test", "0.0.3-hotfix1", List.of(new AssetTool()), resolver);
+                "iibot-bot-test", "0.0.3-hotfix2", List.of(new AssetTool()), resolver);
         McpSyncClient client = null;
         try {
             server.start();
@@ -103,7 +103,7 @@ class Bma3McpServerTest {
     @Test
     void rejectsMissingBearer() throws Exception {
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "bma3-test", "0.0.3-hotfix1", List.of(new EchoTool()))
+                "bma3-test", "0.0.3-hotfix2", List.of(new EchoTool()))
                 .authHint("BMA3_MCP_TOKEN");
         try {
             server.start();
@@ -132,7 +132,7 @@ class Bma3McpServerTest {
     @Test
     void aWrongTokenIsDistinguishedFromAMissingOne() throws Exception {
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "bma3-test", "0.0.3-hotfix1", List.of(new EchoTool()))
+                "bma3-test", "0.0.3-hotfix2", List.of(new EchoTool()))
                 .authHint("BMA3_MCP_TOKEN");
         try {
             server.start();
@@ -155,7 +155,7 @@ class Bma3McpServerTest {
     @Test
     void rejectsUnknownPath() throws Exception {
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "bma3-test", "0.0.3-hotfix1", List.of(new EchoTool()));
+                "bma3-test", "0.0.3-hotfix2", List.of(new EchoTool()));
         try {
             server.start();
             HttpResponse<String> response = HttpClient.newHttpClient().send(
