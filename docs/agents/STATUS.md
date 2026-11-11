@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-11 19:38 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 19:49 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -12,9 +12,9 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-early`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号仍为 `0.0.2-hotfix1`（未 bump，等发版前统一处理）；`--version` 与 MCP serverVersion 与 pom 一致。
+- 版本号：`0.0.3-early`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -26,7 +26,8 @@
 | 本地真进程端到端（假 OneBot） | `tools/e2e-local/*`（见其 README） | **PASS 27/27 × 两轮可重复**（2026-11-11 19:3x）：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
 | 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
-| `packaging/smoke.sh` / systemd | — | `NOT_RUN` |
+| `packaging/smoke.sh`（jlink/jpackage + 安装 dry-run + 启动 /healthz） | `bash packaging/smoke.sh` | **PASS**（2026-11-11，app-image 启动且 /healthz=200） |
+| systemd 实际安装/开机常驻 | — | `NOT_RUN` |
 
 ## 当前有效设计 / 维护入口
 
