@@ -19,9 +19,17 @@ const DEFAULT_MAX_BYTES = 32768
 const CONFIG_MAX_BYTES = 65536
 const BASIC_BMA3_BASENAMES = new Set([
   'inbox_list',
+  'inbox_items',
+  'inbox_get',
   'inbox_ack',
   'inbox_status',
+  'inbox_wait',
   'qq_thread_list',
+  'qq_conversation_history',
+  'qq_message_get',
+  'qq_media_view',
+  'get_config',
+  'set_config',
   'qq_conversation_read',
   'qq_conversation_send',
   'qq_reply',

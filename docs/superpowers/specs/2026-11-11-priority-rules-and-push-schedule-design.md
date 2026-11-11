@@ -270,7 +270,20 @@ qqconnect:
 - **无白名单**（D-028）：端口/host 这类非热重载项写进去不会生效，返回 `reloaded:false` 并提示需重启；
 - `get_config` 只返回非敏感值（token 只以环境变量名出现）。
 
-## 11. 不变量
+## 11. 删除清单（D-036）
+
+为减少重复面，以下已删除且不再提供等价入口：
+
+| 删除 | 替代 |
+|---|---|
+| `Delivery` / `DeliveryState` / `DeliveryAck` / `InboxService.due()/ack(deliveryId)` / `inbox_delivery` 表 / `retryTtl`+`maxAttempts` | `awaitPush` + 逐条 ack |
+| `POST /deliveries/due`、`POST /deliveries/{id}/ack` | `POST /ack {revision\|itemIds\|indices}` |
+| `inbox_ack(deliveryId)` | `inbox_ack(itemIds/indices/range)` |
+| `qq_recent_messages` | `qq_thread_list` + `qq_conversation_history` |
+| `qq_account_login_info` | `qq_account_list.self`（连接时 `get_login_info` 自动学习） |
+| `qq_user_note_get` | `qq_user_note_list` |
+
+## 12. 不变量
 
 1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。
 2. `qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三工具**不存在**。
@@ -280,7 +293,7 @@ qqconnect:
 6. `broadcast` 批次的锚点是最早的 pending 项，后到者不重置。
 7. 出站消息只有发送成功后才有 `external_message_id`；`UNKNOWN` 不重发。
 
-## 12. 验收判据（本批已覆盖）
+## 13. 验收判据（本批已覆盖）
 
 | # | 判据 | 证据 |
 |---|---|---|
@@ -299,9 +312,9 @@ qqconnect:
 | 13 | 推完一轮重置时钟；低于注入筛选线只可见不唤醒 | `InboxPushScheduleTest`（7 例） |
 | 14 | 426/401/404/拒绝/DNS 的 hint；HTTP 探测能确认「这是 HTTP 端口」 | `OneBotDiagnosticsTest`（5 例） |
 | 15 | MCP 401 响应体自带 errorCode/reason/hint 且不含 token | `Bma3McpServerTest` |
-| 16 | `./mvnw -q test` PASS（80 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
+| 16 | 删除 delivery 路径与三个重复工具后全量仍 PASS | `./mvnw -q test` 76 tests / 1 skipped；`dsh-plugin npm test` 14 |
 
-## 13. 风险 / 未验证
+## 14. 风险 / 未验证
 
 - **真实 LLBot/DSH 联调 `NOT_RUN`**：`get_login_info`、`external_message_id` 回写、SSE 推送节奏都只有 fake/回环证据。
 - **重启后推送状态丢失**：`pushedItems` 是内存表，重启后所有未 ack item 会重新进入 pending（按 `updatedAt + delay` 计算，通常立即 flush 一次）。这是有意的"宁重推不漏推"，但需真实环境观察。

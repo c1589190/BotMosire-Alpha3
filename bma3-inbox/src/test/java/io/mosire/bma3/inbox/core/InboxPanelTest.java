@@ -17,8 +17,7 @@ class InboxPanelTest {
 
     private static InboxService service(SqliteInboxStore store, int maxMessages, int maxItems) {
         return new InboxService(store,
-                new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                        Duration.ofMinutes(10), 3),
+                new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)),
                 "bma3", () -> new InboxRuntime(maxMessages, maxItems, true));
     }
 
@@ -103,8 +102,7 @@ class InboxPanelTest {
             java.util.concurrent.atomic.AtomicInteger maxMessages =
                     new java.util.concurrent.atomic.AtomicInteger(6);
             InboxService service = new InboxService(store,
-                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                            Duration.ofMinutes(10), 3),
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)),
                     "bma3", () -> new InboxRuntime(maxMessages.get(), 6, true));
             SourceView source = SourceView.of("qq_group/bot-1/1", "QQ群 1");
             for (int i = 1; i <= 6; i++) {

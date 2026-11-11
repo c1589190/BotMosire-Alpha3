@@ -54,6 +54,14 @@
 - **D-034**：`Bma3McpServer.authFailure/unauthorizedBody` + `authHint`。
 - **D-035**：`QqMediaViewTool` 返回 `path` + `hint`；`ToolAssetResolver` 未接线。
 
+| D-036 | 2026-11-11 | 本会话用户消息 | 「删掉多余的工具和测试」 | 删除 legacy delivery 唤醒路径（`Delivery`/`DeliveryState`/`DeliveryAck`/`due()`/`ack(deliveryId)`/`/deliveries/*` HTTP/`inbox_delivery` 表/`retryTtl`+`maxAttempts`）与其专属测试；再删三个与保留工具重复的工具：`qq_recent_messages`、`qq_account_login_info`、`qq_user_note_get` |
+
+## D-036 代码环境语义
+
+- `bma3-inbox`：`ItemStatus` 只留 `AVAILABLE/ACKED`（老库里的 DELIVERED/UNDELIVERED 读成 AVAILABLE）；`InboxStatus` 收缩为 available/acked/remainingImportant/revision/unread。
+- 工具面：QQ 16 + Inbox 6 + 配置 2 = 24 个；`inbox_ack` 只剩 itemIds/indices/range/revision。
+- `dsh-plugin/lib/self.js` 的默认工具组补上 `inbox_items/inbox_get/inbox_wait/qq_media_view/qq_conversation_history/qq_message_get/get_config/set_config`。
+
 ## D-017..D-028 代码环境语义
 
 > 按 M-002：每条裁定除决定本身外，必须能定位到模块、数据结构、状态机、配置、并发/失败模式与验收。完整实现细节在 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md)。

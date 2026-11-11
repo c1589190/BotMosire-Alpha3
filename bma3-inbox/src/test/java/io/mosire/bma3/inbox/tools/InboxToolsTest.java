@@ -39,8 +39,7 @@ class InboxToolsTest {
 
     private InboxService service(SqliteInboxStore store, Duration normalDelay) {
         return new InboxService(store,
-                new DeliveryPolicy(300, Duration.ofMillis(80), normalDelay,
-                        Duration.ofMinutes(10), 3));
+                new DeliveryPolicy(300, Duration.ofMillis(80), normalDelay));
     }
 
     private static void append(InboxService service, String source, int priority, String text) {

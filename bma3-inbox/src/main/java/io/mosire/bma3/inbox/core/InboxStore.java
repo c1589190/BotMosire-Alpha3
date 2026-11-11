@@ -25,12 +25,6 @@ public interface InboxStore extends AutoCloseable {
      */
     int purge(java.time.Instant cutoff, int maxItems);
 
-    void saveDelivery(Delivery delivery);
-
-    Optional<Delivery> delivery(String id);
-
-    List<Delivery> deliveries();
-
     /** Monotonic panel revision, persisted across restarts. */
     long panelRevision();
 

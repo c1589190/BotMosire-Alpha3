@@ -26,14 +26,12 @@ final class QqToolSupport {
         return List.of(
                 new QqAccountListTool(context),
                 new QqAccountStatusTool(context),
-                new QqAccountLoginInfoTool(context),
                 new QqContactListTool(context, "qq_group_list", "get_group_list",
                         "列出 Bot 账号已加入的 QQ 群（OneBot get_group_list）；只读。"),
                 new QqContactListTool(context, "qq_friend_list", "get_friend_list",
                         "列出 Bot 账号的 QQ 好友（OneBot get_friend_list）；只读。"),
                 new QqThreadListTool(context),
                 new QqConversationHistoryTool(context),
-                new QqRecentMessagesTool(context),
                 new QqMessageGetTool(context),
                 new QqConversationReadTool(context),
                 new QqConversationSendTool(context),
@@ -41,7 +39,6 @@ final class QqToolSupport {
                 new QqMediaViewTool(context),
                 new QqReplyTool(context),
                 new QqPrivateSendTool(context),
-                new QqUserNoteGetTool(context),
                 new QqUserNoteListTool(context),
                 new QqUserNoteUpsertTool(context),
                 new QqConversationAckTool(context));

@@ -36,8 +36,7 @@ public final class InboxAckTool implements AgentTool {
     public String description() {
         return "ack 指定 inbox 条目（每个条目独立 ack）：itemIds[] 精确指定；indices[] 或 "
                 + "rangeFrom/rangeTo 按面板 1-based 序号；都不给则 ack 当前所有可见条目。"
-                + "建议带 revision（来自 inbox_list/inbox_items）做冲突校验。"
-                + "deliveryId 仅用于兼容旧 delivery 路径。";
+                + "建议带 revision（来自 inbox_list/inbox_items）做冲突校验。";
     }
 
     @Override
@@ -49,8 +48,7 @@ public final class InboxAckTool implements AgentTool {
                 "rangeFrom", Map.of("type", "integer", "minimum", 1),
                 "rangeTo", Map.of("type", "integer", "minimum", 1),
                 "revision", Map.of("type", "integer", "minimum", 0,
-                        "description", "面板 revision；与当前不一致则拒绝"),
-                "deliveryId", Map.of("type", "string")));
+                        "description", "面板 revision；与当前不一致则拒绝")));
     }
 
     @Override
@@ -59,9 +57,6 @@ public final class InboxAckTool implements AgentTool {
         Long revision = args.get("revision") instanceof Number number
                 ? number.longValue() : null;
         try {
-            if (args.get("deliveryId") instanceof String deliveryId && !deliveryId.isBlank()) {
-                return InboxTools.json(service.ack(deliveryId));
-            }
             List<String> itemIds = strings(args.get("itemIds"));
             if (!itemIds.isEmpty()) {
                 return InboxTools.json(service.ackItems(new java.util.LinkedHashSet<>(itemIds),

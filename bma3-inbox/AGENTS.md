@@ -15,7 +15,7 @@
 - 不知道 QQ/平台；不出现 `qq_group`/`bilibili` 分支。来源显示名由 `SourceView.label` 提供。
 - 完整消息、引用原文、图片 URL 在消息板；Inbox 只存预览与关系标记。
 - 不建立 per-source subscription/lease；不按 source 起后台任务。
-- 旧 `Delivery`/`due` 是 legacy 兼容路径，新面板/SSE 不得依赖它阻塞。
+- 没有 delivery 重试路径：面板/SSE/工具共用 `awaitPush`，ack 是逐条事实。
 
 ## 入口
 

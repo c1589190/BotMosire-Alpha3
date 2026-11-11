@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.mosire.bma3.inbox.core.Delivery;
 import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
 import java.io.IOException;
@@ -14,8 +13,11 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 
 /** Minimal loopback HTTP surface for one inbox; MCP tools remain the Agent-facing path. */
@@ -78,27 +80,25 @@ public final class InboxHttpServer implements AutoCloseable {
                 send(exchange, 404, "{\"error\":\"not_found\"}");
                 return;
             }
-            if ("status".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
+            String method = exchange.getRequestMethod();
+            if ("status".equals(parts[4]) && "GET".equals(method)) {
                 send(exchange, 200, mapper.writeValueAsString(service.status()));
                 return;
             }
-            if ("panel".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
+            if ("panel".equals(parts[4]) && "GET".equals(method)) {
                 send(exchange, 200, mapper.writeValueAsString(service.panel()));
                 return;
             }
-            if ("events".equals(parts[4]) && parts.length == 5
-                    && "GET".equals(exchange.getRequestMethod())) {
+            if ("events".equals(parts[4]) && parts.length == 5 && "GET".equals(method)) {
                 streamEvents(exchange);
                 return;
             }
-            if ("ack".equals(parts[4]) && parts.length == 5
-                    && "POST".equals(exchange.getRequestMethod())) {
+            if ("ack".equals(parts[4]) && parts.length == 5 && "POST".equals(method)) {
                 AckResponse ack = handleAck(exchange);
                 send(exchange, ack.status(), mapper.writeValueAsString(ack.body()));
                 return;
             }
-            if ("items".equals(parts[4]) && parts.length == 6
-                    && "GET".equals(exchange.getRequestMethod())) {
+            if ("items".equals(parts[4]) && parts.length == 6 && "GET".equals(method)) {
                 try {
                     send(exchange, 200, mapper.writeValueAsString(service.item(parts[5])));
                 } catch (IllegalArgumentException failure) {
@@ -106,24 +106,8 @@ public final class InboxHttpServer implements AutoCloseable {
                 }
                 return;
             }
-            if ("items".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
+            if ("items".equals(parts[4]) && parts.length == 5 && "GET".equals(method)) {
                 send(exchange, 200, mapper.writeValueAsString(service.list()));
-                return;
-            }
-            if ("deliveries".equals(parts[4]) && parts.length == 6
-                    && "due".equals(parts[5]) && "POST".equals(exchange.getRequestMethod())) {
-                Instant now = now(exchange);
-                send(exchange, 200, mapper.writeValueAsString(
-                        service.due(now, minPriority(exchange))));
-                return;
-            }
-            if ("deliveries".equals(parts[4]) && parts.length == 7
-                    && "ack".equals(parts[6]) && "POST".equals(exchange.getRequestMethod())) {
-                try {
-                    send(exchange, 200, mapper.writeValueAsString(service.ack(parts[5])));
-                } catch (IllegalArgumentException failure) {
-                    send(exchange, 404, "{\"error\":\"delivery_not_found\"}");
-                }
                 return;
             }
             send(exchange, 404, "{\"error\":\"not_found\"}");
@@ -136,7 +120,8 @@ public final class InboxHttpServer implements AutoCloseable {
 
     /**
      * One SSE stream per inbox. The event id is the panel revision; a reconnect always gets a
-     * fresh bounded snapshot, so a missed event cannot hide messages.
+     * fresh bounded snapshot, so a missed event cannot hide messages. Arrival-driven pushes are
+     * what the delay/batching rules in {@link InboxService#awaitPush} govern.
      */
     private void streamEvents(HttpExchange exchange) throws IOException {
         exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
@@ -147,9 +132,6 @@ public final class InboxHttpServer implements AutoCloseable {
         OutputStream output = exchange.getResponseBody();
         long last = parseRevision(exchange.getRequestHeaders().getFirst("Last-Event-ID"));
         try {
-            // A fresh (or reconnecting) client always gets the current unacked state once, so a
-            // dropped connection cannot lose items. Arrival-driven pushes are what the delay and
-            // batching rules govern below.
             InboxPanel snapshot = service.panel();
             writeEvent(output, "panel", snapshot.revision(), mapper.writeValueAsString(snapshot));
             last = Math.max(last, snapshot.revision());
@@ -190,27 +172,28 @@ public final class InboxHttpServer implements AutoCloseable {
         }
     }
 
-    /**
-     * Per-item ack over HTTP: {@code {"itemIds":[…]}} or {@code {"indices":[…]} } ack exactly those
-     * items; {@code {"revision":N}} acks everything at or below that revision (what the DSH plugin
-     * sends after injecting a panel). Returns 409 when the caller's revision is stale.
-     */
     private record AckResponse(int status, Object body) {
     }
 
+    /**
+     * Per-item ack over HTTP: {@code {"itemIds":[…]} } or {@code {"indices":[…]} } ack exactly those
+     * items; {@code {"revision":N}} acks everything at or below that revision (what the DSH plugin
+     * sends after injecting a panel). Returns 409 when the caller's revision is stale.
+     */
     private AckResponse handleAck(HttpExchange exchange) throws IOException {
         byte[] body = exchange.getRequestBody().readAllBytes();
         var node = body.length == 0 ? null : mapper.readTree(body);
-        Long revision = node != null && node.has("revision") && node.path("revision").canConvertToLong()
+        Long revision = node != null && node.has("revision")
+                && node.path("revision").canConvertToLong()
                 ? node.path("revision").asLong() : null;
         try {
             if (node != null && node.has("itemIds") && node.path("itemIds").isArray()) {
-                java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+                Set<String> ids = new LinkedHashSet<>();
                 node.path("itemIds").forEach(value -> ids.add(value.asText()));
                 return new AckResponse(200, service.ackItems(ids, revision));
             }
             if (node != null && node.has("indices") && node.path("indices").isArray()) {
-                java.util.List<Integer> indices = new java.util.ArrayList<>();
+                List<Integer> indices = new ArrayList<>();
                 node.path("indices").forEach(value -> indices.add(value.asInt()));
                 return new AckResponse(200, service.ackIndices(indices, revision));
             }
@@ -219,38 +202,10 @@ public final class InboxHttpServer implements AutoCloseable {
         } catch (IllegalArgumentException failure) {
             String message = failure.getMessage() == null ? "ack_rejected" : failure.getMessage();
             if (message.startsWith("REVISION_CONFLICT")) {
-                return new AckResponse(409, java.util.Map.of("error", "revision_conflict"));
+                return new AckResponse(409, Map.of("error", "revision_conflict"));
             }
-            return new AckResponse(400, java.util.Map.of("error", "ack_rejected", "detail", message));
+            return new AckResponse(400, Map.of("error", "ack_rejected", "detail", message));
         }
-    }
-
-    private Instant now(HttpExchange exchange) throws IOException {
-        byte[] body = exchange.getRequestBody().readAllBytes();
-        if (body.length == 0) {
-            return Instant.now();
-        }
-        var node = mapper.readTree(body);
-        String raw = node.path("now").asText("");
-        return raw.isBlank() ? Instant.now() : Instant.parse(raw);
-    }
-
-    private int minPriority(HttpExchange exchange) {
-        String query = exchange.getRequestURI().getQuery();
-        if (query == null || query.isBlank()) {
-            return Integer.MIN_VALUE;
-        }
-        for (String part : query.split("&")) {
-            String[] pair = part.split("=", 2);
-            if (pair.length == 2 && "minPriority".equals(pair[0])) {
-                try {
-                    return Integer.parseInt(pair[1]);
-                } catch (NumberFormatException ignored) {
-                    return Integer.MIN_VALUE;
-                }
-            }
-        }
-        return Integer.MIN_VALUE;
     }
 
     private boolean authorized(HttpExchange exchange) {
@@ -260,12 +215,12 @@ public final class InboxHttpServer implements AutoCloseable {
         return MessageDigest.isEqual(expected, actual);
     }
 
-    private void send(HttpExchange exchange, int status, String json) throws IOException {
-        byte[] body = json.getBytes(StandardCharsets.UTF_8);
+    private static void send(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-        exchange.sendResponseHeaders(status, body.length);
+        exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream output = exchange.getResponseBody()) {
-            output.write(body);
+            output.write(bytes);
         }
     }
 
@@ -273,6 +228,7 @@ public final class InboxHttpServer implements AutoCloseable {
     public synchronized void close() {
         if (server != null) {
             server.stop(0);
+            server = null;
         }
     }
 }

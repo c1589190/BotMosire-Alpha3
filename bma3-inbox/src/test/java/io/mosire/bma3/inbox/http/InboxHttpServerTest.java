@@ -30,8 +30,7 @@ class InboxHttpServerTest {
     void exposesHealthStatusItemsAndIdempotentAck() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"))) {
             InboxService service = new InboxService(store,
-                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                            Duration.ofMinutes(10), 3));
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
             service.append(new AppendItem("qq_private/bot-1/1", "hello", 300,
                     Instant.now().minusSeconds(5)));
             InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
@@ -49,23 +48,23 @@ class InboxHttpServerTest {
                 assertThat(items.statusCode()).isEqualTo(200);
                 assertThat(items.body()).doesNotContain("\"content\"");
                 assertThat(items.body()).contains("hello");
+                String itemId = mapper.readTree(items.body()).get(0).path("id").asText();
 
-                HttpResponse<String> due = post(base + "/v1/inboxes/bma3/deliveries/due", "token",
-                        "{\"now\":\"" + Instant.now() + "\"}");
-                assertThat(due.statusCode()).isEqualTo(200);
-                JsonNode deliveries = mapper.readTree(due.body());
-                assertThat(deliveries).hasSize(1);
-                String deliveryId = deliveries.get(0).path("id").asText();
+                HttpResponse<String> detail = get(base + "/v1/inboxes/bma3/items/" + itemId,
+                        "token");
+                assertThat(detail.statusCode()).isEqualTo(200);
+                assertThat(mapper.readTree(detail.body()).path("id").asText()).isEqualTo(itemId);
 
-                HttpResponse<String> ack = post(base + "/v1/inboxes/bma3/deliveries/"
-                        + deliveryId + "/ack", "token", "");
+                HttpResponse<String> ack = post(base + "/v1/inboxes/bma3/ack", "token",
+                        "{\"itemIds\":[\"" + itemId + "\"]}");
                 assertThat(ack.statusCode()).isEqualTo(200);
-                assertThat(mapper.readTree(ack.body()).path("acked").asBoolean()).isTrue();
+                assertThat(mapper.readTree(ack.body()).path("remaining").asInt()).isZero();
 
-                HttpResponse<String> second = post(base + "/v1/inboxes/bma3/deliveries/"
-                        + deliveryId + "/ack", "token", "");
-                assertThat(second.statusCode()).isEqualTo(200);
-                assertThat(mapper.readTree(second.body()).path("acked").asBoolean()).isFalse();
+                HttpResponse<String> second = post(base + "/v1/inboxes/bma3/ack", "token",
+                        "{\"itemIds\":[\"" + itemId + "\"]}");
+                assertThat(second.statusCode())
+                        .as("已经 ack 过的条目再 ack 要被拒绝，而不是静默成功")
+                        .isEqualTo(400);
             } finally {
                 server.close();
             }
@@ -76,8 +75,7 @@ class InboxHttpServerTest {
     void servesPanelAndAdvancesPanelCursor() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("panel.db"))) {
             InboxService service = new InboxService(store,
-                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                            Duration.ofMinutes(10), 3));
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
             service.append(new AppendItem("qq_private/bot-1/1", "hello-panel", 300,
                     Instant.now().minusSeconds(5)));
             InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
@@ -104,8 +102,7 @@ class InboxHttpServerTest {
     void streamsPanelSnapshotOverSse() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("sse.db"))) {
             InboxService service = new InboxService(store,
-                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                            Duration.ofMinutes(10), 3));
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
             service.append(new AppendItem("qq_private/bot-1/1", "hello-sse", 300,
                     Instant.now().minusSeconds(5)));
             InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);

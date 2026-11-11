@@ -71,18 +71,6 @@ public final class SqliteInboxStore implements InboxStore {
                 ensureColumn(statement, "inbox_item", "event_revision", "INTEGER");
                 ensureColumn(statement, "inbox_item", "updated_at", "TEXT");
                 statement.execute("""
-                        CREATE TABLE IF NOT EXISTS inbox_delivery (
-                          id TEXT PRIMARY KEY,
-                          item_ids TEXT NOT NULL,
-                          text TEXT NOT NULL,
-                          important INTEGER NOT NULL,
-                          created_at TEXT NOT NULL,
-                          acked_at TEXT,
-                          attempts INTEGER NOT NULL,
-                          state TEXT NOT NULL
-                        )
-                        """);
-                statement.execute("""
                         CREATE TABLE IF NOT EXISTS inbox_meta (
                           key TEXT PRIMARY KEY,
                           value INTEGER NOT NULL
@@ -243,60 +231,6 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
-    public synchronized void saveDelivery(Delivery delivery) {
-        ensureOpen();
-        try (PreparedStatement statement = connection.prepareStatement("""
-                INSERT INTO inbox_delivery (id, item_ids, text, important, created_at,
-                  acked_at, attempts, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET item_ids=excluded.item_ids, text=excluded.text,
-                  important=excluded.important, created_at=excluded.created_at,
-                  acked_at=excluded.acked_at, attempts=excluded.attempts, state=excluded.state
-                """)) {
-            statement.setString(1, delivery.id());
-            statement.setString(2, String.join(",", delivery.itemIds()));
-            statement.setString(3, delivery.text());
-            statement.setInt(4, delivery.important() ? 1 : 0);
-            statement.setString(5, delivery.createdAt().toString());
-            statement.setString(6, delivery.ackedAt() == null ? null : delivery.ackedAt().toString());
-            statement.setInt(7, delivery.attempts());
-            statement.setString(8, delivery.state().name());
-            statement.executeUpdate();
-        } catch (SQLException failure) {
-            throw new IllegalStateException("写入 Inbox delivery 失败", failure);
-        }
-    }
-
-    @Override
-    public synchronized Optional<Delivery> delivery(String id) {
-        ensureOpen();
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT * FROM inbox_delivery WHERE id = ?")) {
-            statement.setString(1, id);
-            try (ResultSet result = statement.executeQuery()) {
-                return result.next() ? Optional.of(mapDelivery(result)) : Optional.empty();
-            }
-        } catch (SQLException failure) {
-            throw new IllegalStateException("读取 Inbox delivery 失败", failure);
-        }
-    }
-
-    @Override
-    public synchronized List<Delivery> deliveries() {
-        ensureOpen();
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery(
-                     "SELECT * FROM inbox_delivery ORDER BY created_at")) {
-            List<Delivery> deliveries = new ArrayList<>();
-            while (result.next()) {
-                deliveries.add(mapDelivery(result));
-            }
-            return List.copyOf(deliveries);
-        } catch (SQLException failure) {
-            throw new IllegalStateException("读取 Inbox deliveries 失败", failure);
-        }
-    }
-
-    @Override
     public synchronized long panelRevision() {
         return meta("panel_revision");
     }
@@ -397,27 +331,11 @@ public final class SqliteInboxStore implements InboxStore {
                 result.getInt("total_messages"),
                 result.getLong("event_revision"),
                 result.getInt("priority"),
-                ItemStatus.valueOf(result.getString("status")),
+                ItemStatus.parse(result.getString("status")),
                 Instant.parse(result.getString("available_at")),
                 createdAt,
                 updatedRaw == null ? createdAt : Instant.parse(updatedRaw),
                 result.getInt("revision"));
     }
 
-    private static Delivery mapDelivery(ResultSet result) throws SQLException {
-        String rawIds = result.getString("item_ids");
-        List<String> ids = rawIds == null || rawIds.isBlank()
-                ? List.of()
-                : Arrays.asList(rawIds.split(","));
-        String ackedAt = result.getString("acked_at");
-        return new Delivery(
-                result.getString("id"),
-                ids,
-                result.getString("text"),
-                result.getInt("important") != 0,
-                Instant.parse(result.getString("created_at")),
-                ackedAt == null ? null : Instant.parse(ackedAt),
-                result.getInt("attempts"),
-                DeliveryState.valueOf(result.getString("state")));
-    }
 }

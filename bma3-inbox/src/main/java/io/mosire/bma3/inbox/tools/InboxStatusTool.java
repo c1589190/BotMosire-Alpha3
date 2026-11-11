@@ -22,7 +22,7 @@ public final class InboxStatusTool implements AgentTool {
 
     @Override
     public String description() {
-        return "返回当前 Inbox 的 available/delivered/acked/undelivered、panel revision 与 unread 计数。";
+        return "返回当前 Inbox 的 available/acked/remainingImportant、panel revision 与 unread 计数。";
     }
 
     @Override

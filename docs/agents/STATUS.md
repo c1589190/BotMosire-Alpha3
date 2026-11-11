@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-11 21:20 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 22:00 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -21,7 +21,7 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 23 / webconnect 4（1 skipped）/ app 23 = **80 tests, 0 fail**（2026-11-11） |
+| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 19 / webconnect 4（1 skipped）/ app 23 = **76 tests, 0 fail**（2026-11-11） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：14 tests |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
 | 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
@@ -48,6 +48,7 @@
 - **注入筛选与时钟**：`inbox.push.minPriority` 让条目"可见但不唤醒"；每轮 flush 后按 `max(updatedAt, lastFlushAt)` 重排重算。
 - **保留期**：`inbox.retention.maxAgeDays=30` / `maxItems=5000`，只清 ACKED。
 - **诊断**：`OneBotDiagnostics` 把 426/401/404/拒绝/DNS 映射成 hint，并在握手失败后主动探测同 host:port 的 HTTP；`qq_account_list` 输出真实 `connected` + `lastError`；MCP 401 响应体自带 `errorCode/reason/hint`。
+- **精简（D-036）**：删掉 legacy delivery 路径（`Delivery`/`due()`/`ack(deliveryId)`/`/deliveries/*`/`inbox_delivery` 表/重试参数）与三个重复工具（`qq_recent_messages`、`qq_account_login_info`、`qq_user_note_get`）；工具面 = QQ 16 + Inbox 6 + 配置 2。
 - **配置写入口**：`set_config`（点分路径 patch/unset，隔离校验 → 原子替换 → 等热重载，返回 `applied/reloaded/effective`，**无白名单**）；`get_config` 只读脱敏。
 - **bot 身份**：`qqconnect.accounts[].selfQq/selfName` 可配；缺省由 `get_login_info` 学习（失败只告警，相关属性保持关闭）。
 

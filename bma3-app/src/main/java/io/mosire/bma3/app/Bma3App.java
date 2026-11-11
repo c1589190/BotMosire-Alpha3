@@ -123,8 +123,7 @@ public final class Bma3App implements AutoCloseable {
         DeliveryPolicy deliveryPolicy = new DeliveryPolicy(
                 weighting.immediateThreshold(),
                 Duration.ofSeconds(weighting.importantDelaySeconds()),
-                Duration.ofSeconds(weighting.normalDelaySeconds()),
-                Duration.ofMinutes(10), 3);
+                Duration.ofSeconds(weighting.normalDelaySeconds()));
         InboxService inboxService = new InboxService(
                 inboxStore, deliveryPolicy, config.inbox().inboxId(), () -> {
                     var policy = runtime.get();

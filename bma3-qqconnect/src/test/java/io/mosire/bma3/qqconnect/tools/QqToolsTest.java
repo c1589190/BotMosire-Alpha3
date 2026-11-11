@@ -54,13 +54,13 @@ class QqToolsTest {
             QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
             List<AgentTool> tools = QqTools.all(context);
             assertThat(tools).extracting(AgentTool::name)
-                    .contains("qq_account_list", "qq_account_status", "qq_account_login_info",
+                    .contains("qq_account_list", "qq_account_status",
                             "qq_group_list", "qq_friend_list",
                             "qq_thread_list", "qq_conversation_history",
-                            "qq_recent_messages", "qq_message_get",
+                            "qq_message_get",
                             "qq_conversation_read", "qq_conversation_send",
                             "qq_conversation_send_image", "qq_media_view", "qq_reply", "qq_private_send",
-                            "qq_user_note_get", "qq_user_note_list", "qq_user_note_upsert",
+                            "qq_user_note_list", "qq_user_note_upsert",
                             "qq_conversation_ack");
 
             ToolResult threads = tool(tools, "qq_thread_list").execute(call(Map.of()));
@@ -71,9 +71,9 @@ class QqToolsTest {
                     "userId", "20002", "note", "Alice", "tags", List.of("vip"))));
             assertThat(note.success()).isTrue();
             assertThat(mapper.readTree(note.message()).has("priority")).isFalse();
-            ToolResult noteGet = tool(tools, "qq_user_note_get").execute(
-                    call(Map.of("userId", "20002")));
-            assertThat(mapper.readTree(noteGet.message()).path("note").asText()).isEqualTo("Alice");
+            JsonNode notes = mapper.readTree(tool(tools, "qq_user_note_list")
+                    .execute(call(Map.of())).message());
+            assertThat(notes.path("notes").get(0).path("note").asText()).isEqualTo("Alice");
 
             ToolResult read = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));

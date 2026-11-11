@@ -25,8 +25,7 @@ class InboxPushScheduleTest {
     Path tempDir;
 
     private InboxService service() {
-        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL,
-                Duration.ofMinutes(10), 3);
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
         SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"));
         return new InboxService(store, policy, "bma3", () -> new InboxRuntime(6, 6, true));
     }
@@ -115,8 +114,7 @@ class InboxPushScheduleTest {
 
     @Test
     void itemsBelowThePushFilterStayVisibleButNeverWake() {
-        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL,
-                Duration.ofMinutes(10), 3);
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
         SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("filter.db"));
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, IMMEDIATE_THRESHOLD, 30, 5000));

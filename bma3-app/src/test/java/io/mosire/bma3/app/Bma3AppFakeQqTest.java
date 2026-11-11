@@ -9,7 +9,6 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.mosire.bma3.app.config.AppConfig;
-import io.mosire.bma3.inbox.core.Delivery;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.time.Duration;
@@ -87,13 +86,22 @@ class Bma3AppFakeQqTest {
             assertThat(readJson.path("messages").get(0).path("text").asText())
                     .isEqualTo("hello-app");
 
-            Thread.sleep(1600);
-            List<Delivery> due = app.inboxService().due(Instant.now());
-            assertThat(due).hasSize(1);
+            McpSchema.CallToolResult items = mcp.callTool(new McpSchema.CallToolRequest(
+                    "inbox_items", Map.of()));
+            assertThat(items.isError()).isFalse();
+            JsonNode itemList = mapper.readTree(text(items));
+            assertThat(itemList.path("items")).hasSize(1);
+            String itemId = itemList.path("items").get(0).path("id").asText();
+
+            McpSchema.CallToolResult detail = mcp.callTool(new McpSchema.CallToolRequest(
+                    "inbox_get", Map.of("itemId", itemId)));
+            assertThat(detail.isError()).isFalse();
+            assertThat(mapper.readTree(text(detail)).path("entries")).hasSize(1);
+
             McpSchema.CallToolResult acked = mcp.callTool(new McpSchema.CallToolRequest(
-                    "inbox_ack", Map.of("deliveryId", due.getFirst().id())));
+                    "inbox_ack", Map.of("itemIds", List.of(itemId))));
             assertThat(acked.isError()).isFalse();
-            assertThat(mapper.readTree(text(acked)).path("acked").asBoolean()).isTrue();
+            assertThat(mapper.readTree(text(acked)).path("remaining").asInt()).isZero();
 
             McpSchema.CallToolResult sent = mcp.callTool(new McpSchema.CallToolRequest(
                     "qq_conversation_send",
