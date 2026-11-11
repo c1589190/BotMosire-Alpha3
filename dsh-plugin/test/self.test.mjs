@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 
-import { apply } from '../lib/self.js'
+import { apply, resolveToolGroups } from '../lib/self.js'
 
 function workspace() {
   return mkdtempSync(path.join(tmpdir(), 'bma3-self-'))
@@ -134,6 +134,20 @@ test('default groups include MCP, bma3, terminal, image and subagent; lock survi
 
   const locked = h.restrictions.at(-1)
   assert.deepEqual(locked.allow, ['bash', 'read_image'])
+})
+
+test('the bma3_core group keeps plugin-owned bma3_* tools visible', () => {
+  const resolved = resolveToolGroups(['bma3_core'], [
+    'mcp__bma3__qq_thread_list',
+    'bma3_inbox',
+    'bma3_self_status',
+    'bash',
+  ])
+  assert.ok(resolved.allow.includes('bma3_inbox'),
+    'bma3_inbox 必须留在 allow 里，否则 BMA3 会话看不到它')
+  assert.ok(resolved.allow.includes('mcp__bma3__qq_thread_list'))
+  assert.ok(resolved.allow.includes('bash'),
+    'bash/read_image 由 preset 锁死，不因没选 terminal 组而消失')
 })
 
 test('a missing systemprompt.md injects nothing at all', async () => {

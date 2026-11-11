@@ -289,6 +289,8 @@ qqconnect:
   `pushRevision > lastPush` 并立即返回，因此"某个读者慢/断开"不会让这一轮推送从在线读者眼前消失。
 - **慢路径不持锁**：`AccountRegistry.reconcile()` 的连接/探测在锁外完成；入站只用并发 map 读身份。
 - **人设即 system prompt**（D-037）：`<workspace>/systemprompt.md` 整份替换 system prompt（`complete` 默认 `true`），插件不追加任何内置台词或安全约束；文件缺失/为空则不挂 section；只有显式 `complete:false` 才叠加。
+- **推送窗口即交付边界**：一次 flush 只把 top-`maxItemsPerPanel` 的条目标记为已推送；排名在窗口外的 pending 条目**不算 due**（等 ack 腾出槽位），既不会被标记已推送，也不会让 flush 空转。
+- **ack 只确认真正展示过的**：`POST /ack {revision}` 只 ack 当前处于 delivered 状态（`pushedItems[id] == revision`）且 `eventRevision <= revision` 的条目；插件优先按 `itemIds` 精确确认。
 - **批次锚点 = 该条目首次欠推送的时刻**（`pendingSince`），不是它最后一条消息的 `updatedAt`。
 
 1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。

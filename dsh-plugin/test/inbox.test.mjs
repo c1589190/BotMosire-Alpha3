@@ -108,15 +108,17 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
   const ctx = { agents: { get: () => agent, list: () => [agent] } }
   let controller
   let ackCalls = 0
+  const ackBodies = []
   const body = new ReadableStream({
     start(next) { controller = next },
   })
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init) => {
     if (url.endsWith('/events')) {
       return { ok: true, status: 200, body }
     }
     if (url.endsWith('/ack')) {
       ackCalls += 1
+      ackBodies.push(JSON.parse(init.body))
       return { ok: true, status: 200, json: async () => ({ ackedRevision: 7 }) }
     }
     throw new Error(`unexpected URL ${url}`)
@@ -137,6 +139,7 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
         totalItems: 1,
         includeOmittedCount: true,
         items: [{
+          id: 'itm-test-1',
           source: 'qq_group/bot-1/955432692',
           sourceLabel: 'QQ群 955432692',
           priority: 300,
@@ -154,6 +157,8 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     assert.match(messages[0].content[0].text, /QQ群 955432692/)
     assert.match(messages[0].content[0].text, /\[@3924945183\]/)
     assert.equal(ackCalls, 1)
+    assert.ok(ackBodies.at(-1).itemIds?.length, 'ack 必须带上面板里实际显示的 itemIds')
+    assert.equal(ackBodies.at(-1).itemIds.length, 1)
   } finally {
     client.stop()
     controller.close()
@@ -189,6 +194,7 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
   const panel = (revision) => 'id: ' + revision + '\nevent: panel\ndata: ' + JSON.stringify({
     inboxId: 'bma3', revision, totalItems: 1, includeOmittedCount: true,
     items: [{
+      id: 'itm-test-' + revision,
       source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1', priority: 300,
       totalMessages: 1, omittedMessages: 0, entries: [{ line: '[12:00] #1 A：hi' }],
     }],

@@ -46,8 +46,6 @@ public final class InboxService {
      * {@code updatedAt}, so that field must not be the anchor.
      */
     private final Map<String, Instant> pendingSince = new HashMap<>();
-    /** When the last push round happened; pending items are re-scheduled from here. */
-    private Instant lastFlushAt = Instant.EPOCH;
 
     public InboxService(InboxStore store, DeliveryPolicy policy) {
         this(store, policy, "bma3");
@@ -157,27 +155,66 @@ public final class InboxService {
     }
 
     /** Acks every visible item at or below the revision the caller actually saw. */
+    /**
+     * Acks what a client <b>was actually shown</b>, up to the revision it reported.
+     *
+     * <p>This is deliberately narrower than "every item with {@code eventRevision <= revision}":
+     * a panel only renders the top {@code maxItemsPerPanel} items, so a revision-based ack would
+     * silently acknowledge items that never made it into the window. Only items currently in the
+     * delivered state ({@code pushedItems[id] == revision}) are eligible, which after a flush is
+     * exactly the panel that was handed out.</p>
+     */
     public synchronized InboxAck ackPanel(long requestedRevision) {
         long target = Math.min(Math.max(0L, requestedRevision), panelRevision);
         if (target <= ackedRevision) {
             return new InboxAck(ackedRevision, status().unread(), panelRevision);
         }
+        int acked = 0;
         for (InboxItem item : store.items()) {
-            if (item.status() != ItemStatus.ACKED && item.eventRevision() <= target) {
-                store.update(item.withStatus(ItemStatus.ACKED));
-                pushedItems.remove(item.id());
-                pendingSince.remove(item.id());
+            if (item.status() == ItemStatus.ACKED) {
+                continue;
             }
+            Integer pushed = pushedItems.get(item.id());
+            if (pushed == null || pushed != item.revision()) {
+                // Never handed to a client (window overflow), or changed after the push.
+                continue;
+            }
+            if (item.eventRevision() > target) {
+                continue;
+            }
+            store.update(item.withStatus(ItemStatus.ACKED));
+            pushedItems.remove(item.id());
+            pendingSince.remove(item.id());
+            acked++;
         }
-        ackedRevision = target;
-        store.saveAckedRevision(target);
-        long next = nextRevision();
+        ackedRevision = Math.max(ackedRevision, target);
+        store.saveAckedRevision(ackedRevision);
+        if (acked > 0) {
+            nextRevision();
+        }
         notifyAll();
-        return new InboxAck(target, status().unread(), next);
+        return new InboxAck(ackedRevision, status().unread(), panelRevision);
     }
 
+    /** Explicit "ack everything visible" (tool path); requires no push state. */
     public synchronized InboxAck ackPanel() {
-        return ackPanel(panelRevision);
+        int acked = 0;
+        for (InboxItem item : store.items()) {
+            if (item.status() == ItemStatus.ACKED) {
+                continue;
+            }
+            store.update(item.withStatus(ItemStatus.ACKED));
+            pushedItems.remove(item.id());
+            pendingSince.remove(item.id());
+            acked++;
+        }
+        ackedRevision = panelRevision;
+        store.saveAckedRevision(ackedRevision);
+        if (acked > 0) {
+            nextRevision();
+        }
+        notifyAll();
+        return new InboxAck(ackedRevision, status().unread(), panelRevision);
     }
 
     /**
@@ -304,27 +341,36 @@ public final class InboxService {
         return null;
     }
 
-    /** Earliest due instant across items that still owe a push; null when nothing is pending. */
+    /**
+     * Earliest due instant across items that can actually be delivered now; null when nothing is.
+     *
+     * <p>Delivery is bounded by the panel window: only the top {@code maxItemsPerPanel} visible
+     * items can appear in one push. An item ranked below the window is <b>not</b> "due" yet — it
+     * has to wait for the client to ack something and free a slot. Without that rule a pending item
+     * that can never fit would keep the flush loop spinning forever, re-sending a panel that does
+     * not contain it.</p>
+     */
     private Instant nextDue() {
         InboxRuntime current = runtime.get();
+        List<InboxItem> visible = visibleItems();
+        int capacity = Math.max(1, current.maxItemsPerPanel());
+        java.util.Set<String> window = new java.util.HashSet<>();
+        for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
+            window.add(visible.get(index).id());
+        }
         Instant earliest = null;
-        for (InboxItem item : store.items()) {
-            if (item.status() == ItemStatus.ACKED) {
-                pushedItems.remove(item.id());
-                continue;
-            }
+        for (InboxItem item : visible) {
             if (item.priority() < current.pushMinPriority()) {
                 continue;
             }
             Integer pushed = pushedItems.get(item.id());
             if (pushed != null && pushed == item.revision()) {
-                continue;
+                continue;                       // already handed out, waiting for ack
             }
-            // Anchor = when this item first owed a push (never its latest message), but never
-            // earlier than the last push round.
-            Instant firstPending = pendingSince.computeIfAbsent(item.id(),
-                    id -> item.updatedAt().isAfter(lastFlushAt) ? item.updatedAt() : lastFlushAt);
-            Instant anchor = firstPending.isAfter(lastFlushAt) ? firstPending : lastFlushAt;
+            if (!window.contains(item.id())) {
+                continue;                       // no slot until something is acked
+            }
+            Instant anchor = pendingSince.computeIfAbsent(item.id(), id -> item.updatedAt());
             Duration delay = item.priority() >= policy.importantThreshold()
                     ? policy.importantDelay() : policy.normalDelay();
             Instant due = anchor.plus(delay);
@@ -342,14 +388,19 @@ public final class InboxService {
      */
     private void flushPending() {
         InboxRuntime current = runtime.get();
-        for (InboxItem item : store.items()) {
-            if (item.status() == ItemStatus.ACKED || item.priority() < current.pushMinPriority()) {
+        List<InboxItem> visible = visibleItems();
+        int capacity = Math.max(1, current.maxItemsPerPanel());
+        // Only the items that this panel actually renders are marked delivered. Anything ranked
+        // below the window keeps its pending state and is pushed in a later round, once acks free
+        // a slot — never silently marked delivered.
+        for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
+            InboxItem item = visible.get(index);
+            if (item.priority() < current.pushMinPriority()) {
                 continue;
             }
             pushedItems.put(item.id(), item.revision());
             pendingSince.remove(item.id());
         }
-        lastFlushAt = Instant.now();
         pushRevision++;
         notifyAll();
     }

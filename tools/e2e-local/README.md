@@ -55,6 +55,17 @@ weighting:
                 qq_reply_to_bot: 100, qq_self_name: 60, qq_command: 100}}
 ```
 
+## 统一真环境回归
+
+`e2e_inbox_roundtrip.mjs` 用**真插件客户端**（`dsh-plugin/lib/inbox.js`）打**真 jar**（真 HTTP/SSE/ack）：
+
+```bash
+node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxHttpPort> <injectPort>
+```
+
+覆盖：8 个低优先来源 → 面板只装 6 条 → 插件按 itemIds ack 这 6 条 → 剩下 2 条下一轮补推 →
+两次 ack 合计 8 条、无重复推送。**9/9 PASS**。
+
 ## 结果（2026-11-11）
 
 四套驱动连续两轮 **27/27 PASS**。真跑抓到并修掉 4 个 bug：批次时钟被合并刷新后推、失败账号不出现在列表、

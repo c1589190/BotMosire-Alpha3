@@ -122,7 +122,10 @@ export function resolveToolGroups(groups, globalNames) {
     if (group === 'mcp_admin') {
       if (!matchByBase((name) => name.startsWith('mcp_connector_') || name === 'mcp_probe')) missing.add(group)
     } else if (group === 'bma3_core') {
-      if (!matchByBase((name) => BASIC_BMA3_BASENAMES.has(name) || name.startsWith('qq_'))) missing.add(group)
+      // `bma3_` covers tools this plugin registers globally (bma3_inbox …). Without it such a
+      // tool is silently filtered out of every BMA3 session.
+      if (!matchByBase((name) => BASIC_BMA3_BASENAMES.has(name)
+          || name.startsWith('qq_') || name.startsWith('bma3_'))) missing.add(group)
     } else if (group === 'terminal') {
       if (!matchByBase((name) => name === 'bash' || name === 'pwsh')) missing.add(group)
     } else if (group === 'image') {

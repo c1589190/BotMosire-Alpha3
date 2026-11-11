@@ -170,7 +170,10 @@ export function createInboxClient(ctx, config = {}) {
     state.injectedRevision = Math.max(state.injectedRevision, panel.revision)
     state.lastError = null
     try {
-      await ack(panel.revision)
+      const itemIds = panel.items.map((item) => item?.id).filter(Boolean)
+      // 面板条目一定带 id；万一没有（老服务端/测试桩），退回只发 revision，
+      // 服务端现在也只会 ack 真正推送过的条目。
+      await ack(itemIds.length > 0 ? { revision: panel.revision, itemIds } : panel.revision)
     } catch (error) {
       state.lastError = `ack: ${error?.message ?? error}`
     }
@@ -191,14 +194,20 @@ export function createInboxClient(ctx, config = {}) {
     }
   }
 
-  const ack = async (revision = state.lastRevision) => {
+  const ack = async (target = state.lastRevision) => {
+    // Callers may pass a revision, or {revision, itemIds} to acknowledge exactly the items that
+    // were rendered. The item list matters: a panel is capped at maxItemsPerPanel, so a
+    // revision-only ack used to acknowledge items that were never displayed.
+    const payload = target && typeof target === 'object'
+      ? { revision: target.revision, itemIds: target.itemIds }
+      : { revision: target }
     const response = await fetchImpl(endpoint(config, '/ack'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${tokenFor(config)}`,
       },
-      body: JSON.stringify({ revision }),
+      body: JSON.stringify(payload),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const body = await response.json()

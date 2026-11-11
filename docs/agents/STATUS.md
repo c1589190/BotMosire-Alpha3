@@ -1,4 +1,4 @@
-# STATUS —— 更新时间：2026-11-11 20:35 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 21:15 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
@@ -23,9 +23,10 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 19 / webconnect 4（1 skipped）/ app 23 = **76 tests, 0 fail**（2026-11-11） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：14 tests |
-| 本地真进程端到端（假 OneBot） | `tools/e2e-local/*`（见其 README） | **PASS 27/27 × 两轮可重复**（2026-11-11 19:3x）：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
+| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 21 / webconnect 4（1 skipped）/ app 23 = **78 tests, 0 fail**（2026-11-11） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：17 tests |
+| 本地真进程端到端（假 OneBot） | `tools/e2e-local/drive*.py` | **PASS 27/27**：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
+| 统一真环境回归（真 jar + 真插件客户端） | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> <injectPort>` | **PASS 9/9**：8 个低优先来源 → 推 6 条 → 插件按 itemIds ack 6 条 → 剩 2 条下一轮补推 → 两次 ack 合计 8 条、无刷屏 |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
 | 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
 | `packaging/smoke.sh`（jlink/jpackage + 安装 dry-run + 启动 /healthz） | `bash packaging/smoke.sh` | **PASS**（2026-11-11，app-image 启动且 /healthz=200） |
@@ -60,6 +61,10 @@
 ## 未验证 / 风险 / blocker
 
 - **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
+- **0.0.3-hotfix2 实测发现并已修的两个真 bug（待发版）**：
+  ⑤ **窗口外条目被"标记已推送"吞掉**：`flushPending()` 把整批 pending 都标成 delivered，而面板只渲染 top-M → 窗口外的条目再也不会推；
+  ⑥ **ack 范围过大**：`POST /ack {revision}` 会 ack 所有 `eventRevision ≤ revision` 的条目，包括没进窗口、从未显示的 → 低优先级消息被静默吃掉。
+  修法：flush 只标记窗口内条目；`nextDue()` 增加"窗口容量"语义（窗口满时窗口外的不算 due，等 ack 腾位）；`ackPanel(revision)` 只 ack 当前处于 delivered 状态的条目；插件 ack 改为按 `itemIds` 精确确认。
 - **e2e 发现并已修的四个真 bug**：
   ① 同一来源连发会把批次时钟往后推（合并刷新 `updatedAt`）→ 锚定"首次欠推送时刻" `pendingSince`；
   ② 连不上的账号从 `qq_account_list` 里消失（只列 active）→ 改为列"配置中的账号"；

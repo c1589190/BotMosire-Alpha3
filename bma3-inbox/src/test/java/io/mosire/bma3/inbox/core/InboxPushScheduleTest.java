@@ -150,6 +150,33 @@ class InboxPushScheduleTest {
     }
 
     @Test
+    void itemsBeyondThePanelWindowAreDeliveredInTheNextRoundInsteadOfVanishing() {
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("overflow.db"));
+        // 8 sources, window of 6: the last two must NOT be marked delivered.
+        InboxService service = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        for (int index = 0; index < 8; index++) {
+            append(service, "qq_group/" + index, 200, "低优先 " + index);
+        }
+
+        InboxPanel first = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        assertThat(first).isNotNull();
+        assertThat(first.items()).as("面板窗口只有 6 条").hasSize(6);
+        assertThat(first.totalItems()).isEqualTo(8);
+
+        // 客户端按它看到的 revision 确认；窗口外那两条不能被吞掉。
+        service.ackPanel(first.revision());
+        List<InboxItem> left = service.items();
+        assertThat(left).as("没显示过的条目必须还在").hasSize(2);
+        assertThat(service.panel().items()).hasSize(2);
+
+        InboxPanel second = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        assertThat(second).as("剩下两条必须马上补推，而不是永远消失").isNotNull();
+        assertThat(second.items()).hasSize(2);
+    }
+
+    @Test
     void ackingRemovesTheItemFromThePanel() {
         InboxService service = service();
         append(service, "qq_group/1", 200, "群里闲聊");

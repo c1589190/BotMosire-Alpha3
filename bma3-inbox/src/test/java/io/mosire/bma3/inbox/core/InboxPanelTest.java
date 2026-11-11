@@ -81,7 +81,9 @@ class InboxPanelTest {
             SourceView first = SourceView.of("qq_group/bot-1/1", "QQ群 1");
             service.appendOrMerge(AppendItem.of(first,
                     new InboxEntry(1, t0, "u", "first", List.of()), 300, t0));
-            long seen = service.panel().revision();
+            InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+            assertThat(pushed).isNotNull();
+            long seen = pushed.revision();
 
             SourceView second = SourceView.of("qq_group/bot-1/2", "QQ群 2");
             service.appendOrMerge(AppendItem.of(second,
