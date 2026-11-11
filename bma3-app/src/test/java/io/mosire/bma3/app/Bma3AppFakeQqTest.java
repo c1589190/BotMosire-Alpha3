@@ -125,9 +125,11 @@ class Bma3AppFakeQqTest {
                             "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
                     new AppConfig.Inbox("bma3", 0),
                     AppConfig.Webconnect.defaults(),
-                    new AppConfig.Weighting(300, 0, 200, 30, 1,
-                            java.util.Map.of("qq_private", 300, "qq_group", 0),
-                            new AppConfig.Weighting.SignalWeights(300, 300, 200, 300)),
+                    new AppConfig.Weighting(300, -300, 1000, 1, 1,
+                            java.util.Map.of("*", 0, "qq_private", 300, "qq_group", 0),
+                            java.util.Map.of("qq_at_bot", 300, "qq_at_all", 0,
+                                    "qq_at_other", 0, "qq_reply_to_bot", 0,
+                                    "qq_self_name", 0, "qq_command", 0)),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
             app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
 
@@ -160,6 +162,64 @@ class Bma3AppFakeQqTest {
             assertThat(line).doesNotContain("multimedia.nt.qq.com.cn").doesNotContain("rkey");
         } finally {
             if (app != null) app.close();
+            oneBot.stop();
+        }
+    }
+
+    @Test
+    void aMessageBelowDropLineIsDiscardedBeforeItIsStored() throws Exception {
+        FakeOneBotServer oneBot = new FakeOneBotServer();
+        oneBot.start();
+        oneBot.awaitStarted(Duration.ofSeconds(3));
+        Bma3App app = null;
+        McpSyncClient mcp = null;
+        try {
+            AppConfig config = new AppConfig(
+                    tempDir,
+                    new AppConfig.Server("127.0.0.1", 0, "/mcp", "BMA3_TEST_TOKEN"),
+                    new AppConfig.QqConnect(List.of(new AppConfig.Account(
+                            "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
+                    new AppConfig.Inbox("bma3", 0),
+                    AppConfig.Webconnect.defaults(),
+                    new AppConfig.Weighting(300, -300, 1000, 30, 1,
+                            Map.of("*", 0, "qq_group", -301, "qq_private", 300),
+                            AppConfig.Weighting.defaultAttributes()),
+                    new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
+            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
+
+            oneBot.send("""
+                    {"post_type":"message","message_type":"group","self_id":10001,
+                     "group_id":955432692,"user_id":20002,"message_id":9100,
+                     "time":1762700010,
+                     "message":[{"type":"text","data":{"text":"被丢弃的群消息"}}],
+                     "sender":{"nickname":"Bob"}}
+                    """);
+            Thread.sleep(400L);
+
+            assertThat(app.inboxService().panel().items()).isEmpty();
+
+            HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport
+                    .builder("http://127.0.0.1:" + app.mcpPort())
+                    .endpoint("/mcp")
+                    .resumableStreams(false)
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .httpRequestCustomizer((request, method, uri, body, context) ->
+                            request.header("Authorization", "Bearer mcp-token"))
+                    .build();
+            mcp = McpClient.sync(transport).build();
+            mcp.initialize();
+            McpSchema.CallToolResult threads = mcp.callTool(new McpSchema.CallToolRequest(
+                    "qq_thread_list", Map.of()));
+            assertThat(mapper.readTree(text(threads)).path("threads"))
+                    .as("低于 dropBelow 的消息连消息板都不该进")
+                    .isEmpty();
+        } finally {
+            if (mcp != null) {
+                mcp.closeGracefully();
+            }
+            if (app != null) {
+                app.close();
+            }
             oneBot.stop();
         }
     }

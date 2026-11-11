@@ -22,7 +22,7 @@ public final class QqUserNoteGetTool implements AgentTool {
 
     @Override
     public String description() {
-        return "读取某个 Bot 账号下 QQ 用户的备注、标签和 priority。";
+        return "读取某个 Bot 账号下 QQ 用户的备注、别名和标签（不含分数；分数在 config 的 weighting 里）。";
     }
 
     @Override

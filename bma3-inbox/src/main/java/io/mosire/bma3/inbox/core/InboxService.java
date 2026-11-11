@@ -19,8 +19,11 @@ public final class InboxService {
     private final IntSupplier maxItemsPerPanel;
     private final BooleanSupplier includeOmittedCount;
     private long panelRevision;
+    private long pushRevision;
     private long ackedRevision;
     private boolean closed;
+    /** itemId -> the item revision that was already handed to a push. */
+    private final java.util.Map<String, Integer> pushedItems = new java.util.HashMap<>();
 
     public InboxService(InboxStore store, DeliveryPolicy policy) {
         this(store, policy, "bma3");
@@ -116,7 +119,7 @@ public final class InboxService {
         List<PanelItem> items = eligible.stream().limit(maxItems)
                 .map(item -> panelItem(item, maxMessagesPerItem.getAsInt(), includeOmitted))
                 .toList();
-        return new InboxPanel(inboxId, panelRevision, ack, Instant.now(), items,
+        return new InboxPanel(inboxId, panelRevision, pushRevision, ack, Instant.now(), items,
                 eligible.size(), includeOmitted ? Math.max(0, eligible.size() - items.size()) : 0,
                 includeOmitted);
     }
@@ -138,6 +141,7 @@ public final class InboxService {
         for (InboxItem item : store.items()) {
             if (item.status() != ItemStatus.ACKED && item.eventRevision() <= target) {
                 store.update(item.withStatus(ItemStatus.ACKED));
+                pushedItems.remove(item.id());
             }
         }
         ackedRevision = target;
@@ -163,6 +167,98 @@ public final class InboxService {
             }
         }
         return closed ? null : panel();
+    }
+
+    /**
+     * Blocks until the pending batch is due, then returns the panel that must be pushed.
+     *
+     * <p>Timing rule (operator ruling): an item scored at or above
+     * {@code policy.importantThreshold} is pushed after the short delay, everything else waits for
+     * the batch delay; the batch is anchored on the <b>earliest</b> pending item (a later arrival
+     * never postpones it), and when any immediate item becomes due the whole pending set flushes
+     * together. Items already handed to a push are not pushed again until they change or are
+     * acked, so an unattended panel does not re-wake on every tick.</p>
+     *
+     * <p>Returns {@code null} on timeout (heartbeat/no change). The caller does not pass a
+     * revision: "already handed to a push" is tracked here, so a reconnecting client gets the
+     * current panel as its snapshot and then only real flushes.</p>
+     */
+    public synchronized InboxPanel awaitPush(Duration timeout) {
+        long deadline = System.nanoTime() + Math.max(0, timeout.toNanos());
+        while (!closed) {
+            Instant due = nextDue();
+            if (due == null) {
+                long remaining = Duration.ofNanos(deadline - System.nanoTime()).toMillis();
+                if (remaining <= 0) {
+                    return null;
+                }
+                try {
+                    wait(Math.max(1, remaining));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+                continue;
+            }
+            long remaining = Duration.ofNanos(deadline - System.nanoTime()).toMillis();
+            long untilDue = Duration.between(Instant.now(), due).toMillis();
+            if (untilDue > 0) {
+                if (remaining <= 0) {
+                    return null;
+                }
+                try {
+                    wait(Math.max(1, Math.min(remaining, untilDue + 1)));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+                continue;
+            }
+            flushPending();
+            return panel();
+        }
+        return null;
+    }
+
+    /** Earliest due instant across items that still owe a push; null when nothing is pending. */
+    private Instant nextDue() {
+        Instant earliest = null;
+        for (InboxItem item : store.items()) {
+            if (item.status() == ItemStatus.ACKED || item.eventRevision() <= ackedRevision) {
+                pushedItems.remove(item.id());
+                continue;
+            }
+            Integer pushed = pushedItems.get(item.id());
+            if (pushed != null && pushed == item.revision()) {
+                continue;
+            }
+            Duration delay = item.priority() >= policy.importantThreshold()
+                    ? policy.importantDelay() : policy.normalDelay();
+            Instant due = item.updatedAt().plus(delay);
+            if (earliest == null || due.isBefore(earliest)) {
+                earliest = due;
+            }
+        }
+        return earliest;
+    }
+
+    /**
+     * Hands every pending item to one push. Called when the earliest due item fires, which is why a
+     * low-priority item that arrived one second ago still rides along with an immediate one.
+     */
+    private void flushPending() {
+        for (InboxItem item : store.items()) {
+            if (item.status() == ItemStatus.ACKED || item.eventRevision() <= ackedRevision) {
+                continue;
+            }
+            pushedItems.put(item.id(), item.revision());
+        }
+        pushRevision++;
+        notifyAll();
+    }
+
+    public synchronized long pushRevision() {
+        return pushRevision;
     }
 
     public synchronized InboxStatus status() {
@@ -284,8 +380,10 @@ public final class InboxService {
         }
         store.saveDelivery(delivery.acked(Instant.now()));
         for (String itemId : delivery.itemIds()) {
-            store.item(itemId).ifPresent(item ->
-                    store.update(item.withStatus(ItemStatus.ACKED)));
+            store.item(itemId).ifPresent(item -> {
+                store.update(item.withStatus(ItemStatus.ACKED));
+                pushedItems.remove(itemId);
+            });
         }
         nextRevision();
         notifyAll();

@@ -1,6 +1,5 @@
 package io.mosire.bma3.qqconnect.tools;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.message.Segment;
@@ -26,9 +25,12 @@ final class QqSendSupport {
         StringBuilder states = new StringBuilder("[");
         for (int index = 0; index < chunks.size(); index++) {
             String chunk = chunks.get(index);
+            var self = context.accounts().self(source.accountId())
+                    .orElse(new io.mosire.bma3.qqconnect.account.AccountRegistry.SelfIdentity("", ""));
             var stored = context.board().append(new InboundMessage(
                     source, "out-" + UUID.randomUUID(), Instant.now(),
-                    List.of(new Segment("text", chunk)), Direction.OUTBOUND));
+                    List.of(new Segment("text", chunk)), Direction.OUTBOUND,
+                    self.userId(), self.nickname()));
             Object message;
             if (replyToMessageId != null && !replyToMessageId.isBlank() && index == 0) {
                 message = List.of(
@@ -48,13 +50,16 @@ final class QqSendSupport {
             String state;
             String messageId = "";
             try {
-                JsonNode response = client.sendAction(actionName, params).join();
+                var response = client.sendAction(actionName, params).join();
                 boolean ok = "ok".equals(response.path("status").asText())
                         && response.path("retcode").asInt(-1) == 0;
                 state = ok ? "SENT" : "FAILED_BEFORE_SEND";
                 messageId = response.path("data").path("message_id").asText("");
             } catch (RuntimeException failure) {
                 state = "UNKNOWN";
+            }
+            if (!messageId.isBlank()) {
+                context.board().attachExternalMessageId(stored.message().localSeq(), messageId);
             }
             if (states.length() > 1) {
                 states.append(',');
@@ -75,7 +80,7 @@ final class QqSendSupport {
         int count = text == null ? 0 : text.codePointCount(0, text.length());
         if (count > policy.maxTextChars()) {
             throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
-                    + " max=" + policy.maxTextChars());
+                    + " max=" + policy.maxTextChars() + "（当前上限，见 set_config/qq_policy）");
         }
     }
 
@@ -87,7 +92,7 @@ final class QqSendSupport {
         }
         if ("reject".equals(policy.overflow())) {
             throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
-                    + " max=" + policy.maxTextChars());
+                    + " max=" + policy.maxTextChars() + "（当前上限，见 set_config/qq_policy）");
         }
         List<String> chunks = new ArrayList<>();
         int start = 0;

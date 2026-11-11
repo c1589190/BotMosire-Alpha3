@@ -7,6 +7,7 @@ import java.util.List;
 public record InboxPanel(
         String inboxId,
         long revision,
+        long pushRevision,
         long ackedRevision,
         Instant generatedAt,
         List<PanelItem> items,
@@ -18,6 +19,14 @@ public record InboxPanel(
         inboxId = inboxId == null ? "" : inboxId;
         generatedAt = generatedAt == null ? Instant.now() : generatedAt;
         items = items == null ? List.of() : List.copyOf(items);
+    }
+
+    /** Compatibility constructor for call sites created before push scheduling. */
+    public InboxPanel(String inboxId, long revision, long ackedRevision, Instant generatedAt,
+                      List<PanelItem> items, int totalItems, int omittedItems,
+                      boolean includeOmittedCount) {
+        this(inboxId, revision, revision, ackedRevision, generatedAt, items, totalItems,
+                omittedItems, includeOmittedCount);
     }
 
     public int unread() {

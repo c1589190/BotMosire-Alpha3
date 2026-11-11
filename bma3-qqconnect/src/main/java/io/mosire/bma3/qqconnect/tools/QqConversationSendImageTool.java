@@ -109,6 +109,9 @@ public final class QqConversationSendImageTool implements AgentTool {
             } catch (RuntimeException failure) {
                 state = "UNKNOWN";
             }
+            if (!externalId.isBlank()) {
+                context.board().attachExternalMessageId(stored.message().localSeq(), externalId);
+            }
             var root = QqToolSupport.object();
             root.put("state", state);
             root.put("localSeq", stored.message().localSeq());

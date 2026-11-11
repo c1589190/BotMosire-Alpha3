@@ -12,17 +12,36 @@ qqconnect:
       endpoint: ws://127.0.0.1:3001
       tokenEnv: LLBOT_ACCESS_TOKEN
       enabled: false
+      # selfQq / selfName 可省：启动时用 get_login_info 自动学习
+      # selfName: BotMosire
 
 inbox:
   inboxId: bma3
   httpPort: 46500
 
+# 分数 = 最具体的来源规则 + 命中的属性加分（加法）。
+# < dropBelow: 丢弃（不落消息板）；>= immediateThreshold: 走 importantDelaySeconds，其余走 normalDelaySeconds。
+# 一切都可以由 Agent 用 set_config 改。
 weighting:
-  privateSourceWeight: 300
-  groupSourceWeight: 0
-  notifyThreshold: 200
-  normalDelaySeconds: 30
+  immediateThreshold: 300
+  dropBelow: -300
+  maxPriority: 1000
   importantDelaySeconds: 1
+  normalDelaySeconds: 30
+  sourcePriority:
+    "*": 0
+    qq_private: 300
+    qq_group: 200
+    # qq_group/955432692: 350   # 更具体者胜
+  attributes:
+    qq_at_bot: 100
+    qq_at_all: 20
+    qq_at_other: 0
+    qq_reply_to_bot: 100
+    qq_self_name: 60
+    qq_command: 100
+    # qq_sender/132843233: 50
+    # qq_name/管理: 40
 
 webconnect:
   enabled: false

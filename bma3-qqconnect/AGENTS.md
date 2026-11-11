@@ -4,13 +4,14 @@
 
 - OneBot 11 正向 WS、账号 registry、QQ tools。
 - 把 QQ 事件转成 `SourceView` + `InboxEntry`：来源标签、发送者、时间/序号、@/引用/图片/合并转发摘要。
-- 提供 `QqSourceLabeler` 与 QQ `PrioritySignals`（首版 mention/command）；不把 QQ 专用字段写进 Inbox。
+- 提供 `QqSourceLabeler`、`QqSourceKeyer`（板地址 → 两级配置键）与 `QqSignalExtractor`（`qq_at_bot`/`qq_at_all`/`qq_at_other`/`qq_reply_to_bot`/`qq_self_name`/`qq_command`）；不把 QQ 专用字段写进 Inbox。
+- 发送成功后把平台 message_id 回写到消息板（`external_message_id`），这是 `qq_reply_to_bot` 与 `self` 判定的唯一依据。
 
 ## 边界
 
 - 发送必须经 `QqSendSupport`；所有文本发送共享 `maxTextChars`（默认 3000，可配置），不静默截断。
-- 图片 URL/rkey 不进 `chat_message.text` 或 Inbox；图片只留占位/媒体引用。
-- per-source 权重/备注/阈值是 QQ 的 policy 实现，通用 resolver 在 app 层。
+- 图片 URL/rkey 不进 `chat_message.text` 或 Inbox；结构化 payload 只进 `segments_json`，且只在工具 `includeSegments=true` 时返回。
+- 分数不在本模块：`qq_source_weight_*` 与 `qq_user_note.priority` 已退休；来源规则/属性加分在 `config/app.yaml` 的 `weighting.*`，由 `set_config` 写入。
 
 ## 入口
 
@@ -22,4 +23,4 @@
 ## 验证
 
 - `./mvnw -q -pl bma3-qqconnect -am test`
-- 覆盖：3000/3001 字、emoji code point、图片占位、@/reply marker。
+- 覆盖：3000/3001 字、emoji code point、图片占位 + 结构化 payload、@/reply marker、发送回写平台 id、发送人字段。

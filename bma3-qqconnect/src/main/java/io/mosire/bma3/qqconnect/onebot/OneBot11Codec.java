@@ -5,11 +5,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosire.bma3.core.message.Segment;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Decodes OneBot 11 message events into the small BMA3 model. */
 public final class OneBot11Codec {
+
+    /** Structured payload keys kept per segment type; everything else is dropped. */
+    private static final Map<String, List<String>> DATA_KEYS = Map.of(
+            "text", List.of("text"),
+            "at", List.of("qq", "name"),
+            "reply", List.of("id"),
+            "image", List.of("file", "url", "sub_type", "summary", "file_size", "width", "height"),
+            "record", List.of("file", "url"),
+            "video", List.of("file", "url", "name"),
+            "file", List.of("file", "url", "name", "size"),
+            "forward", List.of("id", "count", "title"),
+            "face", List.of("id"),
+            "mface", List.of("url", "summary", "emoji_id"));
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -24,7 +39,7 @@ public final class OneBot11Codec {
             List<Segment> segments = segments(root.path("message"));
             String replyTo = segments.stream()
                     .filter(segment -> "reply".equals(segment.type()))
-                    .map(Segment::text)
+                    .map(segment -> segment.data("id"))
                     .findFirst()
                     .orElse("");
             return Optional.of(new OneBotEvent(
@@ -66,8 +81,35 @@ public final class OneBot11Codec {
                 case "forward" -> "[合并转发]";
                 default -> data.path("text").asText("[" + type + "]");
             };
-            segments.add(new Segment(type, text));
+            segments.add(new Segment(type, text, data(data, type)));
         }
         return List.copyOf(segments);
+    }
+
+    /**
+     * Keeps only the documented payload keys for a segment type. Long-lived CDN URLs carry an
+     * {@code rkey} and expire; they are stored because an on-demand media tool needs them, but
+     * they never reach {@code chat_message.text} or the Inbox panel.
+     */
+    private static Map<String, String> data(JsonNode data, String type) {
+        if (data == null || !data.isObject()) {
+            return Map.of();
+        }
+        List<String> keys = DATA_KEYS.get(type);
+        if (keys == null) {
+            return Map.of();
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String key : keys) {
+            JsonNode value = data.path(key);
+            if (value.isMissingNode() || value.isNull()) {
+                continue;
+            }
+            String text = value.isValueNode() ? value.asText("") : "";
+            if (!text.isBlank()) {
+                values.put(key, text);
+            }
+        }
+        return values;
     }
 }

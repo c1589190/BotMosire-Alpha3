@@ -1,5 +1,7 @@
 package io.mosire.bma3.core.store;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosire.bma3.core.account.ConsumerId;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
@@ -19,15 +21,24 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * SQLite message board. One row per message; local_seq is allocated per database and messages
- * are read per source address. The schema is intentionally smaller than the legacy iibot board:
- * rich segments are flattened to text until webconnect/Bilibili need them.
+ * are read per source address.
+ *
+ * <p>{@code text} stays a flat, URL-free rendering (search/legacy friendly). The structured
+ * payload — sender identity, decoded segments (image/reply/at …) and the platform message id —
+ * lives in dedicated columns so tools can resolve media and relations without ever putting a
+ * URL into {@code text} or the Inbox.</p>
  */
 public final class SqliteMessageBoardStore
         implements MessageBoardStore, ConsumerConversationStore {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final TypeReference<List<Segment>> SEGMENTS = new TypeReference<>() {
+    };
 
     static {
         try {
@@ -64,9 +75,17 @@ public final class SqliteMessageBoardStore
                           text TEXT NOT NULL
                         )
                         """);
+                ensureColumn(statement, "chat_message", "sender_id", "TEXT");
+                ensureColumn(statement, "chat_message", "sender_name", "TEXT");
+                ensureColumn(statement, "chat_message", "segments_json", "TEXT");
+                ensureColumn(statement, "chat_message", "external_message_id", "TEXT");
                 statement.execute("""
                         CREATE INDEX IF NOT EXISTS idx_chat_message_source_seq
                         ON chat_message(source, local_seq)
+                        """);
+                statement.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_chat_message_external
+                        ON chat_message(source, external_message_id)
                         """);
                 statement.execute("""
                         CREATE TABLE IF NOT EXISTS consumer_thread_state (
@@ -97,8 +116,9 @@ public final class SqliteMessageBoardStore
             int inserted;
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO chat_message (
-                      message_key, source, account_id, direction, message_id, at, text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                      message_key, source, account_id, direction, message_id, at, text,
+                      sender_id, sender_name, segments_json, external_message_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_key) DO NOTHING
                     """)) {
                 statement.setString(1, messageKey);
@@ -108,12 +128,16 @@ public final class SqliteMessageBoardStore
                 statement.setString(5, inbound.messageId());
                 statement.setString(6, inbound.at().toString());
                 statement.setString(7, text);
+                statement.setString(8, inbound.senderId());
+                statement.setString(9, inbound.senderName());
+                statement.setString(10, segmentsJson(inbound.segments()));
+                statement.setString(11, externalIdFor(inbound));
                 inserted = statement.executeUpdate();
             }
             if (inserted == 0) {
                 Message existing = findByKey(messageKey);
                 if (existing == null) {
-                    throw new IllegalStateException("重复消息未找到已有记录");
+                    throw new IllegalStateException("重复消息未找到已有记录: key=" + messageKey);
                 }
                 connection.rollback();
                 return new AppendResult(existing, false);
@@ -124,7 +148,7 @@ public final class SqliteMessageBoardStore
                 seq = result.next() ? result.getLong(1) : 0L;
             }
             connection.commit();
-            return new AppendResult(new Message(seq, inbound), true);
+            return new AppendResult(new Message(seq, inbound, externalIdFor(inbound)), true);
         } catch (SQLException failure) {
             rollbackQuietly();
             throw new IllegalStateException("写入 SQLite 消息板失败", failure);
@@ -145,7 +169,8 @@ public final class SqliteMessageBoardStore
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT local_seq, message_key, source, account_id, direction,
-                       message_id, at, text
+                       message_id, at, text, sender_id, sender_name, segments_json,
+                       external_message_id
                 FROM chat_message
                 WHERE source = ? AND local_seq > ?
                 ORDER BY local_seq ASC
@@ -195,6 +220,49 @@ public final class SqliteMessageBoardStore
             }
         } catch (SQLException failure) {
             throw new IllegalStateException("读取消息板 thread 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized void attachExternalMessageId(long localSeq, String externalMessageId) {
+        if (externalMessageId == null || externalMessageId.isBlank()) {
+            return;
+        }
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE chat_message SET external_message_id = ? WHERE local_seq = ?
+                """)) {
+            statement.setString(1, externalMessageId);
+            statement.setLong(2, localSeq);
+            statement.executeUpdate();
+        } catch (SQLException failure) {
+            throw new IllegalStateException("回写平台消息 id 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized Optional<Message> findByExternalMessageId(SourceAddress source,
+                                                                  String externalMessageId) {
+        Objects.requireNonNull(source, "source");
+        if (externalMessageId == null || externalMessageId.isBlank()) {
+            return Optional.empty();
+        }
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT local_seq, message_key, source, account_id, direction,
+                       message_id, at, text, sender_id, sender_name, segments_json,
+                       external_message_id
+                FROM chat_message
+                WHERE source = ? AND external_message_id = ?
+                LIMIT 1
+                """)) {
+            statement.setString(1, source.format());
+            statement.setString(2, externalMessageId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(map(result)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("按平台消息 id 查询失败", failure);
         }
     }
 
@@ -256,7 +324,8 @@ public final class SqliteMessageBoardStore
     private Message findByKey(String messageKey) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT local_seq, message_key, source, account_id, direction,
-                       message_id, at, text
+                       message_id, at, text, sender_id, sender_name, segments_json,
+                       external_message_id
                 FROM chat_message WHERE message_key = ?
                 """)) {
             statement.setString(1, messageKey);
@@ -268,17 +337,52 @@ public final class SqliteMessageBoardStore
 
     private static Message map(ResultSet result) throws SQLException {
         String sourceValue = result.getString("source");
-        String text = result.getString("text");
-        List<Segment> segments = text == null || text.isEmpty()
-                ? List.of()
-                : List.of(new Segment("text", text));
+        List<Segment> segments = segments(result.getString("segments_json"),
+                result.getString("text"));
         InboundMessage inbound = new InboundMessage(
                 SourceAddress.parse(sourceValue),
                 result.getString("message_id"),
                 Instant.parse(result.getString("at")),
                 segments,
-                Direction.valueOf(result.getString("direction")));
-        return new Message(result.getLong("local_seq"), inbound);
+                Direction.valueOf(result.getString("direction")),
+                result.getString("sender_id"),
+                result.getString("sender_name"));
+        return new Message(result.getLong("local_seq"), inbound,
+                result.getString("external_message_id"));
+    }
+
+    private static List<Segment> segments(String raw, String text) {
+        if (raw != null && !raw.isBlank()) {
+            try {
+                List<Segment> decoded = JSON.readValue(raw, SEGMENTS);
+                if (decoded != null && !decoded.isEmpty()) {
+                    return List.copyOf(decoded);
+                }
+            } catch (Exception ignored) {
+                // Fall through to the flattened text so a corrupt payload never loses the row.
+            }
+        }
+        return text == null || text.isEmpty()
+                ? List.of()
+                : List.of(new Segment("text", text));
+    }
+
+    private static String segmentsJson(List<Segment> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return null;
+        }
+        try {
+            return JSON.writeValueAsString(segments);
+        } catch (Exception failure) {
+            return null;
+        }
+    }
+
+    private static String externalIdFor(InboundMessage inbound) {
+        if (inbound.direction() == Direction.INBOUND && !inbound.messageId().isBlank()) {
+            return inbound.messageId();
+        }
+        return null;
     }
 
     private static String messageKey(InboundMessage inbound) {
@@ -287,6 +391,18 @@ public final class SqliteMessageBoardStore
             messageId = UUID.randomUUID().toString();
         }
         return inbound.source().format() + "|" + messageId;
+    }
+
+    private static void ensureColumn(Statement statement, String table, String column,
+                                     String type) throws SQLException {
+        try (ResultSet result = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (result.next()) {
+                if (column.equalsIgnoreCase(result.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        statement.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
     }
 
     private void ensureOpen() {

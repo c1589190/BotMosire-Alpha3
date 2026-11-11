@@ -13,14 +13,18 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
-/** Small SQLite store for per-user notes and per-source weights. */
+/**
+ * Small SQLite store for per-user notes (display name, tags, free text).
+ *
+ * <p>Scores do <b>not</b> live here any more: every priority value — source rules, sender rules and
+ * attribute deltas — lives in {@code config/app.yaml} and is edited through {@code set_config}.
+ * Keeping one writable copy is what stopped the old "note / source weight / signal" three-way
+ * collision.</p>
+ */
 public final class QqExtrasStore implements AutoCloseable {
 
     public record UserNote(String accountId, String userId, String displayName,
-                           List<String> tags, String note, int priority, int revision) {
-    }
-
-    public record SourceWeight(String source, int weight, int notifyThreshold, int revision) {
+                           List<String> tags, String note, int revision) {
     }
 
     static {
@@ -51,23 +55,38 @@ public final class QqExtrasStore implements AutoCloseable {
                           display_name TEXT NOT NULL,
                           tags TEXT NOT NULL,
                           note TEXT NOT NULL,
-                          priority INTEGER NOT NULL,
                           revision INTEGER NOT NULL,
                           PRIMARY KEY (account_id, user_id)
                         )
                         """);
-                statement.execute("""
-                        CREATE TABLE IF NOT EXISTS qq_source_weight (
-                          source TEXT PRIMARY KEY,
-                          weight INTEGER NOT NULL,
-                          notify_threshold INTEGER NOT NULL,
-                          revision INTEGER NOT NULL
-                        )
-                        """);
+                dropLegacyColumns(statement);
             }
         } catch (Exception failure) {
             throw new IllegalStateException("打开 QQ 扩展表失败", failure);
         }
+    }
+
+    /**
+     * Alpha-stage cleanup: scores moved to {@code config/app.yaml}, so the legacy score columns
+     * and the per-source weight table are dropped instead of silently kept in sync.
+     */
+    private static void dropLegacyColumns(Statement statement) throws SQLException {
+        if (hasColumn(statement, "qq_user_note", "priority")) {
+            statement.execute("ALTER TABLE qq_user_note DROP COLUMN priority");
+        }
+        statement.execute("DROP TABLE IF EXISTS qq_source_weight");
+    }
+
+    private static boolean hasColumn(Statement statement, String table, String column)
+            throws SQLException {
+        try (ResultSet result = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (result.next()) {
+                if (column.equalsIgnoreCase(result.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public synchronized Optional<UserNote> note(String accountId, String userId) {
@@ -85,7 +104,7 @@ public final class QqExtrasStore implements AutoCloseable {
 
     public synchronized List<UserNote> notes(String accountId) {
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT * FROM qq_user_note WHERE account_id = ? ORDER BY priority DESC, user_id")) {
+                "SELECT * FROM qq_user_note WHERE account_id = ? ORDER BY user_id")) {
             statement.setString(1, accountId);
             try (ResultSet result = statement.executeQuery()) {
                 List<UserNote> notes = new ArrayList<>();
@@ -100,8 +119,8 @@ public final class QqExtrasStore implements AutoCloseable {
     }
 
     public synchronized UserNote upsertNote(String accountId, String userId, String displayName,
-                                             List<String> tags, String note, int priority,
-                                             Integer expectedRevision) {
+                                            List<String> tags, String note,
+                                            Integer expectedRevision) {
         UserNote current = note(accountId, userId).orElse(null);
         int revision = current == null ? 0 : current.revision();
         if (expectedRevision != null && expectedRevision != revision) {
@@ -110,78 +129,25 @@ public final class QqExtrasStore implements AutoCloseable {
         int next = revision + 1;
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO qq_user_note
-                  (account_id, user_id, display_name, tags, note, priority, revision)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                  (account_id, user_id, display_name, tags, note, revision)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_id, user_id) DO UPDATE SET
                   display_name=excluded.display_name, tags=excluded.tags,
-                  note=excluded.note, priority=excluded.priority, revision=excluded.revision
+                  note=excluded.note, revision=excluded.revision
                 """)) {
             statement.setString(1, accountId);
             statement.setString(2, userId);
             statement.setString(3, displayName == null ? "" : displayName);
             statement.setString(4, String.join(",", tags == null ? List.of() : tags));
             statement.setString(5, note == null ? "" : note);
-            statement.setInt(6, priority);
-            statement.setInt(7, next);
+            statement.setInt(6, next);
             statement.executeUpdate();
         } catch (SQLException failure) {
             throw new IllegalStateException("写入用户备注失败", failure);
         }
         return new UserNote(accountId, userId, displayName == null ? "" : displayName,
                 tags == null ? List.of() : List.copyOf(tags), note == null ? "" : note,
-                priority, next);
-    }
-
-    public synchronized Optional<SourceWeight> sourceWeight(String source) {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT * FROM qq_source_weight WHERE source = ?")) {
-            statement.setString(1, source);
-            try (ResultSet result = statement.executeQuery()) {
-                return result.next() ? Optional.of(mapWeight(result)) : Optional.empty();
-            }
-        } catch (SQLException failure) {
-            throw new IllegalStateException("读取来源权重失败", failure);
-        }
-    }
-
-    public synchronized List<SourceWeight> weights() {
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery(
-                     "SELECT * FROM qq_source_weight ORDER BY source")) {
-            List<SourceWeight> weights = new ArrayList<>();
-            while (result.next()) {
-                weights.add(mapWeight(result));
-            }
-            return List.copyOf(weights);
-        } catch (SQLException failure) {
-            throw new IllegalStateException("读取来源权重列表失败", failure);
-        }
-    }
-
-    public synchronized SourceWeight upsertWeight(String source, int weight,
-                                                   int notifyThreshold, Integer expectedRevision) {
-        SourceWeight current = sourceWeight(source).orElse(null);
-        int revision = current == null ? 0 : current.revision();
-        if (expectedRevision != null && expectedRevision != revision) {
-            throw new IllegalArgumentException("REVISION_CONFLICT");
-        }
-        int next = revision + 1;
-        try (PreparedStatement statement = connection.prepareStatement("""
-                INSERT INTO qq_source_weight (source, weight, notify_threshold, revision)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(source) DO UPDATE SET
-                  weight=excluded.weight, notify_threshold=excluded.notify_threshold,
-                  revision=excluded.revision
-                """)) {
-            statement.setString(1, source);
-            statement.setInt(2, weight);
-            statement.setInt(3, notifyThreshold);
-            statement.setInt(4, next);
-            statement.executeUpdate();
-        } catch (SQLException failure) {
-            throw new IllegalStateException("写入来源权重失败", failure);
-        }
-        return new SourceWeight(source, weight, notifyThreshold, next);
+                next);
     }
 
     @Override
@@ -202,11 +168,6 @@ public final class QqExtrasStore implements AutoCloseable {
         return new UserNote(result.getString("account_id"), result.getString("user_id"),
                 result.getString("display_name"),
                 rawTags == null || rawTags.isBlank() ? List.of() : Arrays.asList(rawTags.split(",")),
-                result.getString("note"), result.getInt("priority"), result.getInt("revision"));
-    }
-
-    private static SourceWeight mapWeight(ResultSet result) throws SQLException {
-        return new SourceWeight(result.getString("source"), result.getInt("weight"),
-                result.getInt("notify_threshold"), result.getInt("revision"));
+                result.getString("note"), result.getInt("revision"));
     }
 }

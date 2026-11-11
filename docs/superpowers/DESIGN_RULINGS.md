@@ -22,6 +22,34 @@
 | D-014 | 2026-11-10 | 本会话用户消息 | 「来源字段的通用性，今天有qqconnect维护的qq来源（qqgroup/xxx/xxx、qqprivate/xxx），明天可能还有bilibili/xxx、wechat/xxx，这样的字段通用识别能实现吗？需要加一个简单的util方便inbox读取吗」 | `SourceAddress` 保持 `platform/...` opaque；`SourceView`+`SourceLabeler` 由 adapter 提供 label；Inbox 不 switch platform；保留 `qq_group/qq_private`，新平台用 `bilibili/...`、`wechat/...`；见 spec §4.1 |
 | D-015 | 2026-11-10 | 本会话用户消息 | 「各类消息来源的通用优先级适配也一并整合」 | `PriorityResolver` 统一 platform 默认权重、per-source 覆盖、备注、信号权重、per-source threshold；QQ 只是第一个 adapter；见 spec §8 |
 | D-016 | 2026-11-10 | 本会话用户消息 | 「消息发送tool等Agent自己写自己发的tool，硬限制应当是可配置的，默认设3000字因为这是qq的单条消息限制」 | 所有文本发送经 `QqSendSupport`；`maxTextChars` 默认 3000，可配置；按 code point 计数；reject/split；见 spec §9 |
+| D-017 | 2026-11-11 | 本会话用户消息 | 「消息来源设置可由tool调整的权重，超过300权重的inbox消息在inbox收到后1秒推送，没超过的则等30秒（两个时间都可配置）再统一推送，如果inbox在短时间内压入多条优先级小于300的消息，则默认不重置时间，等第一条优先级大于300的消息出现然后立刻一起推送，或者等第一条压入的优先级小于300的等待时间超过30秒后再推送；此外，优先级有各自数值，排序自然也是需要的」 | 三档推送时序：`≥immediateThreshold` 走 `importantDelaySeconds`（默认1s），其余走 `normalDelaySeconds`（默认30s）；批次以**最早一条**的入队时间为锚、不重置；任一条立即项到点就把全部 pending 一起 flush；`priority` 同时用于排序；见 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md) §5 |
+| D-018 | 2026-11-11 | 本会话用户消息 | 「是的，所有拿到的信息都必须通过inbox队列推送给bot，虽然在qq面目前没有任何硬响应字段」 | **全量入队**：取消 `notifyThreshold` 作为"进不进 inbox"的闸门；信号/权重只决定分数、推送时序与排序；QQ 面没有"这是回应你"的硬字段，因此不靠猜来丢消息 |
+| D-019 | 2026-11-11 | 本会话用户消息 | 「iibot本来就有一个download机制，如果Agent通过qq历史消息或者群文件查看等方法拿到一个文件，可以返回一个文件id，通过额外的查看工具可以直接查看图片/文本，如果不是图片或者文本，或者图片/文本太大无法通过工具查看，则下载到bma3运行目录下自动生成的downloads文件夹中，其他平台也是如此；可直接返回的图片/文本直接通过工具查看」 | 统一 `fileId` + 查看工具 + `<dataDir>/downloads`；**本批只做到"结构化段落库 + 工具可取"**，查看/下载工具列入 0.0.3 后续 |
+| D-020 | 2026-11-11 | 本会话用户消息 | 「是的，推送的inbox面板中文本只显示有限的未ack条目，已ack的条目应当直接从inbox面板项目中删除；此外应该加一个按优先级额外搞的条目排序，允许批量ack指定序号、指定序号范围的条目，做成工具」 | 面板只显示未 ack；item 按 priority 排序；批量 ack 按序号/范围做成工具（**本批落了前两条**，批量 ack 列入后续） |
+| D-021 | 2026-11-11 | 本会话用户消息 | 「不考虑任何兼容性，Alpha阶段搞什么版本兼容？」 | 允许 breaking：删除 `qq_source_weight_*` 三工具、删除 `qq_user_note.priority`、旧表/旧列直接 DROP，不留兼容层 |
+| D-022 | 2026-11-11 | 本会话用户消息 | 「直接规划0.0.3」 | 版本目标 0.0.3；本轮**不发版、不打 tag**，后续还有改动 |
+| D-023 | 2026-11-11 | 本会话用户消息 | 「可以设置一个-300，默认大部分消息来源都是0，QQConnect的At字段消息和私聊消息设置成301，不过这都是可以修改的配置项，一切取决于Agent意愿（例如Agent不但可以把qq_private整个根消息字段优先级设置成250，还可以把qq_private:132843233这个具体的小消息来源优先级额外设置成350，这里可以引入一个配置规则优先级）」 | 来源分数用**最具体前缀胜**的规则表；`dropBelow=-300`；一切可被 Agent 用 `set_config` 改写 |
+| D-024 | 2026-11-11 | 本会话用户消息 | 「这个就随便了，建议是300本身也立刻注入」 | 立即档边界为 `≥ immediateThreshold`（300 本身即立即） |
+| D-025 | 2026-11-11 | 本会话用户消息 | 「可以根据来源字段做机制，qq_private 为300 qq_group为200，然后额外给qqconnect出专门的配置项（同以格式化字段写在总配置文件），qq_at字段设置为+100这种，让配置更加灵活、统一」 | `weighting.sourcePriority`（来源基准分）+ `weighting.attributes`（平台属性加分，**加法**叠加）；QQ 的属性名由 adapter 提供 |
+| D-026 | 2026-11-11 | 本会话用户消息 | 「qq_private为什么会有三级字段？qq_private被qqconnect解析，应当只读取是否为qq_private，以及/后面的qq号……不过确实应该加一个qq_sender，qq_sender/xxxx可以配置+多少多少，qq_name/具体名称字段包含 也可以；qq_name应该改成qq_self_name，表示bot自己的qq名称——哦对了，应该额外出self_qq、self_name等配置项；这些都是可以自由配置的」 | 配置键只有两级（`qq_private/<对方QQ>`、`qq_group/<群号>`）；`qq_sender/<qq>` 与 `qq_name/<子串>` 是加分项；`qq_self_name` 指 bot 自己的名字；`self_qq`/`self_name` 每账号 |
+| D-027 | 2026-11-11 | 本会话用户消息 | 「1、qq_sender为什么不能和qq_private叠加？ 2、对，如果来源优先级小于-300，那就不注入了，直接丢掉 …… 4、额，我本来设想的是，Agent有标准的set_config工具，方便格式化修改自己的配置文件并走reload热重载，你没做吗？」 | `qq_sender` 与来源分数**叠加**；`< dropBelow` 的消息**不注入且不落消息板**；`set_config` 是分数的唯一写入口，写完靠 `ConfigWatcher` 热重载 |
+| D-028 | 2026-11-11 | 本会话用户消息 | 「a 不落！」「b 不搞白名单，Agent想咋改咋改」「c 是的」「d 叠加」「e 看Agent怎么配置，如果+300那确实应该立刻注入」「f 是的」 | 丢弃即不落库；`set_config` 无白名单；self 身份每账号可取；名称匹配叠加；分值由配置决定是否跨立即线；旧分数入口全部退休 |
+
+## D-017..D-028 代码环境语义
+
+> 按 M-002：每条裁定除决定本身外，必须能定位到模块、数据结构、状态机、配置、并发/失败模式与验收。完整实现细节在 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md)。
+
+- **D-017**：`bma3-inbox` 的 `InboxService.awaitPush` + `DeliveryPolicy(importantThreshold, importantDelay, normalDelay)`；pending 判定用 `InboxItem.revision` 与内存 `pushedItems`；`flushPending()` 一次标记全部 pending 并 bump `pushRevision`；SSE 只推 flush 结果。
+- **D-018**：`Bma3App.ingest` 先算分数再决定是否入库；`notifyThreshold` 语义删除。
+- **D-019**：`Segment.data` + `chat_message.segments_json`（本批）；`fileId`/查看工具/`downloads` 目录待做。
+- **D-020**：`InboxService.panel()` 过滤 ACKED（已有）；`PanelItem` 按 priority 排序（已有）；批量 ack 待做。
+- **D-021**：`QqExtrasStore` 打开时 `DROP COLUMN priority` / `DROP TABLE qq_source_weight`；三个 `qq_source_weight_*` 工具删除。
+- **D-022**：`docs/superpowers/plans/2026-11-11-0.0.3-plan.md`。
+- **D-023**：`bma3-core` 的 `PriorityRules`（最具体前缀，`*` 兜底）+ `SourceKeyer`。
+- **D-024**：`AppConfig.Weighting.immediateThreshold`（默认 300，`≥` 比较）。
+- **D-025**：`AppConfig.Weighting.sourcePriority` / `attributes`；`PriorityResolver` 加法叠加 + `reasons` trace。
+- **D-026**：`QqSourceKeyer` 把 `qq_group/<acct>/<gid>` 投成 `qq_group/<gid>`；`QqSignalExtractor` 产出 `qq_at_bot`/`qq_at_all`/`qq_at_other`/`qq_reply_to_bot`/`qq_self_name`/`qq_command`；`qq_sender/`、`qq_name/` 由 resolver 按配置匹配。
+- **D-027/D-028**：`ConfigEditor`（校验后原子替换）+ `SetConfigTool`（`set_config`）/`GetConfigTool`（`get_config`）；`QqSendSupport` 发送成功后回写 `external_message_id`。
 
 ## D-009..D-016 代码环境语义
 
@@ -47,7 +75,7 @@
 | Q-C | 运行时形态：外部宿主、进程内 Agent 循环，还是纯服务端？ | **已定方向**：DSH 为唯一宿主；Inbox 为独立常驻服务（D-004） |
 | Q-D | Inbox/唤醒层：保留独立通知板、内嵌，还是取消 IPC 只留本地表？ | **已定**：独立服务；Inbox lib 只管单 inbox 状态（D-004） |
 | Q-E | B 站能力与 Playwright：留在主产物、拆独立模块，还是移出？ | 未定；视频工具可复用，私信需适配器，Playwright 不应进主产物 |
-| Q-F | 兼容性：旧配置键、`qq_*`/`inbox_*` 工具名、`source` 地址是否保持？ | 未定 |
+| Q-F | 兼容性：旧配置键、`qq_*`/`inbox_*` 工具名、`source` 地址是否保持？ | **已定**：不考虑兼容（D-021） |
 | Q-G | 数据迁移：旧 `bot.db`、`inbox.db`、媒体与凭据如何处理？ | 未定 |
 | Q-H | 发布形态：fat jar、容器、服务端常驻，还是别的？ | **已定方向**：独立常驻服务；Java 用 `jlink`/`jpackage` 自带运行时（D-006） |
 | Q-I | 语言：Java/Kotlin、TypeScript、Go？ | **已定**：Java 21 + `jlink`/`jpackage`（D-006） |

@@ -3,7 +3,6 @@ package io.mosire.bma3.qqconnect.tools;
 import io.mosire.agentlib.tool.AgentTool;
 import io.mosire.agentlib.tool.ToolContext;
 import io.mosire.agentlib.tool.ToolResult;
-import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.source.SourceAddress;
 import java.util.List;
 import java.util.Map;
@@ -24,7 +23,8 @@ public final class QqConversationHistoryTool implements AgentTool {
 
     @Override
     public String description() {
-        return "按 source 读取消息板历史（含入站/出站）；不推进读取游标。";
+        return "按 source 读取消息板历史（含入站/出站）；每条带 sender{id,name}、externalMessageId、self；"
+                + "不推进读取游标。includeSegments=true 时返回结构化 segments（图片/引用/at payload）。";
     }
 
     @Override
@@ -32,7 +32,8 @@ public final class QqConversationHistoryTool implements AgentTool {
         return Map.of("type", "object", "properties", Map.of(
                 "source", Map.of("type", "string"),
                 "afterSeq", Map.of("type", "integer", "minimum", 0),
-                "limit", Map.of("type", "integer", "minimum", 1, "maximum", 500)),
+                "limit", Map.of("type", "integer", "minimum", 1, "maximum", 500),
+                "includeSegments", QqToolSupport.segmentsSchema()),
                 "required", List.of("source"));
     }
 
@@ -43,17 +44,12 @@ public final class QqConversationHistoryTool implements AgentTool {
             int limit = QqToolSupport.integer(toolContext, "limit", 50);
             long after = toolContext.arguments().get("afterSeq") instanceof Number n
                     ? n.longValue() : 0L;
+            boolean includeSegments = QqToolSupport.includeSegments(toolContext);
             var root = QqToolSupport.object();
             root.put("source", source.format());
             var array = root.putArray("messages");
             for (var message : context.board().read(source, after, limit)) {
-                var item = array.addObject();
-                item.put("seq", message.localSeq());
-                item.put("messageId", message.inbound().messageId());
-                item.put("at", message.inbound().at().toString());
-                item.put("direction", message.inbound().direction() == Direction.INBOUND
-                        ? "IN" : "OUT");
-                item.put("text", QqToolSupport.messageText(message));
+                array.add(QqToolSupport.messageNode(message, includeSegments));
             }
             return ToolResult.ok(root.toString());
         } catch (IllegalArgumentException failure) {

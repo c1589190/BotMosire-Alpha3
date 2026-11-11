@@ -61,28 +61,19 @@ class QqToolsTest {
                             "qq_conversation_read", "qq_conversation_send",
                             "qq_conversation_send_image", "qq_reply", "qq_private_send",
                             "qq_user_note_get", "qq_user_note_list", "qq_user_note_upsert",
-                            "qq_source_weight_get", "qq_source_weight_list",
-                            "qq_source_weight_set", "qq_conversation_ack");
+                            "qq_conversation_ack");
 
             ToolResult threads = tool(tools, "qq_thread_list").execute(call(Map.of()));
             assertThat(threads.success()).isTrue();
             assertThat(mapper.readTree(threads.message()).path("threads")).hasSize(1);
 
             ToolResult note = tool(tools, "qq_user_note_upsert").execute(call(Map.of(
-                    "userId", "20002", "note", "Alice", "priority", 80,
-                    "tags", List.of("vip"))));
+                    "userId", "20002", "note", "Alice", "tags", List.of("vip"))));
             assertThat(note.success()).isTrue();
-            assertThat(mapper.readTree(note.message()).path("priority").asInt()).isEqualTo(80);
+            assertThat(mapper.readTree(note.message()).has("priority")).isFalse();
             ToolResult noteGet = tool(tools, "qq_user_note_get").execute(
                     call(Map.of("userId", "20002")));
             assertThat(mapper.readTree(noteGet.message()).path("note").asText()).isEqualTo("Alice");
-
-            ToolResult weight = tool(tools, "qq_source_weight_set").execute(call(Map.of(
-                    "source", source.format(), "weight", 250, "notifyThreshold", 200)));
-            assertThat(weight.success()).isTrue();
-            assertThat(mapper.readTree(weight.message()).path("sourceWeight").asInt()).isEqualTo(250);
-            assertThat(tool(tools, "qq_source_weight_get").execute(
-                    call(Map.of("source", source.format()))).success()).isTrue();
 
             ToolResult read = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));
@@ -109,6 +100,28 @@ class QqToolsTest {
             ToolResult afterSend = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", source.format(), "limit", 10)));
             assertThat(mapper.readTree(afterSend.message()).path("messages")).isEmpty();
+
+            board.append(new InboundMessage(source, "m2", Instant.now(),
+                    List.of(new Segment("image", "[图片]",
+                            Map.of("file", "a.image", "url", "https://cdn/a?rkey=1"))),
+                    Direction.INBOUND, "20002", "Alice"));
+            JsonNode mediaMessage = mapper.readTree(tool(tools, "qq_message_get").execute(
+                    call(Map.of("source", source.format(), "seq", 3,
+                            "includeSegments", true))).message());
+            assertThat(mediaMessage.path("sender").path("id").asText()).isEqualTo("20002");
+            assertThat(mediaMessage.path("sender").path("name").asText()).isEqualTo("Alice");
+            assertThat(mediaMessage.path("self").asBoolean()).isFalse();
+            assertThat(mediaMessage.path("segments").get(0).path("data").path("file").asText())
+                    .as("媒体引用只在显式 includeSegments 时出现")
+                    .isEqualTo("a.image");
+
+            // The outbound row learned its platform id after a successful send.
+            var history = mapper.readTree(tool(tools, "qq_conversation_history").execute(
+                    call(Map.of("source", source.format(), "limit", 10))).message());
+            var outbound = history.path("messages").get(1);
+            assertThat(outbound.path("direction").asText()).isEqualTo("OUT");
+            assertThat(outbound.path("self").asBoolean()).isTrue();
+            assertThat(outbound.path("externalMessageId").asText()).isEqualTo("777");
 
             Path qr = tempDir.resolve("qr.png");
             Files.write(qr, new byte[]{(byte) 0x89, 'P', 'N', 'G'});
@@ -155,10 +168,12 @@ class QqToolsTest {
             assertThat(imageTooLong.success()).isFalse();
             assertThat(imageTooLong.code()).isEqualTo("TEXT_TOO_LONG");
 
-            ToolResult mismatch = tool(tools, "qq_conversation_read").execute(
+            // Reading the message board no longer needs a live connection: an unknown account
+            // simply has nothing to read.
+            ToolResult offline = tool(tools, "qq_conversation_read").execute(
                     call(Map.of("source", "qq_private/bot-2/20002")));
-            assertThat(mismatch.success()).isFalse();
-            assertThat(mismatch.code()).isEqualTo("ACCOUNT_NOT_FOUND");
+            assertThat(offline.success()).isTrue();
+            assertThat(mapper.readTree(offline.message()).path("messages")).isEmpty();
         }
     }
 

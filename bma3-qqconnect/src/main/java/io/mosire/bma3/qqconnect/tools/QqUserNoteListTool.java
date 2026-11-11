@@ -21,7 +21,7 @@ public final class QqUserNoteListTool implements AgentTool {
 
     @Override
     public String description() {
-        return "按 priority 降序列出某个 Bot 账号下的 QQ 用户备注。";
+        return "列出某个 Bot 账号下的 QQ 用户备注（备注/别名/标签，不含分数）。";
     }
 
     @Override

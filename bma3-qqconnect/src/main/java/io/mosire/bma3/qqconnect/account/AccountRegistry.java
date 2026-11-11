@@ -19,14 +19,32 @@ import org.slf4j.LoggerFactory;
 /**
  * Desired-state account registry. A reconcile adds/removes/restarts only the affected
  * connections; a failed new connection leaves the previous one alive.
+ *
+ * <p>Each live connection also learns its own identity ({@code get_login_info}) so priority rules
+ * such as "the bot's own nickname was mentioned" and outbound sender attribution do not need the
+ * operator to hand-write the bot's QQ number.</p>
  */
 public final class AccountRegistry implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(AccountRegistry.class);
 
+    /** The bot's own platform identity for one account. */
+    public record SelfIdentity(String userId, String nickname) {
+
+        public SelfIdentity {
+            userId = userId == null ? "" : userId;
+            nickname = nickname == null ? "" : nickname;
+        }
+
+        public boolean known() {
+            return !userId.isBlank() || !nickname.isBlank();
+        }
+    }
+
     private final OneBotClientFactory factory;
     private final Consumer<AccountEvent> eventSink;
     private final Map<String, Holder> active = new HashMap<>();
+    private final Map<String, SelfIdentity> selfIdentities = new HashMap<>();
 
     public AccountRegistry(Consumer<AccountEvent> eventSink) {
         this((config, listener) -> new OneBot11Client(config.endpoint(), config.token(), listener),
@@ -88,6 +106,7 @@ public final class AccountRegistry implements AutoCloseable {
                 current.client.close();
                 active.put(accountId, new Holder(config, replacement));
                 restarted.add(accountId);
+                learnIdentity(accountId, replacement);
             } catch (RuntimeException failure) {
                 replacement.close();
                 rejected.add(accountId);
@@ -107,6 +126,19 @@ public final class AccountRegistry implements AutoCloseable {
         return active.keySet().stream().map(AccountId::new).toList();
     }
 
+    /** The bot's own identity for an account, once {@code get_login_info} answered. */
+    public synchronized Optional<SelfIdentity> self(String accountId) {
+        return Optional.ofNullable(selfIdentities.get(accountId));
+    }
+
+    /** Records an identity learned elsewhere (for example an explicit config override). */
+    public synchronized void self(String accountId, SelfIdentity identity) {
+        if (accountId == null || accountId.isBlank() || identity == null || !identity.known()) {
+            return;
+        }
+        selfIdentities.put(accountId, identity);
+    }
+
     @Override
     public synchronized void close() {
         for (String accountId : new ArrayList<>(active.keySet())) {
@@ -123,12 +155,40 @@ public final class AccountRegistry implements AutoCloseable {
             client.start();
             client.awaitReady(Duration.ofSeconds(5));
             active.put(config.accountId(), new Holder(config, client));
+            learnIdentity(config.accountId(), client);
             return true;
         } catch (RuntimeException failure) {
             client.close();
             LOG.warn("event=qq_account_start_failed accountId={} errorType={}",
                     config.accountId(), failure.getClass().getSimpleName());
             return false;
+        }
+    }
+
+    /**
+     * Asks the live connection who it is. Failure is non-fatal: priority rules that depend on the
+     * bot nickname simply stay disabled and say so in the decision trace.
+     */
+    private void learnIdentity(String accountId, OneBot11Client client) {
+        try {
+            client.sendAction("get_login_info", Map.of())
+                    .orTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+                    .whenComplete((response, failure) -> {
+                        if (failure != null || response == null) {
+                            LOG.warn("event=qq_self_identity_unavailable accountId={} errorType={}",
+                                    accountId, failure == null ? "empty" : "timeout");
+                            return;
+                        }
+                        var data = response.path("data");
+                        String userId = data.path("user_id").asText("");
+                        String nickname = data.path("nickname").asText("");
+                        if (!userId.isBlank() || !nickname.isBlank()) {
+                            self(accountId, new SelfIdentity(userId, nickname));
+                        }
+                    });
+        } catch (RuntimeException failure) {
+            LOG.warn("event=qq_self_identity_unavailable accountId={} errorType={}",
+                    accountId, failure.getClass().getSimpleName());
         }
     }
 
@@ -145,6 +205,7 @@ public final class AccountRegistry implements AutoCloseable {
 
     private void remove(String accountId) {
         Holder holder = active.remove(accountId);
+        selfIdentities.remove(accountId);
         if (holder != null) {
             holder.client.close();
         }

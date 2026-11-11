@@ -1,0 +1,205 @@
+# 优先级规则 / 推送时序 / 配置写入口设计（0.0.3 第一批）
+
+> **状态**：已实现（2026-11-11）· **类型**：项目设计（专题）
+> **需求原话**：见 [`../DESIGN_RULINGS.md`](../DESIGN_RULINGS.md) D-017..D-028（逐字）
+> **取代**：`2026-11-10-inbox-panel-sse-design.md` §8（优先级公式）、§9 之外的推送时机；不取代 D-009/D-010（N/M 截断）与 D-011（Inbox 不带 URL）
+> **本批未做**：媒体查看/下载（D-019）、批量 ack（D-020 后半）、`inbox_get`/`inbox_wait`、OneBot/MCP 错误可诊断性 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)
+
+## 1. 一句话模型
+
+一条消息的**分数** = 最具体的来源规则值 + 所有命中的属性加分。
+分数只决定三件事：**丢不丢**（`< dropBelow`）、**多快推**（`≥ immediateThreshold` 走 1s，否则 30s 批）、**排序**。
+分数只有一处真源：`config/app.yaml`；只有一个写入口：`set_config`。
+
+## 2. 为什么推倒重来
+
+旧模型（`PriorityResolver` 的 `max(base, sourceWeight, notePriority, base+boost) >= notifyThreshold`）把三类互不相容的东西压到一根数轴：
+
+| 输入 | 人想表达 | 代码实际效果 |
+|---|---|---|
+| `platformWeights` | 这个平台值多少分 | 与阈值比较 ⇒ 隐式"要不要唤醒" |
+| `qq_source_weight.weight` | 这个群/人值多少分 | 同上，且**会被 `notifyThreshold` 默认 200 静默覆盖** |
+| `qq_user_note.priority` | 这个人我在意 | 300 ⇒ 永久唤醒（操作者被自己坑到的直接原因） |
+| `signals` | 这条消息对我做了动作 | 只在 `base + boost` 上生效，与上面三项互斥 |
+
+同时 QQ 侧的 `reply`/`name` 恒为 `false`（因为没有出站平台 id 索引、没有 bot 昵称），真正在破群静音的是 `mention` 把 `@全体成员` 也算进来、`command` 只要以 `/` 开头就算。
+
+## 3. 数据模型（本批）
+
+### 3.1 消息板（`bma3-core`）
+
+`chat_message` 新增列（additive migration，老行为 NULL）：
+
+| 列 | 含义 |
+|---|---|
+| `sender_id` / `sender_name` | 入站是发言人；出站是 bot 账号身份（`get_login_info` 学到或配置覆盖） |
+| `segments_json` | 结构化段落（`Segment(type, text, data)`）；`text` 列仍是**不含 URL** 的扁平渲染 |
+| `external_message_id` | 平台消息 id；入站写入时即有，出站发送成功后才回写 |
+
+`Message(localSeq, inbound, externalMessageId)` 提供 `self()`（`direction == OUTBOUND`）。
+反查 `findByExternalMessageId(source, id)` 是"被引用的消息是不是我发的"的唯一依据。
+
+### 3.2 段落（`Segment`）
+
+```
+Segment(type, text, data)
+```
+
+| 类型 | `data` 白名单 |
+|---|---|
+| `text` | `text` |
+| `at` | `qq`, `name` |
+| `reply` | `id` |
+| `image` | `file`, `url`, `sub_type`, `summary`, `file_size`, `width`, `height` |
+| `file`/`record`/`video` | `file`, `url`, `name`, `size` |
+| `forward` | `id`, `count`, `title` |
+
+不变量：`chat_message.text` 与 Inbox 面板**永远不含 URL/rkey**；`data` 只在工具显式 `includeSegments=true` 时返回。
+
+## 4. 优先级解析（`bma3-app/priority` + `bma3-core/priority`）
+
+### 4.1 键空间只有两级
+
+adapter 把板地址投影成配置键（`SourceKeyer`）：
+
+| 板地址 | 配置键 |
+|---|---|
+| `qq_group/<accountId>/955432692` | `qq_group/955432692` |
+| `qq_private/<accountId>/132843233` | `qq_private/132843233` |
+
+`accountId` 是内部路由细节，**不进配置键**。
+
+### 4.2 匹配规则（`PriorityRules`）
+
+- 规则键是配置键的合法前缀：`*` → `qq_group` → `qq_group/955432692`；
+- **命中段数最多者胜**，同段数比字面长度，再比字典序（保证确定性）；
+- `*` 命中段数为 0，永远垫底。
+
+### 4.3 公式
+
+```
+base   = 最具体来源规则的 value
+delta  = Σ weighting.attributes[命中的事件属性]
+       + Σ weighting.attributes[qq_sender/<qq> 且等于发送人]
+       + Σ weighting.attributes[qq_name/<子串> 且发送人名字包含]
+total  = min(base + delta, maxPriority)
+dropped = total < dropBelow          // 不注入、不落库
+immediate = total >= immediateThreshold
+```
+
+**加分是加法**，不是取 max：`qq_private`(300) + `qq_sender/<qq>`(+50) = 350。
+
+### 4.4 QQ 属性（`QqSignalExtractor`）
+
+| 属性 | 触发条件 |
+|---|---|
+| `qq_at_bot` | 有 `at` 段且目标是自己（`self_id` 或配置 `self_qq`） |
+| `qq_at_all` | `at` 段目标为 `all` |
+| `qq_at_other` | `at` 段目标既非自己也不是 all |
+| `qq_reply_to_bot` | 被引用的平台 id 命中本账号发出的 `external_message_id` |
+| `qq_self_name` | 文本包含 bot 自己的昵称（`selfName`，配置或 `get_login_info`） |
+| `qq_command` | 文本以 `/` 或 `!` 开头，且**私聊或 at-bot** |
+
+### 4.5 决策可观测
+
+`PriorityDecision(priority, dropped, immediate, reasons)`；`reasons` 是完整算式，例如
+
+```
+source=qq_group/955432692 → qq_group 200
+qq_at_bot +100
+total 300 ≥ immediateThreshold 300 ⇒ 立即推送
+```
+
+## 5. 推送时序（`bma3-inbox`）
+
+### 5.1 状态
+
+- 每个 item 有 `revision`；服务端内存记 `pushedItems[itemId] = 已推送过的 revision`；
+- "pending" = 未 ACK、`eventRevision > ackedRevision`、且 `pushedItems[id] != revision`；
+- `dueAt(item) = item.updatedAt + (priority >= importantThreshold ? importantDelay : normalDelay)`。
+
+### 5.2 规则
+
+1. 有 pending 时，取**最早**的 `dueAt` 作为批次时刻；
+2. 到点就把**当前全部 pending** 一起 flush（刚落 1 秒的低优先项也搭车）；
+3. 新到的低优先项**不重置**时钟（锚点是最早那条）；
+4. flush 后这些 item 不再重复推送，直到被 ACK 或有新内容（revision 变化）；
+5. 无 pending 时 `awaitPush` 一直等到超时（SSE 发心跳）；
+6. 新连接/重连先收一次当前面板快照（保证断线不丢状态），之后只收 flush 事件。
+
+### 5.3 SSE
+
+- 事件 id 仍是 `panel.revision`（客户端按 revision 去重，插件无需改动）；
+- `pull` 语义不变（`GET /panel` 返回实时全量未 ack 视图，工具侧不受延迟影响）。
+
+## 6. 配置
+
+```yaml
+weighting:
+  immediateThreshold: 300     # ≥ 即 1s 推
+  dropBelow: -300             # < 即丢弃（不落库）
+  maxPriority: 1000           # 加分封顶
+  importantDelaySeconds: 1
+  normalDelaySeconds: 30
+  sourcePriority:
+    "*": 0
+    qq_group: 200
+    qq_private: 300
+    # qq_group/955432692: 350        # 更具体者胜
+  attributes:
+    qq_at_bot: 100
+    qq_at_all: 20
+    qq_at_other: 0
+    qq_reply_to_bot: 100
+    qq_self_name: 60
+    qq_command: 100
+    # qq_sender/132843233: 50
+    # qq_name/管理: 40
+
+qqconnect:
+  accounts:
+    - accountId: bot-1
+      selfQq: "10001"      # 可省：启动时 get_login_info 自动取
+      selfName: "BotMosire"
+```
+
+## 7. `set_config` / `get_config`
+
+- `set_config { patch: {点分路径: 值}, unset: [路径] }`；
+- 写入前把候选树序列化到临时目录并用 `ConfigLoader` 完整校验 —— **非法配置不落盘**；
+- 校验通过后 `ATOMIC_MOVE` 覆盖 `config/app.yaml`，等 `ConfigWatcher` 采纳（最多 3s），返回 `applied/reloaded/effective`；
+- **无白名单**（D-028）：端口/host 这类非热重载项写进去不会生效，返回 `reloaded:false` 并提示需重启；
+- `get_config` 只返回非敏感值（token 只以环境变量名出现）。
+
+## 8. 不变量
+
+1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。
+2. `qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三工具**不存在**。
+3. `< dropBelow` 的消息**不落消息板**。
+4. Inbox/SSE/`chat_message.text` 不含 URL/rkey；`segments` 只在显式请求时返回。
+5. 延迟只影响"推送/唤醒"，不影响 `GET /panel` 与工具的实时可见性。
+6. `broadcast` 批次的锚点是最早的 pending 项，后到者不重置。
+7. 出站消息只有发送成功后才有 `external_message_id`；`UNKNOWN` 不重发。
+
+## 9. 验收判据（本批已覆盖）
+
+| # | 判据 | 证据 |
+|---|---|---|
+| 1 | 私聊 300 ⇒ 立即；群普通 200 ⇒ 等批 | `PriorityResolverTest.privateMessageIsImmediate` / `ordinaryGroupMessageWaitsForTheBatch` |
+| 2 | 群 @bot 300 ⇒ 立即；@全体 220 ⇒ 等批 | `atBotCrossesTheImmediateLineButAtAllDoesNot` |
+| 3 | `qq_sender` 与来源分数**叠加** | `senderAndSourceRulesStack` |
+| 4 | 最具体的来源规则胜 | `theMostSpecificSourceRuleWins` |
+| 5 | `< dropBelow` 丢弃 | `scoreBelowDropIsDroppedBeforeItIsStored` |
+| 6 | 低于丢线时消息板也没有该行 | `Bma3AppFakeQqTest.aMessageBelowDropLineIsDiscardedBeforeItIsStored` |
+| 7 | 低优先项等到批次；立即项一次带走全部 pending；后到不重置；不重复推 | `InboxPushScheduleTest`（5 例） |
+| 8 | `set_config` 生效并热重载；非法 patch 不动文件 | `SetConfigToolTest`（3 例） |
+| 9 | 出站发送成功后 `externalMessageId`/`self` 可读 | `QqToolsTest` |
+| 10 | 图片 URL 只在 `includeSegments` 时出现，正文仍 `[图片]` | `OneBot11CodecTest.keepsStructuredPayloadForMediaAndRelations`、`QqToolsTest` |
+| 11 | `./mvnw -q test` PASS（65 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
+
+## 10. 风险 / 未验证
+
+- **真实 LLBot/DSH 联调 `NOT_RUN`**：`get_login_info`、`external_message_id` 回写、SSE 推送节奏都只有 fake/回环证据。
+- **重启后推送状态丢失**：`pushedItems` 是内存表，重启后所有未 ack item 会重新进入 pending（按 `updatedAt + delay` 计算，通常立即 flush 一次）。这是有意的"宁重推不漏推"，但需真实环境观察。
+- **加分叠加可能超预期**：`@bot + 引用 + 喊名字` 会累加；`maxPriority` 只封顶不降噪，最终靠 `dropBelow`/权重。
+- **`self_name` 子串匹配**误命中率高（"小博"、"bot"），默认 `+60` 刻意压在立即线以下。

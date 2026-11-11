@@ -1,12 +1,15 @@
 package io.mosire.bma3.qqconnect.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.mosire.agentlib.tool.AgentTool;
 import io.mosire.agentlib.tool.ToolContext;
 import io.mosire.agentlib.tool.ToolResult;
 import io.mosire.bma3.core.account.AccountId;
 import io.mosire.bma3.core.account.ConsumerId;
+import io.mosire.bma3.core.message.Message;
+import io.mosire.bma3.core.message.Segment;
 import io.mosire.bma3.core.source.SourceAddress;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import java.util.List;
@@ -40,9 +43,6 @@ final class QqToolSupport {
                 new QqUserNoteGetTool(context),
                 new QqUserNoteListTool(context),
                 new QqUserNoteUpsertTool(context),
-                new QqSourceWeightGetTool(context),
-                new QqSourceWeightListTool(context),
-                new QqSourceWeightSetTool(context),
                 new QqConversationAckTool(context));
     }
 
@@ -85,22 +85,44 @@ final class QqToolSupport {
         var tags = node.putArray("tags");
         note.tags().forEach(tags::add);
         node.put("note", note.note());
-        node.put("priority", note.priority());
         node.put("revision", note.revision());
         return node;
     }
 
-    static String weightJson(QqExtrasStore.SourceWeight weight) {
-        return weightNode(weight).toString();
+    /** One message row as the read tools expose it. */
+    static ObjectNode messageNode(Message message, boolean includeSegments) {
+        ObjectNode node = object();
+        node.put("seq", message.localSeq());
+        node.put("messageId", message.inbound().messageId());
+        node.put("externalMessageId", message.externalMessageId());
+        node.put("at", message.inbound().at().toString());
+        node.put("direction", message.inbound().direction() == io.mosire.bma3.core.message.Direction.INBOUND
+                ? "IN" : "OUT");
+        node.put("self", message.self());
+        var sender = node.putObject("sender");
+        sender.put("id", message.inbound().senderId());
+        sender.put("name", message.inbound().senderName());
+        node.put("text", messageText(message));
+        if (includeSegments) {
+            ArrayNode segments = node.putArray("segments");
+            for (Segment segment : message.inbound().segments()) {
+                ObjectNode item = segments.addObject();
+                item.put("type", segment.type());
+                item.put("text", segment.text());
+                var data = item.putObject("data");
+                segment.data().forEach(data::put);
+            }
+        }
+        return node;
     }
 
-    static ObjectNode weightNode(QqExtrasStore.SourceWeight weight) {
-        ObjectNode node = object();
-        node.put("source", weight.source());
-        node.put("sourceWeight", weight.weight());
-        node.put("notifyThreshold", weight.notifyThreshold());
-        node.put("revision", weight.revision());
-        return node;
+    static boolean includeSegments(ToolContext context) {
+        return context.arguments().get("includeSegments") instanceof Boolean value && value;
+    }
+
+    static Map<String, Object> segmentsSchema() {
+        return Map.of("type", "boolean",
+                "description", "true 时返回结构化 segments（图片 file/url、引用 id、at 目标等）；默认 false。");
     }
 
     static String text(ToolContext context, String name) {
@@ -167,7 +189,7 @@ final class QqToolSupport {
         return ToolResult.error("INVALID_ARGUMENT", message);
     }
 
-    static String messageText(io.mosire.bma3.core.message.Message message) {
+    static String messageText(Message message) {
         StringBuilder text = new StringBuilder();
         message.inbound().segments().forEach(segment -> {
             if (segment.text() != null && !segment.text().isBlank()) {

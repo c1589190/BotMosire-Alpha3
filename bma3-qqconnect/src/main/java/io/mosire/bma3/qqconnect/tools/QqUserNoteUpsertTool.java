@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/** Upserts a per-account user note/tag/priority. */
+/** Upserts a per-account user note: display name, tags and free text. */
 public final class QqUserNoteUpsertTool implements AgentTool {
 
     private final QqToolContext context;
@@ -23,7 +23,8 @@ public final class QqUserNoteUpsertTool implements AgentTool {
 
     @Override
     public String description() {
-        return "新建或更新 QQ 用户备注/标签/priority；省略字段保留旧值，tags 传入时整体替换。";
+        return "新建或更新 QQ 用户备注/别名/标签；省略字段保留旧值，tags 传入时整体替换。"
+                + "分数不在这里：优先级走 set_config 的 weighting.sourcePriority / weighting.attributes。";
     }
 
     @Override
@@ -34,7 +35,6 @@ public final class QqUserNoteUpsertTool implements AgentTool {
                 "displayName", Map.of("type", "string"),
                 "tags", Map.of("type", "array", "items", Map.of("type", "string")),
                 "note", Map.of("type", "string"),
-                "priority", Map.of("type", "integer", "minimum", -1000, "maximum", 1000),
                 "expectedRevision", Map.of("type", "integer", "minimum", 0)),
                 "required", List.of("userId"));
     }
@@ -57,11 +57,9 @@ public final class QqUserNoteUpsertTool implements AgentTool {
             }
             String note = toolContext.arguments().get("note") instanceof String s
                     ? s : current == null ? "" : current.note();
-            int priority = toolContext.arguments().get("priority") instanceof Number n
-                    ? n.intValue() : current == null ? 0 : current.priority();
             Integer expected = toolContext.arguments().get("expectedRevision") instanceof Number n
                     ? n.intValue() : current == null ? null : current.revision();
-            var saved = extras.upsertNote(accountId, userId, displayName, tags, note, priority, expected);
+            var saved = extras.upsertNote(accountId, userId, displayName, tags, note, expected);
             return ToolResult.ok(QqToolSupport.noteJson(saved));
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);

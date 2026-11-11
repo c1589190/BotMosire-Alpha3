@@ -139,11 +139,14 @@ public final class InboxHttpServer implements AutoCloseable {
         OutputStream output = exchange.getResponseBody();
         long last = parseRevision(exchange.getRequestHeaders().getFirst("Last-Event-ID"));
         try {
+            // A fresh (or reconnecting) client always gets the current unacked state once, so a
+            // dropped connection cannot lose items. Arrival-driven pushes are what the delay and
+            // batching rules govern below.
             InboxPanel snapshot = service.panel();
             writeEvent(output, "panel", snapshot.revision(), mapper.writeValueAsString(snapshot));
             last = Math.max(last, snapshot.revision());
             while (!Thread.currentThread().isInterrupted()) {
-                InboxPanel next = service.awaitPanel(last, java.time.Duration.ofSeconds(15));
+                InboxPanel next = service.awaitPush(java.time.Duration.ofSeconds(15));
                 if (next == null) {
                     writeEvent(output, "heartbeat", last,
                             "{\"revision\":" + last + "}");

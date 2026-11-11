@@ -59,6 +59,8 @@ qqconnect:
       endpoint: ws://47.100.101.156:3001/
       tokenEnv: LLBOT_ACCESS_TOKEN
       enabled: true
+      # selfQq / selfName 可省：启动时用 get_login_info 自动学习
+      # selfName: BotMosire
   send:
     maxTextChars: 3000   # 1..3000
     overflow: reject     # reject | split
@@ -71,21 +73,28 @@ inbox:
     maxItemsPerPanel: 6     # 4..8
     includeOmittedCount: true
 
+# 分数 = 最具体的来源规则 + 命中的属性加分（加法）
+# < dropBelow 丢弃（不落消息板）；>= immediateThreshold 走 importantDelay，其余走 normalDelay
 weighting:
-  privateSourceWeight: 300
-  groupSourceWeight: 0
-  notifyThreshold: 200
-  normalDelaySeconds: 30
+  immediateThreshold: 300
+  dropBelow: -300
+  maxPriority: 1000
   importantDelaySeconds: 1
-  platformWeights:
+  normalDelaySeconds: 30
+  sourcePriority:
+    "*": 0
     qq_private: 300
-    qq_group: 0
-    bilibili: 120
-  signals:
-    mention: 300
-    reply: 300
-    name: 200
-    command: 300
+    qq_group: 200
+    # qq_group/955432692: 350     # 更具体者胜
+  attributes:
+    qq_at_bot: 100
+    qq_at_all: 20
+    qq_at_other: 0
+    qq_reply_to_bot: 100
+    qq_self_name: 60
+    qq_command: 100
+    # qq_sender/132843233: 50
+    # qq_name/管理: 40
 
 webconnect:
   enabled: true
@@ -199,7 +208,8 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 - QQ 账号：`qq_account_list/status/login_info`
 - 会话导航：`qq_thread_list`、`qq_recent_messages`、`qq_conversation_history`、`qq_message_get`
 - 读写：`qq_conversation_read/ack/send/send_image`、`qq_reply`、`qq_private_send`
-- 用户/来源：`qq_user_note_get/list/upsert`、`qq_source_weight_get/list/set`
+- 用户备注：`qq_user_note_get/list/upsert`（只存别名/标签/备注，不存分数）
+- 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；来源规则与属性加分都在这里）
 - 目录：`qq_group_list`、`qq_friend_list`
 - Inbox：`inbox_status/list/ack`
 - 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`

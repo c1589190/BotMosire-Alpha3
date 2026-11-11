@@ -27,8 +27,11 @@ class ConfigLoaderTest {
         assertThat(config.inbox().display().maxMessagesPerItem()).isEqualTo(6);
         assertThat(config.inbox().display().maxItemsPerPanel()).isEqualTo(6);
         assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(3000);
-        assertThat(config.weighting().platformWeight("qq_private")).isEqualTo(300);
-        assertThat(config.weighting().platformWeight("bilibili")).isZero();
+        assertThat(config.weighting().sourcePriority()).containsEntry("qq_private", 300);
+        assertThat(config.weighting().sourcePriority()).containsEntry("qq_group", 200);
+        assertThat(config.weighting().sourcePriority().getOrDefault("bilibili", 0)).isZero();
+        assertThat(config.weighting().immediateThreshold()).isEqualTo(300);
+        assertThat(config.weighting().dropBelow()).isEqualTo(-300);
         assertThat(config.logging().level()).isEqualTo("INFO");
     }
 
@@ -61,11 +64,12 @@ class ConfigLoaderTest {
                     maxTextChars: 2800
                     overflow: split
                 weighting:
-                  platformWeights:
+                  immediateThreshold: 400
+                  sourcePriority:
                     qq_group: 50
                     bilibili: 120
-                  signals:
-                    mention: 250
+                  attributes:
+                    qq_at_bot: 250
                 """);
 
         AppConfig config = ConfigLoader.load(tempDir);
@@ -74,9 +78,10 @@ class ConfigLoaderTest {
         assertThat(config.inbox().display().includeOmittedCount()).isFalse();
         assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(2800);
         assertThat(config.qqconnect().send().overflow()).isEqualTo("split");
-        assertThat(config.weighting().platformWeight("qq_group")).isEqualTo(50);
-        assertThat(config.weighting().platformWeight("bilibili")).isEqualTo(120);
-        assertThat(config.weighting().signals().mention()).isEqualTo(250);
+        assertThat(config.weighting().sourcePriority()).containsEntry("qq_group", 50);
+        assertThat(config.weighting().sourcePriority()).containsEntry("bilibili", 120);
+        assertThat(config.weighting().attribute("qq_at_bot")).isEqualTo(250);
+        assertThat(config.weighting().immediateThreshold()).isEqualTo(400);
     }
 
     @Test

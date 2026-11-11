@@ -105,7 +105,9 @@ public final class ConfigLoader {
                     text(account, "accountId", ""),
                     text(account, "endpoint", ""),
                     text(account, "tokenEnv", ""),
-                    account.path("enabled").asBoolean(true)));
+                    account.path("enabled").asBoolean(true),
+                    text(account, "selfQq", ""),
+                    text(account, "selfName", "")));
         }
 
         JsonNode inbox = node.path("inbox");
@@ -117,7 +119,6 @@ public final class ConfigLoader {
             allowedHosts.add(host.asText());
         }
         JsonNode weighting = node.path("weighting");
-        JsonNode signals = weighting.path("signals");
         JsonNode logging = node.path("logging");
         return new AppConfig(
                 Path.of(dataDir),
@@ -138,17 +139,15 @@ public final class ConfigLoader {
                         webconnect.path("headless").asBoolean(true),
                         allowedHosts.isEmpty() ? AppConfig.Webconnect.defaults().allowedHosts() : allowedHosts),
                 new AppConfig.Weighting(
-                        integer(weighting, "privateSourceWeight", 300),
-                        integer(weighting, "groupSourceWeight", 0),
-                        integer(weighting, "notifyThreshold", 200),
+                        integer(weighting, "immediateThreshold", 300),
+                        integer(weighting, "dropBelow", -300),
+                        integer(weighting, "maxPriority", 1000),
                         integer(weighting, "normalDelaySeconds", 30),
                         integer(weighting, "importantDelaySeconds", 1),
-                        integerMap(weighting.path("platformWeights")),
-                        new AppConfig.Weighting.SignalWeights(
-                                integer(signals, "mention", 300),
-                                integer(signals, "reply", 300),
-                                integer(signals, "name", 200),
-                                integer(signals, "command", 300))),
+                        integerMapOr(weighting.path("sourcePriority"),
+                                AppConfig.Weighting.defaultSourcePriority()),
+                        integerMapOr(weighting.path("attributes"),
+                                AppConfig.Weighting.defaultAttributes())),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 
@@ -165,6 +164,13 @@ public final class ConfigLoader {
         }
         matcher.appendTail(output);
         return output.toString();
+    }
+
+    /** Missing map falls back to the built-in defaults; an empty map stays empty on purpose. */
+    private static java.util.Map<String, Integer> integerMapOr(JsonNode node,
+                                                               java.util.Map<String, Integer> fallback) {
+        java.util.Map<String, Integer> parsed = integerMap(node);
+        return parsed == null ? fallback : parsed;
     }
 
     private static java.util.Map<String, Integer> integerMap(JsonNode node) {

@@ -3,17 +3,24 @@ package io.mosire.bma3.app;
 import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
 import io.mosire.bma3.app.config.ConfigWatcher;
+import io.mosire.bma3.app.config.RuntimePolicy;
+import io.mosire.bma3.app.priority.PriorityDecision;
+import io.mosire.bma3.app.priority.PriorityResolver;
+import io.mosire.bma3.app.tools.ConfigToolContext;
+import io.mosire.bma3.app.tools.GetConfigTool;
+import io.mosire.bma3.app.tools.SetConfigTool;
 import io.mosire.bma3.core.config.ConfigException;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
+import io.mosire.bma3.core.message.Message;
+import io.mosire.bma3.core.priority.PriorityAttributes;
+import io.mosire.bma3.core.priority.SourceKeyer;
 import io.mosire.bma3.core.source.SourceAddress;
-import io.mosire.bma3.core.store.AppendResult;
-import io.mosire.bma3.core.store.SqliteMessageBoardStore;
-import io.mosire.bma3.app.priority.PriorityDecision;
-import io.mosire.bma3.app.priority.PriorityResolver;
-import io.mosire.bma3.core.priority.PrioritySignals;
 import io.mosire.bma3.core.source.SourceLabels;
 import io.mosire.bma3.core.source.SourceView;
+import io.mosire.bma3.core.store.AppendResult;
+import io.mosire.bma3.core.store.MessageBoardStore;
+import io.mosire.bma3.core.store.SqliteMessageBoardStore;
 import io.mosire.bma3.inbox.core.AppendItem;
 import io.mosire.bma3.inbox.core.DeliveryPolicy;
 import io.mosire.bma3.inbox.core.InboxEntry;
@@ -25,11 +32,12 @@ import io.mosire.bma3.qqconnect.account.AccountConfig;
 import io.mosire.bma3.qqconnect.account.AccountEvent;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
-import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqExtrasStore;
 import io.mosire.bma3.qqconnect.tools.QqSendPolicy;
 import io.mosire.bma3.qqconnect.tools.QqSignalExtractor;
+import io.mosire.bma3.qqconnect.tools.QqSourceKeyer;
 import io.mosire.bma3.qqconnect.tools.QqSourceLabeler;
+import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqTools;
 import io.mosire.bma3.webconnect.BrowserOptions;
 import io.mosire.bma3.webconnect.BrowserService;
@@ -43,9 +51,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Composition root for the one BMA3 service process. */
 public final class Bma3App implements AutoCloseable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(Bma3App.class);
 
     private final AppConfig config;
     private final SqliteMessageBoardStore board;
@@ -60,11 +72,11 @@ public final class Bma3App implements AutoCloseable {
     private final ConfigWatcher watcher;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
-                   SqliteInboxStore inboxStore, InboxService inboxService,
-                   HealthServer health, InboxHttpServer inboxHttp,
-                   AccountRegistry accounts, Bma3McpServer mcp,
-                   BrowserService browser, QqExtrasStore qqExtras,
-                   ConfigWatcher watcher) {
+                    SqliteInboxStore inboxStore, InboxService inboxService,
+                    HealthServer health, InboxHttpServer inboxHttp,
+                    AccountRegistry accounts, Bma3McpServer mcp,
+                    BrowserService browser, QqExtrasStore qqExtras,
+                    ConfigWatcher watcher) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -101,13 +113,15 @@ public final class Bma3App implements AutoCloseable {
         SqliteInboxStore inboxStore = new SqliteInboxStore(
                 config.dataDir().resolve("inbox.db"));
         AppConfig.Weighting weighting = config.weighting();
-        AtomicReference<io.mosire.bma3.app.config.RuntimePolicy> runtime =
-                new AtomicReference<>(io.mosire.bma3.app.config.RuntimePolicy.from(config));
+        AtomicReference<AppConfig> current = new AtomicReference<>(config);
+        AtomicReference<RuntimePolicy> runtime =
+                new AtomicReference<>(RuntimePolicy.from(config));
         SourceLabels sourceLabels = SourceLabels.builder()
                 .register(new QqSourceLabeler()).build();
+        SourceKeyer sourceKeyer = new QqSourceKeyer();
         PriorityResolver priorities = new PriorityResolver(() -> runtime.get().weighting());
         DeliveryPolicy deliveryPolicy = new DeliveryPolicy(
-                weighting.notifyThreshold(),
+                weighting.immediateThreshold(),
                 Duration.ofSeconds(weighting.importantDelaySeconds()),
                 Duration.ofSeconds(weighting.normalDelaySeconds()),
                 Duration.ofMinutes(10), 3);
@@ -121,8 +135,10 @@ public final class Bma3App implements AutoCloseable {
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), mcpToken, inboxService);
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
-        AccountRegistry accounts = new AccountRegistry(
-                event -> ingest(board, inboxService, priorities, qqExtras, sourceLabels, event));
+        AtomicReference<AccountRegistry> registry = new AtomicReference<>();
+        AccountRegistry accounts = new AccountRegistry(event -> ingest(board, inboxService,
+                priorities, sourceKeyer, registry.get(), current, qqExtras, sourceLabels, event));
+        registry.set(accounts);
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
@@ -130,11 +146,15 @@ public final class Bma3App implements AutoCloseable {
             inboxHttp.start();
             List<AccountConfig> resolved = resolveAccounts(config, env);
             accounts.reconcile(resolved);
+            applySelfOverrides(accounts, config);
             watcher = ConfigWatcher.watch(configRoot, env, next -> {
                 accounts.reconcile(resolveAccounts(next, env));
-                runtime.set(io.mosire.bma3.app.config.RuntimePolicy.from(next));
+                applySelfOverrides(accounts, next);
+                current.set(next);
+                runtime.set(RuntimePolicy.from(next));
             });
 
+            ConfigToolContext configTools = new ConfigToolContext(configRoot, env, current::get);
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(new QqToolContext(
                     accounts, board, board, config.dataDir(), qqExtras,
@@ -143,6 +163,8 @@ public final class Bma3App implements AutoCloseable {
                         return QqSendPolicy.from(send.maxTextChars(), send.overflow());
                     })));
             tools.addAll(InboxTools.all(inboxService));
+            tools.add(new GetConfigTool(configTools));
+            tools.add(new SetConfigTool(configTools));
             if (config.webconnect().enabled()) {
                 browser = new BrowserService(new BrowserOptions(
                         config.webconnect().binary(),
@@ -178,36 +200,78 @@ public final class Bma3App implements AutoCloseable {
         }
     }
 
-    private static void ingest(SqliteMessageBoardStore board, InboxService inboxService,
-                               PriorityResolver priorities, QqExtrasStore extras,
-                               SourceLabels sourceLabels, AccountEvent accountEvent) {
+    /**
+     * Priority first, persistence second: a message scored below {@code dropBelow} is discarded
+     * outright (operator ruling) and never reaches the board, so it can never be replayed or
+     * counted later.
+     */
+    private static void ingest(MessageBoardStore board, InboxService inboxService,
+                               PriorityResolver priorities, SourceKeyer sourceKeyer,
+                               AccountRegistry accounts, AtomicReference<AppConfig> current,
+                               QqExtrasStore extras, SourceLabels sourceLabels,
+                               AccountEvent accountEvent) {
         OneBotEvent event = accountEvent.event();
         SourceAddress source = event.source(accountEvent.accountId());
         SourceView view = sourceLabels.view(source);
+        String sourceKey = sourceKeyer.keyFor(source);
+        String senderId = Long.toString(event.userId());
+        boolean replyToBot = isReplyToBot(board, source, event.replyToMessageId());
+        PriorityAttributes attributes = QqSignalExtractor.attributes(event,
+                selfName(accounts, current.get(), accountEvent.accountId()), replyToBot);
+        PriorityDecision decision = priorities.resolve(sourceKey, senderId,
+                event.senderName(), attributes);
+        if (decision.dropped()) {
+            LOG.info("event=qq_message_dropped accountId={} sourceKey={} priority={}",
+                    accountEvent.accountId(), sourceKey, decision.priority());
+            return;
+        }
         AppendResult appended = board.append(new InboundMessage(
                 source,
                 Long.toString(event.messageId()),
                 event.at(),
                 event.segments(),
-                Direction.INBOUND));
+                Direction.INBOUND,
+                senderId,
+                event.senderName()));
         if (!appended.created()) {
             return;
         }
-        var sourcePolicy = extras.sourceWeight(source.format()).orElse(null);
-        var note = extras.note(source.accountId(), Long.toString(event.userId())).orElse(null);
-        PrioritySignals signals = QqSignalExtractor.signals(event);
-        PriorityDecision decision = priorities.resolve(
-                view.platform(),
-                sourcePolicy == null ? null : sourcePolicy.weight(),
-                sourcePolicy == null ? null : sourcePolicy.notifyThreshold(),
-                note == null ? null : note.priority(),
-                signals);
-        if (!decision.notified()) {
-            // Ordinary traffic stays on the message board; only notify-worthy items enter the panel.
-            return;
-        }
+        var note = extras.note(accountEvent.accountId(), senderId).orElse(null);
         InboxEntry entry = entry(event, appended.message().localSeq(), note);
         inboxService.appendOrMerge(AppendItem.of(view, entry, decision.priority(), Instant.now()));
+    }
+
+    /** True when the quoted platform id belongs to a row this account sent. */
+    private static boolean isReplyToBot(MessageBoardStore board, SourceAddress source,
+                                        String replyToMessageId) {
+        if (replyToMessageId == null || replyToMessageId.isBlank()) {
+            return false;
+        }
+        return board.findByExternalMessageId(source, replyToMessageId)
+                .map(Message::self)
+                .orElse(false);
+    }
+
+    /** The bot's own nickname: an explicit config override wins over the learned login info. */
+    private static String selfName(AccountRegistry accounts, AppConfig config, String accountId) {
+        for (AppConfig.Account account : config.qqconnect().accounts()) {
+            if (account.accountId().equals(accountId) && !account.selfName().isBlank()) {
+                return account.selfName();
+            }
+        }
+        return accounts.self(accountId)
+                .map(AccountRegistry.SelfIdentity::nickname)
+                .orElse("");
+    }
+
+    private static void applySelfOverrides(AccountRegistry accounts, AppConfig config) {
+        for (AppConfig.Account account : config.qqconnect().accounts()) {
+            if (account.selfQq().isBlank() && account.selfName().isBlank()) {
+                continue;
+            }
+            accounts.self(account.accountId(),
+                    new AccountRegistry.SelfIdentity(account.selfQq(), account.selfName()));
+        }
     }
 
     private static InboxEntry entry(OneBotEvent event, long localSeq,

@@ -71,7 +71,22 @@ public record AppConfig(
         }
     }
 
-    public record Account(String accountId, String endpoint, String tokenEnv, boolean enabled) {
+    /**
+     * One OneBot account. {@code selfQq}/{@code selfName} are optional overrides for the bot's own
+     * identity; when blank, the identity is learned from {@code get_login_info} on connect.
+     */
+    public record Account(String accountId, String endpoint, String tokenEnv, boolean enabled,
+                          String selfQq, String selfName) {
+
+        public Account {
+            selfQq = selfQq == null ? "" : selfQq;
+            selfName = selfName == null ? "" : selfName;
+        }
+
+        /** Compatibility constructor: identity is learned at runtime. */
+        public Account(String accountId, String endpoint, String tokenEnv, boolean enabled) {
+            this(accountId, endpoint, tokenEnv, enabled, "", "");
+        }
     }
 
     /** 5-arg compatibility constructor for tests/profiles created before webconnect. */
@@ -88,68 +103,86 @@ public record AppConfig(
     }
 
     /**
-     * Generic priority model: platform defaults plus per-source weight/threshold, user note
-     * and adapter signals. Signals are no longer diagnostics-only; they can break the
-     * default group silence (for example an @ mention).
+     * Priority model: a most-specific-wins {@code sourcePriority} rule table plus additive
+     * {@code attributes}. A message's score decides three things only — whether it is enqueued at
+     * all ({@code dropBelow}), how fast the panel is pushed ({@code immediateThreshold} and the two
+     * delays) and how items are ordered.
+     *
+     * <p>Every value here is editable through {@code set_config}; this record is the single source
+     * of truth for scores (per-source weights and user-note priorities no longer exist).</p>
      */
-    public record Weighting(int privateSourceWeight, int groupSourceWeight,
-                            int notifyThreshold, long normalDelaySeconds,
-                            long importantDelaySeconds,
-                            java.util.Map<String, Integer> platformWeights,
-                            SignalWeights signals) {
+    public record Weighting(
+            int immediateThreshold,
+            int dropBelow,
+            int maxPriority,
+            long normalDelaySeconds,
+            long importantDelaySeconds,
+            java.util.Map<String, Integer> sourcePriority,
+            java.util.Map<String, Integer> attributes) {
 
         public Weighting {
-            if (privateSourceWeight < -1000 || privateSourceWeight > 1000
-                    || groupSourceWeight < -1000 || groupSourceWeight > 1000
-                    || notifyThreshold < -1000 || notifyThreshold > 1000) {
-                throw new IllegalArgumentException("weighting 权重必须在 -1000..1000");
+            if (maxPriority < -1000 || maxPriority > 1000) {
+                throw new IllegalArgumentException("weighting.maxPriority 必须在 -1000..1000");
+            }
+            if (dropBelow < -1000 || dropBelow > 1000) {
+                throw new IllegalArgumentException("weighting.dropBelow 必须在 -1000..1000");
+            }
+            if (immediateThreshold < -1000 || immediateThreshold > 1000) {
+                throw new IllegalArgumentException("weighting.immediateThreshold 必须在 -1000..1000");
+            }
+            if (dropBelow > immediateThreshold) {
+                throw new IllegalArgumentException("weighting.dropBelow 不能大于 immediateThreshold");
             }
             if (normalDelaySeconds < 0 || normalDelaySeconds > 600
                     || importantDelaySeconds < 0 || importantDelaySeconds > 600) {
                 throw new IllegalArgumentException("weighting 延迟必须在 0..600 秒");
             }
-            java.util.Map<String, Integer> weights = new java.util.LinkedHashMap<>();
-            if (platformWeights != null) {
-                platformWeights.forEach((platform, weight) -> {
-                    if (platform == null || platform.isBlank()
-                            || weight == null || weight < -1000 || weight > 1000) {
-                        throw new IllegalArgumentException("weighting.platformWeights 非法: " + platform);
-                    }
-                    weights.put(platform, weight);
-                });
-            }
-            weights.putIfAbsent("qq_private", privateSourceWeight);
-            weights.putIfAbsent("qq_group", groupSourceWeight);
-            platformWeights = java.util.Map.copyOf(weights);
-            signals = signals == null ? SignalWeights.defaults() : signals;
-        }
-
-        public Weighting(int privateSourceWeight, int groupSourceWeight,
-                         int notifyThreshold, long normalDelaySeconds,
-                         long importantDelaySeconds) {
-            this(privateSourceWeight, groupSourceWeight, notifyThreshold,
-                    normalDelaySeconds, importantDelaySeconds, null, null);
+            sourcePriority = copyWeights(sourcePriority, "weighting.sourcePriority");
+            attributes = copyWeights(attributes, "weighting.attributes");
         }
 
         public static Weighting defaults() {
-            return new Weighting(300, 0, 200, 30, 1);
+            return new Weighting(300, -300, 1000, 30, 1, defaultSourcePriority(),
+                    defaultAttributes());
         }
 
-        public int platformWeight(String platform) {
-            return platformWeights.getOrDefault(platform, 0);
+        public static java.util.Map<String, Integer> defaultSourcePriority() {
+            java.util.Map<String, Integer> rules = new java.util.LinkedHashMap<>();
+            rules.put("*", 0);
+            rules.put("qq_private", 300);
+            rules.put("qq_group", 200);
+            return java.util.Map.copyOf(rules);
         }
 
-        public record SignalWeights(int mention, int reply, int name, int command) {
+        public static java.util.Map<String, Integer> defaultAttributes() {
+            java.util.Map<String, Integer> weights = new java.util.LinkedHashMap<>();
+            weights.put("qq_at_bot", 100);
+            weights.put("qq_at_all", 20);
+            weights.put("qq_at_other", 0);
+            weights.put("qq_reply_to_bot", 100);
+            weights.put("qq_self_name", 60);
+            weights.put("qq_command", 100);
+            return java.util.Map.copyOf(weights);
+        }
 
-            public SignalWeights {
-                if (mention < 0 || reply < 0 || name < 0 || command < 0) {
-                    throw new IllegalArgumentException("weighting.signals 不能为负");
-                }
-            }
+        public int attribute(String key) {
+            Integer value = attributes.get(key);
+            return value == null ? 0 : value;
+        }
 
-            public static SignalWeights defaults() {
-                return new SignalWeights(300, 300, 200, 300);
+        private static java.util.Map<String, Integer> copyWeights(java.util.Map<String, Integer> raw,
+                                                                 String field) {
+            java.util.Map<String, Integer> values = new java.util.LinkedHashMap<>();
+            if (raw != null) {
+                raw.forEach((key, weight) -> {
+                    if (key == null || key.isBlank() || weight == null
+                            || weight < -1000 || weight > 1000) {
+                        throw new IllegalArgumentException(field + " 非法: " + key);
+                    }
+                    values.put(key, weight);
+                });
             }
+            return java.util.Map.copyOf(values);
         }
     }
 

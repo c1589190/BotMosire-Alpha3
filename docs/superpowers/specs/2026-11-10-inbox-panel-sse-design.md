@@ -198,6 +198,8 @@ data: {"revision":42}
 
 ## 8. 通用优先级
 
+> **本节已被取代**（2026-11-11）：优先级公式与推送时机改为「最具体来源规则 + 属性加法加分 + 三档出口」，见 [`2026-11-11-priority-rules-and-push-schedule-design.md`](2026-11-11-priority-rules-and-push-schedule-design.md)（D-017..D-028）。本文件其余章节（N/M 截断、SSE 生命周期、Inbox 不带 URL）仍有效。
+
 `PriorityResolver` 输入：
 
 - `SourceView`（platform/raw）
