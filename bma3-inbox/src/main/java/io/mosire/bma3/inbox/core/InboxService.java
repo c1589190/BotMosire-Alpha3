@@ -64,6 +64,7 @@ public final class InboxService {
         this.panelRevision = store.panelRevision();
         this.ackedRevision = store.ackedRevision();
         purgeNow();
+        consolidateSources();
     }
 
     /** Legacy append: one new item, no merge. */
@@ -75,7 +76,7 @@ public final class InboxService {
         InboxItem item = new InboxItem(
                 "itm-" + UUID.randomUUID(), request.source().raw(), request.source().label(),
                 summary, entries, 1, revision, request.priority(),
-                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1);
+                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1, 0L, false);
         store.append(item);
         afterAppend(item);
         return item;
@@ -89,23 +90,46 @@ public final class InboxService {
         long revision = nextRevision();
         var active = store.activeForSource(request.source().raw());
         if (active.isEmpty()) {
+            // 同一来源只保留一条：如果有"已推送但还没被确认"的旧条目，就把新消息续到它上面
+            // （解冻 + 续标），而不是在面板里再开一条同来源的。这样 Agent 看到的永远是
+            // "这个来源到目前为止的完整内容"，且条目变了会被重新推送。
+            var reopenable = store.reopenableForSource(request.source().raw());
+            if (reopenable.isPresent()) {
+                return mergeInto(reopenable.orElseThrow(), request, revision, true);
+            }
             InboxEntry entry = request.entry();
             List<InboxEntry> entries = entry == null ? List.of() : List.of(entry);
             String summary = entry == null ? request.summary() : entry.render();
             InboxItem created = new InboxItem(
                     "itm-" + UUID.randomUUID(), request.source().raw(), request.source().label(),
                     summary, entries, 1, revision, request.priority(),
-                    ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1);
+                    ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1, 0L, false);
             store.append(created);
             afterAppend(created);
             return created;
         }
 
-        InboxItem item = active.orElseThrow();
+        return mergeInto(active.orElseThrow(), request, revision, false);
+    }
+
+    /**
+     * Appends one message to an existing item.
+     *
+     * @param continuation true when the target had already been delivered: the item is reopened
+     *                     (unfrozen) and the new entry carries the {@value #CONTINUATION_MARKER}
+     *                     marker, so a reader can tell "this item grew after you saw it".
+     */
+    private InboxItem mergeInto(InboxItem target, AppendItem request, long revision,
+                                boolean continuation) {
+        InboxItem item = continuation ? target.withFrozen(0L).withContinued(true) : target;
+        InboxEntry incoming = request.entry();
+        if (continuation && incoming != null) {
+            incoming = incoming.withMarker(CONTINUATION_MARKER);
+        }
         List<InboxEntry> entries = new ArrayList<>(item.entries());
         String summary;
-        if (request.entry() != null) {
-            entries.add(request.entry());
+        if (incoming != null) {
+            entries.add(incoming);
             entries = trim(entries);
             summary = render(entries);
         } else {
@@ -120,6 +144,65 @@ public final class InboxService {
         afterAppend(updated);
         return updated;
     }
+
+    /** Marker appended to a message that arrived after its item had already been delivered. */
+    public static final String CONTINUATION_MARKER = "续";
+
+    /**
+     * Unified consolidation: one unacked item per source.
+     *
+     * <p>Live traffic already continues a source into its delivered item ({@link #mergeInto}), but
+     * data written before that rule — or by an older build — can still hold several unacked items
+     * for one source. This folds them into the newest one: older entries first (chronological), the
+     * survivor's own entries last, the join point marked {@value #CONTINUATION_MARKER}, and the
+     * absorbed rows dropped (the message board remains the fact source).</p>
+     *
+     * @return number of items absorbed
+     */
+    public synchronized int consolidateSources() {
+        Map<String, List<InboxItem>> bySource = new HashMap<>();
+        for (InboxItem item : visibleItems()) {
+            bySource.computeIfAbsent(item.source(), key -> new ArrayList<>()).add(item);
+        }
+        int absorbed = 0;
+        for (List<InboxItem> group : bySource.values()) {
+            if (group.size() < 2) {
+                continue;
+            }
+            group.sort(Comparator.comparing(InboxItem::createdAt));
+            InboxItem survivor = group.remove(group.size() - 1);
+            int max = Math.max(1, runtime.get().maxMessagesPerItem());
+            List<InboxEntry> entries = new ArrayList<>();
+            int total = 0;
+            for (InboxItem older : group) {
+                entries.addAll(older.entries());
+                total += Math.max(1, older.totalMessages());
+            }
+            List<InboxEntry> own = new ArrayList<>(survivor.entries());
+            if (!own.isEmpty() && !entries.isEmpty()) {
+                own.set(0, own.getFirst().withMarker(CONTINUATION_MARKER));
+            }
+            entries.addAll(own);
+            total += Math.max(0, survivor.totalMessages());
+            if (entries.size() > max) {
+                entries = new ArrayList<>(entries.subList(entries.size() - max, entries.size()));
+            }
+            InboxItem merged = survivor.withPanelState(render(entries), List.copyOf(entries), total,
+                    nextRevision(), survivor.priority(), Instant.now(), survivor.revision() + 1)
+                    .withContinued(true);
+            store.update(merged);
+            List<String> absorbedIds = group.stream().map(InboxItem::id).toList();
+            store.delete(absorbedIds);
+            absorbedIds.forEach(id -> {
+                pushedItems.remove(id);
+                pendingSince.remove(id);
+            });
+            absorbed += absorbedIds.size();
+        }
+        return absorbed;
+    }
+
+
 
     public synchronized InboxPanel panel() {
         InboxRuntime current = runtime.get();
@@ -225,7 +308,7 @@ public final class InboxService {
         if (itemIds == null || itemIds.isEmpty()) {
             throw new IllegalArgumentException("ITEM_IDS_EMPTY");
         }
-        checkRevision(expectedRevision);
+        checkItemRevision(itemIds, expectedRevision);
         long covered = ackedRevision;
         int acked = 0;
         for (InboxItem item : store.items()) {
@@ -262,10 +345,40 @@ public final class InboxService {
         return ackItems(ids, null);
     }
 
+    /**
+     * Strict check for the index path: a 1-based index is resolved against the <b>current</b> panel,
+     * so a stale revision could acknowledge the wrong item.
+     */
     private void checkRevision(Long expectedRevision) {
         if (expectedRevision != null && expectedRevision != panelRevision) {
             throw new IllegalArgumentException(
                     "REVISION_CONFLICT: expected=" + expectedRevision + " current=" + panelRevision);
+        }
+    }
+
+    /**
+     * Item-scoped check for the itemId path.
+     *
+     * <p>An itemId names exactly what the client was shown, so unrelated traffic must not reject the
+     * ack: while an agent is being woken up the inbox routinely advances (every append and every ack
+     * bumps {@code panelRevision}), and requiring equality made the wake-up ack fail with 409 almost
+     * every time on a busy account — the acknowledged items then stayed pending and were injected
+     * again. Only an item that <b>itself</b> changed after the client's revision is a real conflict,
+     * because acking it would drop content the client never saw.</p>
+     */
+    private void checkItemRevision(Set<String> itemIds, Long expectedRevision) {
+        if (expectedRevision == null) {
+            return;
+        }
+        if (expectedRevision > panelRevision) {
+            throw new IllegalArgumentException(
+                    "REVISION_CONFLICT: expected=" + expectedRevision + " current=" + panelRevision);
+        }
+        for (InboxItem item : store.items()) {
+            if (itemIds.contains(item.id()) && item.eventRevision() > expectedRevision) {
+                throw new IllegalArgumentException("REVISION_CONFLICT: expected=" + expectedRevision
+                        + " item=" + item.id() + " itemRevision=" + item.eventRevision());
+            }
         }
     }
 
@@ -393,6 +506,7 @@ public final class InboxService {
         // Only the items that this panel actually renders are marked delivered. Anything ranked
         // below the window keeps its pending state and is pushed in a later round, once acks free
         // a slot — never silently marked delivered.
+        List<String> frozen = new ArrayList<>();
         for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
             InboxItem item = visible.get(index);
             if (item.priority() < current.pushMinPriority()) {
@@ -400,8 +514,14 @@ public final class InboxService {
             }
             pushedItems.put(item.id(), item.revision());
             pendingSince.remove(item.id());
+            frozen.add(item.id());
         }
         pushRevision++;
+        // 推送即冻结：这些条目从此不再吸同来源的新消息，后续消息另开新条目。
+        // 这样"被 ack 的内容"永远等于"被推送的内容"，ack 不会因条目自身变化而冲突。
+        if (!frozen.isEmpty()) {
+            store.freeze(frozen, pushRevision);
+        }
         notifyAll();
     }
 
@@ -442,7 +562,8 @@ public final class InboxService {
         return store.items().stream()
                 .filter(item -> item.status() != ItemStatus.ACKED)
                 .map(item -> new ItemSummary(item.id(), item.source(), item.summary(),
-                        item.priority(), item.status(), item.availableAt(), item.revision()))
+                        item.priority(), item.status(), item.availableAt(), item.revision(),
+                        item.continued()))
                 .toList();
     }
 
@@ -460,6 +581,7 @@ public final class InboxService {
         appendsSincePurge++;
         if (appendsSincePurge >= PURGE_EVERY_APPENDS) {
             purgeNow();
+        consolidateSources();
         }
         notifyAll();
     }
@@ -514,6 +636,7 @@ public final class InboxService {
         }
         int omitted = includeOmitted ? Math.max(0, item.totalMessages() - entries.size()) : 0;
         return new PanelItem(index, item.id(), item.source(), item.sourceLabel(), item.priority(),
-                entries, item.totalMessages(), omitted, item.status(), item.updatedAt());
+                entries, item.totalMessages(), omitted, item.status(), item.updatedAt(),
+                item.continued());
     }
 }

@@ -1,8 +1,21 @@
-# STATUS —— 更新时间：2026-11-11 23:25 (UTC+8)
+# STATUS —— 更新时间：2026-11-12 00:22 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix6**：bma3 预设的 `tool-bash`/`tool-fs`/`tool-subagent*` 子行从来没挂上——preset 子插件从**声明它的 profile** 解析，profile 里没有 `@deepseek-ai` scope，裸包名 `ERR_MODULE_NOT_FOUND`，于是 bma3 会话从建立起就没有 bash/read_image/子 Agent。**把那些包装进 profile 也不行**：它们把 `@deepseek-ai/dsh-tools`、`dsh-llm`、`cordis` 等整个宿主运行时声明为 **peerDependencies**，从 profile 导入直接报 `Cannot find package '@deepseek-ai/dsh-tools'`（已实测）。修法：新增 `dsh-plugin/lib/host-tools.js`，在**宿主安装树**里解析这 5 个包（`createRequire(process.argv[1]) → dsh-web-app → dsh-tool-*`，pnpm store 扫描兜底，均带缓存），preset 行名改为它们入口的 `file:` URL；解析不到时回退裸包名，并由 `bma3_self_status.presetTools` 报出来。
+0. **0.0.3-hotfix7**：**正文规则表**（D-041）`weighting.rules[]`（`prefix`/`contains` + `delta` + `ignoreCase`），
+   命中即累加、可叠加，与来源基数/属性相加后再 clamp 比阈值；命中原因进 `reasons`。
+   真机验证 5/5：群基数 0 + `/`(-300) + `@bot`(+350) + `大肥鱼`(+150) = **200**；仅前缀 -300 仍入面板；
+   `.rd` 前缀 -601 ⇒ 丢弃不落库；`@BOT` 命中 `@bot`（忽略大小写）。顺带修了 `ConfigEditor` 把结构化值写成
+   一行字符串的 bug（`set_config` 传数组/对象时必须落成 YAML 结构）。
+0a. **0.0.3-hotfix7（inbox 侧）**：**推送即冻结 + 同源续接**（D-038/D-039）。已推送条目 `frozen_revision>0`；
+   同来源再来消息时解冻旧条目、给新 entry 打 `续` 标并追加（**不新开条目**，面板同源永远一条），
+   条目因此重新 pending 会被重推；无关来源的流量不再让唤醒 ack 409（按条目校验）。
+   真 jar 验证 10/10：推 1 条 → 同源再来 1 条 → 仍 1 条/`totalMessages=2`/面板行 `…第二条 续` →
+   旧 revision ack **409**（内容确实变了）→ 当前 revision ack **200** → 清空。
+   另按 D-040：条目视图暴露 `continued`；`consolidateSources()` 构造时统一合并历史重复（手工种子 3 条同源未确认行 →
+   重启后 1 条、`totalMessages=3`、`continued=true`、接缝带 `续`）。
+0b. **0.0.3-hotfix7（ack 侧）**：唤醒自带的 ack 在群里活跃时几乎必 409。`checkRevision` 要求 `expected == 当前 panelRevision`，而每次 append/ack 都会 +1，注入到 ack 之间必有一次新消息。改为**按 itemId 的条目级校验**（只有被 ack 的条目本身在客户端看到之后又变了才冲突；无关流量不再拒）；按 indices 的路径仍保持严格相等（序号依赖当前面板，过期会 ack 错条目）。插件侧不采用"409 就退回只带 itemIds"的重试——那会吞掉没看过的新内容。
+0a. **0.0.3-hotfix6**：bma3 预设的 `tool-bash`/`tool-fs`/`tool-subagent*` 子行从来没挂上——preset 子插件从**声明它的 profile** 解析，profile 里没有 `@deepseek-ai` scope，裸包名 `ERR_MODULE_NOT_FOUND`，于是 bma3 会话从建立起就没有 bash/read_image/子 Agent。**把那些包装进 profile 也不行**：它们把 `@deepseek-ai/dsh-tools`、`dsh-llm`、`cordis` 等整个宿主运行时声明为 **peerDependencies**，从 profile 导入直接报 `Cannot find package '@deepseek-ai/dsh-tools'`（已实测）。修法：新增 `dsh-plugin/lib/host-tools.js`，在**宿主安装树**里解析这 5 个包（`createRequire(process.argv[1]) → dsh-web-app → dsh-tool-*`，pnpm store 扫描兜底，均带缓存），preset 行名改为它们入口的 `file:` URL；解析不到时回退裸包名，并由 `bma3_self_status.presetTools` 报出来。
 0a. **0.0.3-hotfix5**：修 `bma3_` 前缀把 scope-local 工具（`bma3_self_status/reload`）拉进 `tools.restrict()` 的 allow，导致 DSH 抛 "names unknown global tool"、整条工具策略失效（bash 等被状态未定义）。修法：allow 里剔除 scope-local 名字；测试桩改成严格模拟 DSH 的 restrict 校验。
 0a. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
 0a. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
@@ -18,16 +31,16 @@
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix6`；HEAD 见 `git log -1`；工作树状态见文末命令。
+- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix7`；HEAD 见 `git log -1`；工作树状态见文末命令。
 - 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-hotfix6`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.3-hotfix7`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 21 / webconnect 4（1 skipped）/ app 23 = **78 tests, 0 fail**（2026-11-11） |
+| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 24 / webconnect 4（1 skipped）/ app 26 = **84 tests, 0 fail**（2026-11-11） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：20 tests（含 complete 段唯一性、scope-local allow、宿主工具解析回退） |
 | 本地真进程端到端（假 OneBot） | `tools/e2e-local/drive*.py` | **PASS 27/27**：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
 | 统一真环境回归（真 jar + 真插件客户端） | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> <injectPort>` | **PASS 9/9**：8 个低优先来源 → 推 6 条 → 插件按 itemIds ack 6 条 → 剩 2 条下一轮补推 → 两次 ack 合计 8 条、无刷屏 |
@@ -89,6 +102,7 @@
 
 ## 下一步
 
+0. ~~`bma3_mcp_onboard`（端口探测/引导绑定）~~：**用户裁定暂不做**（2026-11-11）。
 1. 批次 5：真实 LLBot/DSH 联调（本地假 OneBot 已 PASS，真机仍 `NOT_RUN`）（`get_login_info`、平台 id 回写、推送节奏、逐条 ack、`set_config` 热重载、诊断 hint）。
 2. 真实宿主验证 MCP 图片通道，再决定媒体是否补 `assetDocIds`（D-035 暂缓）。
 3. 联调通过后再决定 0.0.3 发版与版本号 bump。

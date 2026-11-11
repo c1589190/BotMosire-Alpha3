@@ -7,6 +7,7 @@ import io.mosire.bma3.inbox.core.InboxItem;
 import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.PanelItem;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,17 +55,19 @@ public final class InboxItemsTool implements AgentTool {
             if (rows.size() >= limit) {
                 break;
             }
-            rows.add(Map.of(
-                    "index", index,
-                    "id", item.id(),
-                    "source", item.source(),
-                    "sourceLabel", item.sourceLabel(),
-                    "priority", item.priority(),
-                    "status", item.status().name(),
-                    "totalMessages", item.totalMessages(),
-                    "entriesShown", Math.min(item.entries().size(), Integer.MAX_VALUE),
-                    "lastAt", item.updatedAt().toString(),
-                    "preview", preview(item)));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("index", index);
+            row.put("id", item.id());
+            row.put("source", item.source());
+            row.put("sourceLabel", item.sourceLabel());
+            row.put("priority", item.priority());
+            row.put("status", item.status().name());
+            row.put("totalMessages", item.totalMessages());
+            row.put("entriesShown", Math.min(item.entries().size(), Integer.MAX_VALUE));
+            row.put("lastAt", item.updatedAt().toString());
+            row.put("continued", item.continued());
+            row.put("preview", preview(item));
+            rows.add(row);
         }
         return InboxTools.json(Map.of(
                 "revision", service.panel().revision(),

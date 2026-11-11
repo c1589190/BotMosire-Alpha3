@@ -288,6 +288,17 @@ qqconnect:
 - **推送是游标，不是竞态**：`pushRevision` 是最新一次 flush 的编号；`awaitPush(lastPush, …)` 在入口先检查
   `pushRevision > lastPush` 并立即返回，因此"某个读者慢/断开"不会让这一轮推送从在线读者眼前消失。
 - **慢路径不持锁**：`AccountRegistry.reconcile()` 的连接/探测在锁外完成；入站只用并发 map 读身份。
+- **推送即冻结 + 同源续接**（D-038 / D-039）：条目被推送后 `frozen_revision>0`；
+  同来源再来消息时**不新开条目**，而是取该来源最新的冻结未确认条目，**解冻 + 给新 entry 打 `续` 标 + 追加**，
+  面板里同来源永远只有一条（`activeForSource` 仍只匹配 `frozen_revision=0`，续接走 `reopenableForSource`）。
+  由此：无关来源的新消息不会让 ack 409（按条目校验）；被 ack 的条目一旦续接，内容确实变了，
+  续接前 revision 的 ack 会 409，条目已重新 pending，下一轮带 `续` 标重推。
+  验收：推送 → 同来源再来消息 → 仍 1 条、`totalMessages=2`、末条 `line` 含 `续` → 旧 revision ack 409 →
+  当前 revision ack 200；重启后冻结状态仍在（落库列 `frozen_revision`）。
+- **同一来源只有一条未确认条目**（D-040）：条目视图暴露 `continued`（续过= true）；`consolidateSources()`
+  在服务构造时把历史遗留的同源多条未确认条目并入最新那条（旧内容在前、接缝打 `续`、被吸收行删除），
+  运行期由 `mergeInto` 维持该不变量。验收：手工插入 3 条同源未确认行 → 重启 → 1 条、`totalMessages=3`、
+  `continued=true`、`entries` 按时间序且第三条带 `续`。
 - **只能有一个 complete 段**：DSH 的 `systemPrompt` 规定「多于一个有效 complete 段 ⇒ 组装失败」。
   因此 legacy `persona` 模块（`bma3-persona`，且丢弃了 section disposer）已删除；`self` 只注册
   `deployment:persona-prefix` 一个 complete 段，并在 agent scope 注册同名空段 `bma3-persona`

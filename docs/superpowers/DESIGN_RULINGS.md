@@ -63,6 +63,10 @@
 - `dsh-plugin/lib/self.js` 的默认工具组补上 `inbox_items/inbox_get/inbox_wait/qq_media_view/qq_conversation_history/qq_message_get/get_config/set_config`。
 
 | D-037 | 2026-11-11 | 本会话用户消息 | 「我的原话就是当前目录下的systemprompt.md作为直接的系统提示词注入对话，不注入其他东西」（并对"额外补安全约束"的提议明确否决） | `systemprompt.md` = 完整 system prompt：`self` 模块的 `prompt.complete` 默认 `true`（整份替换），插件不拼接任何默认人设/安全约束；文件缺失或为空时**不挂任何 section**；只有显式 `complete:false` 才退化为叠加；见 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md) §12 与 `dsh-plugin/README.md` |
+| D-038 | 2026-11-11 | 本会话用户消息 | 「已推送的 inbox 小条目，被推送后就冻结了，后续同来源算作新条目不就行了？」 | **推送即冻结**：条目被推送到客户端后 `frozen_revision>0`，此后同来源的新消息**另开新条目**（不再合并进已推送条目）；因此被 ack 的内容恒等于被推送的内容，ack 不再因「条目自身在客户端看到后又变了」而冲突。`activeForSource` 只匹配 `frozen_revision=0`；`flushPending()` 在 bump `pushRevision` 后冻结本轮窗口条目。见 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md) §12 与 `InboxItem.frozen()`。**其中「同来源开新条目」部分被 D-039 取代** |
+| D-039 | 2026-11-11 | 本会话用户消息 | 「做一个简单的去重吧……如果有同来源的旧冻结条目，那么让旧条目状态改为未冻结、打个简单的续标提醒然后把新条目追加到旧条目上，形成完整的新条目即可」 | **同来源只保留一条**：`appendOrMerge` 找不到 open 条目时，取该来源最新的「已推送未确认」冻结条目，解冻后把新消息**续**上去（新 entry 带 `续` 标记），不新开条目。由此 ack 的仍是这一条；若 ack 携带的是续接前的 revision，服务端按条目校验返回 409（内容确实变了，要求重看），该条目已重新 pending，下一轮会带 `续` 标重新推送。见 `InboxService.mergeInto` / `CONTINUATION_MARKER` |
+| D-040 | 2026-11-11 | 本会话用户消息 | 「2 是的，加上」「3 是的，写一个统一的合并管理方法」 | ①条目视图暴露 `continued`（`inbox_items` / `inbox_get` / 面板条目），true = 该条目在被推送过之后又续上了新消息（行尾带「续」标）；②统一合并管理 `InboxService.consolidateSources()`：把同一来源的多条未确认条目并入最新那条（旧内容按时间序在前、接缝处打「续」标、被吸收的行删除，消息板仍是事实源），构造时自动跑一次以清理历史数据。见 spec §12 |
+| D-041 | 2026-11-11 | 本会话用户消息 | 「加一个优先级加减法筛选功能，如果一条消息的开头、中间任意部分等地方出现任意可配置字段，那么自动根据配置增加/减少优先级……所有规则同时应用，可叠加；例如……群聊基础 0，`/` 开头 -300，@ 字段 +350，大肥鱼 +150，总优先级 200」 | **`weighting.rules`**：有序规则表 `{pattern, match: prefix|contains, delta, ignoreCase(默认 true)}`，对消息正文逐条匹配，命中即累加（可正可负、可叠加、与 `sourcePriority`/`attributes` 相加）；总分照旧 clamp 到 `maxPriority`，再与 `dropBelow`/`immediateThreshold` 比较。命中原因写进 `reasons`（`rule:prefix:/ -300`）。`set_config` 的结构化值必须落成 YAML 结构而不是一行字符串（已修 `ConfigEditor`）。见 `AppConfig.ContentRule` / `PriorityResolver.contentDelta` |
 
 ## D-017..D-028 代码环境语义
 

@@ -21,7 +21,8 @@ public record PanelItem(
         int totalMessages,
         int omittedMessages,
         ItemStatus status,
-        Instant lastAt) {
+        Instant lastAt,
+        boolean continued) {
 
     public PanelItem {
         source = source == null ? "" : source;
@@ -36,11 +37,11 @@ public record PanelItem(
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt) {
         this(0, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt);
+                status, lastAt, false);
     }
 
     public PanelItem withIndex(int newIndex) {
         return new PanelItem(newIndex, id, source, sourceLabel, priority, entries, totalMessages,
-                omittedMessages, status, lastAt);
+                omittedMessages, status, lastAt, continued);
     }
 }

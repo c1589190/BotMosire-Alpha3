@@ -160,7 +160,8 @@ public final class ConfigLoader {
                         integerMapOr(weighting.path("sourcePriority"),
                                 AppConfig.Weighting.defaultSourcePriority()),
                         integerMapOr(weighting.path("attributes"),
-                                AppConfig.Weighting.defaultAttributes())),
+                                AppConfig.Weighting.defaultAttributes()),
+                        contentRules(weighting.path("rules"))),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
     }
 
@@ -180,6 +181,24 @@ public final class ConfigLoader {
     }
 
     /** Missing map falls back to the built-in defaults; an empty map stays empty on purpose. */
+    /** Parses {@code weighting.rules[]}; invalid entries fail the whole config (fail-closed). */
+    private static java.util.List<AppConfig.ContentRule> contentRules(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return java.util.List.of();
+        }
+        java.util.List<AppConfig.ContentRule> rules = new java.util.ArrayList<>();
+        for (JsonNode row : node) {
+            String pattern = text(row, "pattern", "");
+            if (pattern.isBlank()) {
+                throw new IllegalArgumentException("weighting.rules[].pattern 不能为空");
+            }
+            rules.add(new AppConfig.ContentRule(pattern, text(row, "match", "contains"),
+                    integer(row, "delta", 0),
+                    row.hasNonNull("ignoreCase") ? row.path("ignoreCase").asBoolean(true) : null));
+        }
+        return java.util.List.copyOf(rules);
+    }
+
     private static java.util.Map<String, Integer> integerMapOr(JsonNode node,
                                                                java.util.Map<String, Integer> fallback) {
         java.util.Map<String, Integer> parsed = integerMap(node);

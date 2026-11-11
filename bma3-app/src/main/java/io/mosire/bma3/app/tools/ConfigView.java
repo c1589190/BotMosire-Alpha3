@@ -51,6 +51,7 @@ final class ConfigView {
         weighting.put("importantDelaySeconds", config.weighting().importantDelaySeconds());
         weighting.set("sourcePriority", JSON.valueToTree(config.weighting().sourcePriority()));
         weighting.set("attributes", JSON.valueToTree(config.weighting().attributes()));
+        weighting.set("rules", JSON.valueToTree(config.weighting().rules()));
 
         ObjectNode inbox = root.putObject("inbox");
         inbox.put("inboxId", config.inbox().inboxId());

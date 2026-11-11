@@ -132,6 +132,11 @@ public final class ConfigEditor {
             node.put(leaf, number.doubleValue());
         } else if (value instanceof Boolean bool) {
             node.put(leaf, bool);
+        } else if (value instanceof Map<?, ?> || value instanceof java.util.List<?>) {
+            // 结构化值（weighting.rules 之类）必须落成 YAML 结构，不能 String.valueOf 成一行
+            node.set(leaf, YAML.valueToTree(value));
+        } else if (value instanceof JsonNode json) {
+            node.set(leaf, json);
         } else {
             node.put(leaf, String.valueOf(value));
         }

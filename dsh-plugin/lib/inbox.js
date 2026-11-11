@@ -209,7 +209,13 @@ export function createInboxClient(ctx, config = {}) {
       },
       body: JSON.stringify(payload),
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) {
+      // 409 = 某条在你看到之后又被更新了（服务端按 itemId 判断，无关流量不再触发）。
+      // 不重试成"只带 itemIds"：那会把没看过的新内容一起 ack 掉。留未确认状态，
+      // 下一轮面板会带上新内容重新注入。
+      const detail = response.status === 409 ? '（条目已更新，下一轮重推）' : ''
+      throw new Error(`HTTP ${response.status}${detail}`)
+    }
     const body = await response.json()
     state.ackedRevision = Number(body?.ackedRevision ?? revision)
     return body
@@ -279,7 +285,13 @@ export function createInboxClient(ctx, config = {}) {
         },
         signal: abort.signal,
       })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      if (!response.ok) {
+      // 409 = 某条在你看到之后又被更新了（服务端按 itemId 判断，无关流量不再触发）。
+      // 不重试成"只带 itemIds"：那会把没看过的新内容一起 ack 掉。留未确认状态，
+      // 下一轮面板会带上新内容重新注入。
+      const detail = response.status === 409 ? '（条目已更新，下一轮重推）' : ''
+      throw new Error(`HTTP ${response.status}${detail}`)
+    }
       retryMs = Math.max(200, Number(config.reconnectMinMs ?? 1000))
       state.connection = 'open'
       state.lastError = null

@@ -16,7 +16,7 @@ class PriorityResolverTest {
     private PriorityResolver resolver(Map<String, Integer> sourcePriority,
                                       Map<String, Integer> attributes) {
         AppConfig.Weighting weighting = new AppConfig.Weighting(
-                300, -300, 1000, 30, 1, sourcePriority, attributes);
+                300, -300, 1000, 30, 1, sourcePriority, attributes, java.util.List.of());
         return new PriorityResolver(() -> weighting);
     }
 
@@ -122,5 +122,50 @@ class PriorityResolverTest {
                 .resolve("bilibili/123", "", "", PriorityAttributes.none());
         assertThat(decision.priority()).isZero();
         assertThat(decision.reasons()).anyMatch(reason -> reason.contains("→ * 0"));
+    }
+
+    @Test
+    void contentRulesStackInDeclaredOrder() {
+        AppConfig.Weighting weighting = new AppConfig.Weighting(
+                300, -300, 1000, 30, 1,
+                java.util.Map.of("*", 0, "qq_group", 0, "qq_private", 300),
+                AppConfig.Weighting.defaultAttributes(),
+                java.util.List.of(
+                        new AppConfig.ContentRule("/", "prefix", -300, null),
+                        new AppConfig.ContentRule("@bot", "contains", 350, null),
+                        new AppConfig.ContentRule("大肥鱼", "contains", 150, null)));
+        PriorityResolver resolver = new PriorityResolver(() -> weighting);
+
+        // 群聊 0 + "/" 前缀 -300 + "@bot" +350 + "大肥鱼" +150 = 200
+        PriorityDecision decision = resolver.resolve(GROUP, "20002", "LvtN",
+                PriorityAttributes.none(), "/test 现在我来试试at大肥鱼：@bot");
+        assertThat(decision.priority()).isEqualTo(200);
+        assertThat(decision.dropped()).isFalse();
+        assertThat(decision.immediate()).isFalse();
+        assertThat(decision.reasons()).anyMatch(reason -> reason.contains("rule:prefix:/"));
+        assertThat(decision.reasons()).anyMatch(reason -> reason.contains("rule:contains:大肥鱼"));
+    }
+
+    @Test
+    void contentRulesCanDropAMessageEntirely() {
+        AppConfig.Weighting weighting = new AppConfig.Weighting(
+                300, -300, 1000, 30, 1,
+                java.util.Map.of("*", 0, "qq_group", 0),
+                AppConfig.Weighting.defaultAttributes(),
+                java.util.List.of(new AppConfig.ContentRule(".rd", "prefix", -601, null)));
+        PriorityResolver resolver = new PriorityResolver(() -> weighting);
+
+        PriorityDecision decision = resolver.resolve(GROUP, "20002", "LvT",
+                PriorityAttributes.none(), ".rd 暗骰");
+        assertThat(decision.priority()).isEqualTo(-601);
+        assertThat(decision.dropped()).isTrue();
+    }
+
+    @Test
+    void contentRuleMatchingIsCaseInsensitiveByDefault() {
+        AppConfig.ContentRule rule = new AppConfig.ContentRule("BOT", "contains", 10, null);
+        assertThat(rule.matches("/test @bot")).isTrue();
+        assertThat(new AppConfig.ContentRule("BOT", "contains", 10, false).matches("/test @bot"))
+                .isFalse();
     }
 }

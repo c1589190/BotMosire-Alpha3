@@ -31,6 +31,16 @@ public record InboxEntry(
         markers = markers == null ? List.of() : List.copyOf(markers);
     }
 
+    /** Copy with one extra display marker (used for the "续" continuation mark). */
+    public InboxEntry withMarker(String marker) {
+        if (marker == null || marker.isBlank() || markers.contains(marker)) {
+            return this;
+        }
+        List<String> next = new java.util.ArrayList<>(markers);
+        next.add(marker);
+        return new InboxEntry(localSeq, at, sender, text, next);
+    }
+
     public String render() {
         return render(ZoneId.systemDefault());
     }

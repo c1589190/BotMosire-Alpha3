@@ -36,6 +36,16 @@ public final class PriorityResolver {
 
     public PriorityDecision resolve(String sourceKey, String senderId, String senderName,
                                     PriorityAttributes attributes) {
+        return resolve(sourceKey, senderId, senderName, attributes, "");
+    }
+
+    /**
+     * Same scoring, plus {@code text} for the configured content rules ({@code weighting.rules}).
+     * Every matching rule applies and stacks; the score is still clamped and compared against the
+     * two thresholds exactly once.
+     */
+    public PriorityDecision resolve(String sourceKey, String senderId, String senderName,
+                                    PriorityAttributes attributes, String text) {
         AppConfig.Weighting current = weighting.get();
         List<String> reasons = new ArrayList<>();
 
@@ -61,6 +71,7 @@ public final class PriorityResolver {
             }
         }
         delta += patternDelta(current, senderId, senderName, reasons);
+        delta += contentDelta(current, text, reasons);
 
         int raw = base + delta;
         int clipped = Math.min(current.maxPriority(), raw);
@@ -78,6 +89,20 @@ public final class PriorityResolver {
                     + (immediate ? " ⇒ 立即推送" : " ⇒ 进入批次"));
         }
         return new PriorityDecision(clipped, dropped, immediate, reasons);
+    }
+
+    /** Adds every matching {@code weighting.rules} delta; rules stack in declared order. */
+    private static int contentDelta(AppConfig.Weighting current, String text, List<String> reasons) {
+        int delta = 0;
+        String body = text == null ? "" : text;
+        for (AppConfig.ContentRule rule : current.rules()) {
+            if (!rule.matches(body)) {
+                continue;
+            }
+            delta += rule.delta();
+            reasons.add("rule:" + rule.match() + ":" + rule.pattern() + " " + signed(rule.delta()));
+        }
+        return delta;
     }
 
     /** Adds {@code qq_sender/…} and {@code qq_name/…} rule values that match this message. */

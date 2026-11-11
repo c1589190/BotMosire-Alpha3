@@ -1,12 +1,14 @@
 package io.mosire.bma3.inbox.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.mosire.bma3.core.source.SourceView;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -174,6 +176,88 @@ class InboxPushScheduleTest {
         InboxPanel second = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         assertThat(second).as("剩下两条必须马上补推，而不是永远消失").isNotNull();
         assertThat(second.items()).hasSize(2);
+    }
+
+    @Test
+    void ackingInjectedItemsSurvivesUnrelatedTraffic() {
+        // 插件唤醒时：注入面板 → ack(面板 revision + itemIds)。群里活跃时，注入到 ack 之间
+        // 会有新消息让 panelRevision 前进。按 itemId 精确 ack 不该因此被拒——它明确指名了
+        // 自己看过哪几条，只有"这几条本身在我看到之后又变了"才算冲突。
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("ack-race.db"));
+        InboxService service = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        append(service, "qq_private/1", 300, "旧消息 A");
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        assertThat(pushed).isNotNull();
+        long seen = pushed.revision();
+        String itemId = pushed.items().getFirst().id();
+
+        // 注入之后、ack 之前又来一条
+        append(service, "qq_group/2", 300, "新消息 B");
+
+        service.ackItems(Set.of(itemId), seen);   // 修复前：REVISION_CONFLICT
+        assertThat(service.items()).extracting(InboxItem::source)
+                .containsExactly("qq_group/2");
+    }
+
+    @Test
+    void aPushedItemIsReopenedAndContinuedInsteadOfDuplicated() {
+        // 同一来源只保留一条：新消息到来时，若存在"已推送但未确认"的旧条目，
+        // 就解冻它、给新消息打「续」标、并进去 —— 面板里不会出现同源两条。
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("frozen.db"));
+        InboxService service = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        append(service, "qq_private/1", 300, "第一条");
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        long seen = pushed.revision();
+        String itemId = pushed.items().getFirst().id();
+        assertThat(service.item(itemId).frozen()).as("推送后先冻结").isTrue();
+
+        InboxItem continued = service.appendOrMerge(AppendItem.of(
+                SourceView.of("qq_private/1", "QQ私聊 1"),
+                new InboxEntry(2, Instant.now(), "u", "第二条", List.of()), 300, Instant.now()));
+
+        assertThat(continued.id()).as("同来源不新开条目").isEqualTo(itemId);
+        assertThat(service.items()).hasSize(1);
+        assertThat(continued.frozen()).as("续上后重新变为未冻结").isFalse();
+        assertThat(continued.totalMessages()).isEqualTo(2);
+        assertThat(continued.entries().getLast().markers())
+                .as("续上的消息带续标").contains(InboxService.CONTINUATION_MARKER);
+
+        // 内容变了：拿旧 revision ack 会被拒（要求重新看一遍），随后按新 revision 能确认
+        assertThatThrownBy(() -> service.ackItems(Set.of(itemId), seen))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("REVISION_CONFLICT");
+        service.ackItems(Set.of(itemId), service.panel().revision());
+        assertThat(service.items()).isEmpty();
+    }
+
+    @Test
+    void consolidateSourcesFoldsDuplicateUnackedItemsIntoTheNewest() {
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("consolidate.db"));
+        // 旧数据形态：同来源三条未确认条目（模拟改动前写下的数据）
+        for (int round = 1; round <= 3; round++) {
+            InboxService service = new InboxService(store, policy, "bma3",
+                    () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+            service.append(AppendItem.of(SourceView.of("qq_private/1", "QQ私聊 1"),
+                    new InboxEntry(round, Instant.now().plusSeconds(round), "u", "第 " + round + " 条",
+                            List.of()), 300, Instant.now()));
+            service.close();
+        }
+        InboxService service = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        // 构造时已经跑过一次统一合并
+        assertThat(service.items()).hasSize(1);
+        InboxItem survivor = service.items().getFirst();
+        assertThat(survivor.totalMessages()).isEqualTo(3);
+        assertThat(survivor.continued()).as("合并后的条目带续接标记").isTrue();
+        assertThat(survivor.entries()).extracting(InboxEntry::text)
+                .containsExactly("第 1 条", "第 2 条", "第 3 条");
+        assertThat(service.list().getFirst().continued()).isTrue();
+        assertThat(service.consolidateSources()).as("再跑一次没有可合并的").isZero();
     }
 
     @Test

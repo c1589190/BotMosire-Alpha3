@@ -1,6 +1,6 @@
 {
   "name": "@mosire/bma3-dsh",
-  "version": "0.0.3-hotfix6",
+  "version": "0.0.3-hotfix7",
   "private": true,
   "type": "module",
   "description": "BMA3 thin DSH bundle: Inbox wake injection, role prompt (self) and tool preset.",

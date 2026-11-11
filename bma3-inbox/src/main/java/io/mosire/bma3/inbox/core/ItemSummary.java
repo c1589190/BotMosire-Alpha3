@@ -10,5 +10,6 @@ public record ItemSummary(
         int priority,
         ItemStatus status,
         Instant availableAt,
-        int revision) {
+        int revision,
+        boolean continued) {
 }

@@ -137,7 +137,8 @@ class Bma3AppFakeQqTest {
                             java.util.Map.of("*", 0, "qq_private", 300, "qq_group", 0),
                             java.util.Map.of("qq_at_bot", 300, "qq_at_all", 0,
                                     "qq_at_other", 0, "qq_reply_to_bot", 0,
-                                    "qq_self_name", 0, "qq_command", 0)),
+                                    "qq_self_name", 0, "qq_command", 0),
+                            java.util.List.of()),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
             app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
 
@@ -191,7 +192,8 @@ class Bma3AppFakeQqTest {
                     AppConfig.Webconnect.defaults(),
                     new AppConfig.Weighting(300, -300, 1000, 30, 1,
                             Map.of("*", 0, "qq_group", -301, "qq_private", 300),
-                            AppConfig.Weighting.defaultAttributes()),
+                            AppConfig.Weighting.defaultAttributes(),
+                            java.util.List.of()),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
             app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
 

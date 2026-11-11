@@ -62,7 +62,9 @@ public final class SqliteInboxStore implements InboxStore {
                           available_at TEXT NOT NULL,
                           created_at TEXT NOT NULL,
                           updated_at TEXT,
-                          revision INTEGER NOT NULL
+                          revision INTEGER NOT NULL,
+                          frozen_revision INTEGER NOT NULL DEFAULT 0,
+                          continued INTEGER NOT NULL DEFAULT 0
                         )
                         """);
                 ensureColumn(statement, "inbox_item", "source_label", "TEXT");
@@ -70,6 +72,8 @@ public final class SqliteInboxStore implements InboxStore {
                 ensureColumn(statement, "inbox_item", "total_messages", "INTEGER");
                 ensureColumn(statement, "inbox_item", "event_revision", "INTEGER");
                 ensureColumn(statement, "inbox_item", "updated_at", "TEXT");
+                ensureColumn(statement, "inbox_item", "frozen_revision", "INTEGER NOT NULL DEFAULT 0");
+                ensureColumn(statement, "inbox_item", "continued", "INTEGER NOT NULL DEFAULT 0");
                 statement.execute("""
                         CREATE TABLE IF NOT EXISTS inbox_meta (
                           key TEXT PRIMARY KEY,
@@ -88,7 +92,7 @@ public final class SqliteInboxStore implements InboxStore {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO inbox_item (id, source, source_label, summary, entries_json,
                   total_messages, event_revision, priority, status, available_at, created_at,
-                  updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  updated_at, revision, frozen_revision, continued) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             bindInsert(statement, item);
             statement.executeUpdate();
@@ -103,7 +107,8 @@ public final class SqliteInboxStore implements InboxStore {
         try (PreparedStatement statement = connection.prepareStatement("""
                 UPDATE inbox_item SET source = ?, source_label = ?, summary = ?,
                   entries_json = ?, total_messages = ?, event_revision = ?, priority = ?,
-                  status = ?, available_at = ?, created_at = ?, updated_at = ?, revision = ?
+                  status = ?, available_at = ?, created_at = ?, updated_at = ?, revision = ?,
+                  frozen_revision = ?, continued = ?
                 WHERE id = ?
                 """)) {
             bindUpdate(statement, item);
@@ -113,15 +118,34 @@ public final class SqliteInboxStore implements InboxStore {
         }
     }
 
+    @Override
+    public synchronized void freeze(java.util.List<String> itemIds, long pushRevision) {
+        ensureOpen();
+        if (itemIds == null || itemIds.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE inbox_item SET frozen_revision = ? WHERE id = ?")) {
+            for (String itemId : itemIds) {
+                statement.setLong(1, pushRevision);
+                statement.setString(2, itemId);
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        } catch (SQLException failure) {
+            throw new IllegalStateException("冻结 Inbox item 失败", failure);
+        }
+    }
+
     private void bindInsert(PreparedStatement statement, InboxItem item) throws SQLException {
         statement.setString(1, item.id());
         bindBody(statement, item, 2);
     }
 
-    /** Binds the 12 UPDATE SET values, then the id at position 13. */
+    /** Binds the 14 UPDATE SET values, then the id at position 15. */
     private void bindUpdate(PreparedStatement statement, InboxItem item) throws SQLException {
         bindBody(statement, item, 1);
-        statement.setString(13, item.id());
+        statement.setString(15, item.id());
     }
 
     private void bindBody(PreparedStatement statement, InboxItem item, int offset)
@@ -142,6 +166,8 @@ public final class SqliteInboxStore implements InboxStore {
         statement.setString(offset + 9, item.createdAt().toString());
         statement.setString(offset + 10, item.updatedAt().toString());
         statement.setInt(offset + 11, item.revision());
+        statement.setLong(offset + 12, item.frozenRevision());
+        statement.setInt(offset + 13, item.continued() ? 1 : 0);
     }
 
     @Override
@@ -163,7 +189,7 @@ public final class SqliteInboxStore implements InboxStore {
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT * FROM inbox_item
-                WHERE source = ? AND status = 'AVAILABLE'
+                WHERE source = ? AND status = 'AVAILABLE' AND frozen_revision = 0
                 ORDER BY created_at DESC LIMIT 1
                 """)) {
             statement.setString(1, source);
@@ -172,6 +198,41 @@ public final class SqliteInboxStore implements InboxStore {
             }
         } catch (SQLException failure) {
             throw new IllegalStateException("读取 active Inbox item 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized void delete(java.util.List<String> itemIds) {
+        ensureOpen();
+        if (itemIds == null || itemIds.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM inbox_item WHERE id = ?")) {
+            for (String itemId : itemIds) {
+                statement.setString(1, itemId);
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        } catch (SQLException failure) {
+            throw new IllegalStateException("删除 Inbox item 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized Optional<InboxItem> reopenableForSource(String source) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT * FROM inbox_item
+                WHERE source = ? AND status = 'AVAILABLE' AND frozen_revision > 0
+                ORDER BY updated_at DESC LIMIT 1
+                """)) {
+            statement.setString(1, source);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(mapItem(result)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 Inbox item 失败", failure);
         }
     }
 
@@ -335,7 +396,9 @@ public final class SqliteInboxStore implements InboxStore {
                 Instant.parse(result.getString("available_at")),
                 createdAt,
                 updatedRaw == null ? createdAt : Instant.parse(updatedRaw),
-                result.getInt("revision"));
+                result.getInt("revision"),
+                result.getLong("frozen_revision"),
+                result.getInt("continued") != 0);
     }
 
 }

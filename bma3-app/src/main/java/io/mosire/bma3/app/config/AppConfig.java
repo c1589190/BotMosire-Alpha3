@@ -141,6 +141,36 @@ public record AppConfig(
      * <p>Every value here is editable through {@code set_config}; this record is the single source
      * of truth for scores (per-source weights and user-note priorities no longer exist).</p>
      */
+    /**
+     * One content rule: when the message text matches {@code pattern} the score moves by
+     * {@code delta}. All matching rules apply and stack (D-041).
+     *
+     * @param pattern    literal text to look for
+     * @param match      {@code prefix} (text starts with pattern) or {@code contains} (default)
+     * @param delta      score delta; negative lowers, positive raises
+     * @param ignoreCase case-insensitive compare, default true
+     */
+    public record ContentRule(String pattern, String match, int delta, Boolean ignoreCase) {
+
+        public ContentRule {
+            match = match == null || match.isBlank() ? "contains" : match.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!match.equals("prefix") && !match.equals("contains")) {
+                throw new IllegalArgumentException("weighting.rules[].match 只能是 prefix 或 contains");
+            }
+            ignoreCase = ignoreCase == null ? Boolean.TRUE : ignoreCase;
+        }
+
+        /** Whether this rule matches {@code text}. */
+        public boolean matches(String text) {
+            if (text == null || text.isEmpty() || pattern == null || pattern.isEmpty()) {
+                return false;
+            }
+            String haystack = ignoreCase ? text.toLowerCase(java.util.Locale.ROOT) : text;
+            String needle = ignoreCase ? pattern.toLowerCase(java.util.Locale.ROOT) : pattern;
+            return match.equals("prefix") ? haystack.startsWith(needle) : haystack.contains(needle);
+        }
+    }
+
     public record Weighting(
             int immediateThreshold,
             int dropBelow,
@@ -148,9 +178,12 @@ public record AppConfig(
             long normalDelaySeconds,
             long importantDelaySeconds,
             java.util.Map<String, Integer> sourcePriority,
-            java.util.Map<String, Integer> attributes) {
+            java.util.Map<String, Integer> attributes,
+            /** Ordered content rules; every matching rule adds its delta (they stack). */
+            java.util.List<ContentRule> rules) {
 
         public Weighting {
+            rules = rules == null ? java.util.List.of() : java.util.List.copyOf(rules);
             if (maxPriority < -1000 || maxPriority > 1000) {
                 throw new IllegalArgumentException("weighting.maxPriority 必须在 -1000..1000");
             }
@@ -163,6 +196,11 @@ public record AppConfig(
             if (dropBelow > immediateThreshold) {
                 throw new IllegalArgumentException("weighting.dropBelow 不能大于 immediateThreshold");
             }
+            for (ContentRule rule : rules) {
+                if (rule == null || rule.pattern() == null || rule.pattern().isEmpty()) {
+                    throw new IllegalArgumentException("weighting.rules[].pattern 不能为空");
+                }
+            }
             if (normalDelaySeconds < 0 || normalDelaySeconds > 600
                     || importantDelaySeconds < 0 || importantDelaySeconds > 600) {
                 throw new IllegalArgumentException("weighting 延迟必须在 0..600 秒");
@@ -173,7 +211,7 @@ public record AppConfig(
 
         public static Weighting defaults() {
             return new Weighting(300, -300, 1000, 30, 1, defaultSourcePriority(),
-                    defaultAttributes());
+                    defaultAttributes(), java.util.List.of());
         }
 
         public static java.util.Map<String, Integer> defaultSourcePriority() {

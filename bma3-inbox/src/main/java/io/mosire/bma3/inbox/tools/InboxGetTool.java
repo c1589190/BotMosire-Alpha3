@@ -28,7 +28,8 @@ public final class InboxGetTool implements AgentTool {
     @Override
     public String description() {
         return "按 itemId 取一个 inbox 条目的完整窗口（≤ maxMessagesPerItem 条 entries，含 sender/时间/"
-                + "序号/markers/渲染行）、totalMessages、priority、status、revision。"
+                + "序号/markers/渲染行）、totalMessages、priority、status、revision、continued"
+                + "（true=这条在被推送过之后又续上了新消息，行尾带「续」标）。"
                 + "已 ack 的条目仍可取（status=ACKED），但不再出现在面板里。";
     }
 
@@ -70,6 +71,7 @@ public final class InboxGetTool implements AgentTool {
             body.put("revision", item.revision());
             body.put("createdAt", item.createdAt().toString());
             body.put("updatedAt", item.updatedAt().toString());
+            body.put("continued", item.continued());
             body.put("entries", entries);
             return InboxTools.json(body);
         } catch (IllegalArgumentException failure) {

@@ -189,7 +189,7 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.3-hotfix6", tools)
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.3-hotfix7", tools)
                     .authHint(config.server().tokenEnv());
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
@@ -233,7 +233,7 @@ public final class Bma3App implements AutoCloseable {
         PriorityAttributes attributes = QqSignalExtractor.attributes(event,
                 selfName(accounts, current.get(), accountEvent.accountId()), replyToBot);
         PriorityDecision decision = priorities.resolve(sourceKey, senderId,
-                event.senderName(), attributes);
+                event.senderName(), attributes, event.text());
         if (LOG.isDebugEnabled()) {
             // Same arithmetic as the decision, so "why did this wake me?" is answerable from logs.
             LOG.debug("event=qq_message_scored sourceKey={} senderId={} priority={} immediate={} "
