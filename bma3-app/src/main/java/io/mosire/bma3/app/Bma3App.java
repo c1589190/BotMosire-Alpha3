@@ -126,10 +126,16 @@ public final class Bma3App implements AutoCloseable {
                 Duration.ofSeconds(weighting.normalDelaySeconds()),
                 Duration.ofMinutes(10), 3);
         InboxService inboxService = new InboxService(
-                inboxStore, deliveryPolicy, config.inbox().inboxId(),
-                () -> runtime.get().display().maxMessagesPerItem(),
-                () -> runtime.get().display().maxItemsPerPanel(),
-                () -> runtime.get().display().includeOmittedCount());
+                inboxStore, deliveryPolicy, config.inbox().inboxId(), () -> {
+                    var policy = runtime.get();
+                    return new io.mosire.bma3.inbox.core.InboxRuntime(
+                            policy.display().maxMessagesPerItem(),
+                            policy.display().maxItemsPerPanel(),
+                            policy.display().includeOmittedCount(),
+                            policy.push().minPriority(),
+                            policy.retention().maxAgeDays(),
+                            policy.retention().maxItems());
+                });
         HealthServer health = new HealthServer();
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
@@ -184,7 +190,8 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.2-hotfix1", tools);
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.2-hotfix1", tools)
+                    .authHint(config.server().tokenEnv());
             mcp.start();
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, qqExtras, watcher);

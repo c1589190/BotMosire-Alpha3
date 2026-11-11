@@ -17,6 +17,7 @@
 
 - 事件/编码：`src/main/java/io/mosire/bma3/qqconnect/onebot/*`
 - 发送：`src/main/java/io/mosire/bma3/qqconnect/tools/QqSendSupport.java`
+- 诊断：`onebot/OneBotDiagnostics.java`（握手状态码 → hint，可主动探测 HTTP 端口）；`AccountRegistry.Fault` 暴露给 `qq_account_list.lastError`。
 - 媒体：`tools/{QqMediaSupport,QqMediaViewTool,QqMediaPolicy}.java`（fileId → 刷新链接 → 有上限下载）
 - 来源标签：`src/main/java/io/mosire/bma3/qqconnect/tools/QqSourceLabeler.java`
 - 设计：`../docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md`

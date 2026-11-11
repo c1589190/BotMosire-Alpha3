@@ -23,7 +23,7 @@ test('renderPanel shows bounded windows, source labels and relation markers', ()
     ],
   })
   assert.match(text, /^\[INBOX_PANEL\] inbox=bma3 rev=42 unread=3 items=1\/3/)
-  assert.match(text, /\[QQ群 955432692\] priority=300 total=128 shown=1/)
+  assert.match(text, /\[QQ群 955432692\] #1 priority=300 total=128 shown=1/)
   assert.match(text, /\[@3924945183\]/)
   assert.match(text, /\[图片\]/)
   assert.match(text, /省略 122 条/)

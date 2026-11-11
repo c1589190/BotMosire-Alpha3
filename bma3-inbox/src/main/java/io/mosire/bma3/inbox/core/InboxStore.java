@@ -17,6 +17,14 @@ public interface InboxStore extends AutoCloseable {
 
     List<InboxItem> items();
 
+    /**
+     * Housekeeping: drops ACKED items older than {@code cutoff}, then trims the oldest ACKED rows
+     * until at most {@code maxItems} are stored. Unacked items are never deleted.
+     *
+     * @return number of rows removed
+     */
+    int purge(java.time.Instant cutoff, int maxItems);
+
     void saveDelivery(Delivery delivery);
 
     Optional<Delivery> delivery(String id);

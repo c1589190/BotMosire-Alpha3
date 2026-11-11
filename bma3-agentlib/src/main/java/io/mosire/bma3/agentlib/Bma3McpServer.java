@@ -85,6 +85,7 @@ public final class Bma3McpServer implements AutoCloseable {
     private final Object lifecycleLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile byte[] expectedAuthorization;
+    private volatile String authHint = "Bearer token";
     private volatile int boundPort = -1;
     private volatile int internalPort = -1;
     private volatile boolean started;
@@ -206,6 +207,14 @@ public final class Bma3McpServer implements AutoCloseable {
         }
     }
 
+    /** Names where the expected token comes from (never the token itself). */
+    public Bma3McpServer authHint(String hint) {
+        if (hint != null && !hint.isBlank()) {
+            this.authHint = hint;
+        }
+        return this;
+    }
+
     public int boundPort() {
         if (!started || boundPort <= 0) {
             throw new IllegalStateException("Bot MCP 尚未启动");
@@ -284,12 +293,13 @@ public final class Bma3McpServer implements AutoCloseable {
                 sendText(exchange, 404, "未知路径");
                 return;
             }
-            if (!authorized(exchange)) {
-                LOG.warn("event=mcp_auth_denied remote={} method={}",
-                        exchange.getRemoteAddress(), exchange.getRequestMethod());
+            String authFailure = authFailure(exchange);
+            if (authFailure != null) {
+                LOG.error("event=mcp_auth_denied reason={} remote={} method={}",
+                        authFailure, exchange.getRemoteAddress(), exchange.getRequestMethod());
                 exchange.getResponseHeaders().set("WWW-Authenticate",
                         "Bearer realm=\"bma3\"");
-                sendText(exchange, 401, "未授权");
+                sendText(exchange, 401, unauthorizedBody(authFailure));
                 return;
             }
             String method = exchange.getRequestMethod();
@@ -306,14 +316,30 @@ public final class Bma3McpServer implements AutoCloseable {
         }
     }
 
-    private boolean authorized(HttpExchange exchange) {
+    /**
+     * Distinguishes "no header at all" from "wrong token": they need different fixes, and the old
+     * single boolean forced the operator to guess from a WARN line in the log.
+     */
+    private String authFailure(HttpExchange exchange) {
         byte[] expected = expectedAuthorization;
         if (expected == null) {
-            return false;
+            return "server_not_ready";
         }
         String header = exchange.getRequestHeaders().getFirst("Authorization");
-        byte[] actual = header == null ? new byte[0] : header.getBytes(StandardCharsets.UTF_8);
-        return MessageDigest.isEqual(expected, actual);
+        if (header == null || header.isBlank()) {
+            return "missing_authorization_header";
+        }
+        byte[] actual = header.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual) ? null : "token_mismatch";
+    }
+
+    private String unauthorizedBody(String reason) {
+        String headerPresent = "missing_authorization_header".equals(reason) ? "false" : "true";
+        return "{\"error\":\"unauthorized\",\"errorCode\":\"MCP_UNAUTHORIZED\""
+                + ",\"reason\":\"" + reason + "\""
+                + ",\"headerPresent\":" + headerPresent
+                + ",\"hint\":\"需要 'Authorization: Bearer <token>'；token 值来自 " + authHint
+                + "，变量名不是 token 本身\"}";
     }
 
     private void proxy(HttpExchange exchange, String method) throws IOException {

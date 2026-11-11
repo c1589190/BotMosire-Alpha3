@@ -30,6 +30,11 @@ inbox:
     maxMessagesPerItem: 6   # 4..8
     maxItemsPerPanel: 6     # 4..8
     includeOmittedCount: true
+  push:
+    minPriority: -1000      # 低于此分数的条目可见但不唤醒
+  retention:
+    maxAgeDays: 30          # 只清 ACKED
+    maxItems: 5000
 
 # 分数 = 最具体的来源规则 + 命中的属性加分（加法）。
 # < dropBelow: 丢弃（不落消息板）；>= immediateThreshold: 走 importantDelaySeconds，其余走 normalDelaySeconds。

@@ -77,6 +77,11 @@ inbox:
     maxMessagesPerItem: 6   # 4..8
     maxItemsPerPanel: 6     # 4..8
     includeOmittedCount: true
+  push:
+    minPriority: -1000      # 低于此分数：进面板但永不唤醒
+  retention:
+    maxAgeDays: 30
+    maxItems: 5000
 
 # 分数 = 最具体的来源规则 + 命中的属性加分（加法）
 # < dropBelow 丢弃（不落消息板）；>= immediateThreshold 走 importantDelay，其余走 normalDelay
@@ -217,7 +222,7 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 - 用户备注：`qq_user_note_get/list/upsert`（只存别名/标签/备注，不存分数）
 - 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；来源规则与属性加分都在这里）
 - 目录：`qq_group_list`、`qq_friend_list`
-- Inbox：`inbox_status/list/ack`
+- Inbox：`inbox_status/list/items/get/ack/wait`（ack 支持 itemIds / 1-based 序号 / 范围 + revision 校验）
 - 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`
 
 `qq_conversation_send_image` 的 `imagePath` 必须在 `dataDir` 下，适合把登录 QR 截图发给用户。

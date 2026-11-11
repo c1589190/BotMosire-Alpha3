@@ -3,7 +3,7 @@
 > **状态**：已实现（2026-11-11）· **类型**：项目设计（专题）
 > **需求原话**：见 [`../DESIGN_RULINGS.md`](../DESIGN_RULINGS.md) D-017..D-028（逐字）
 > **取代**：`2026-11-10-inbox-panel-sse-design.md` §8（优先级公式）、§9 之外的推送时机；不取代 D-009/D-010（N/M 截断）与 D-011（Inbox 不带 URL）
-> **本批未做**：批量 ack（D-020 后半）、`inbox_get`/`inbox_wait`、OneBot/MCP 错误可诊断性 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)
+> **本批未做**：MCP ImageContent 图片通道（D-035 明确先走 `read_image`）；真实 LLBot/DSH 联调 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)
 
 ## 1. 一句话模型
 
@@ -170,7 +170,68 @@ qqconnect:
 - URL/rkey 不进日志、不进 Inbox、不进 `chat_message.text`；
 - 超过下载上限失败而不是截断（不静默产出半个文件）。
 
-## 7. 配置
+## 7. Inbox 工具面与逐条 ack（D-020 / D-029 / D-030 / D-031 / D-032）
+
+### 7.1 工具
+
+| 工具 | 作用 |
+|---|---|
+| `inbox_status` | 计数与 revision |
+| `inbox_list` | 面板（top M，含 entries） |
+| `inbox_items` | **全部**未 ack 条目的紧凑列表（index/id/source/priority/status/条数/一行预览），能看见 M 之外 |
+| `inbox_get(itemId)` | 单个条目的完整窗口（≤N 条 entries + 计数 + revision）；ACKED 也能取 |
+| `inbox_ack` | 逐条 ack：`itemIds[]` / `indices[]` / `rangeFrom+rangeTo` / 不带参数=全部可见；可带 `revision` |
+| `inbox_wait(timeoutMs)` | 阻塞到下一次 flush；**只读不 ack**；超时 `changed:false` |
+
+### 7.2 逐条 ack
+
+- `ItemStatus.ACKED` 是可见性的唯一开关；`ackedRevision` 降级为观测值；
+- 面板序号是 1-based 且**只在同一 revision 内有效**：`inbox_ack(indices, revision)` 若 revision 已变则 `REVISION_CONFLICT`，避免"按旧序号 ack 到新条目"；
+- 插件仍可 `POST /ack {revision}`（注入后整体确认）；HTTP 也支持 `{itemIds:[…]}` / `{indices:[…]}`。
+
+### 7.3 保留期（D-031）
+
+`inbox.retention.maxAgeDays`（默认 30）/ `maxItems`（默认 5000）：启动与每 100 次 append 清理一次，
+先按时间清 ACKED，再按数量从最老的 ACKED 开始删。**未 ack 的条目永不清理。**
+
+### 7.4 注入筛选与时钟重置（D-029）
+
+- `inbox.push.minPriority`：低于该分数的条目**仍进面板与工具**，但永不唤醒；默认 -1000（不过滤）。
+- 每一轮 flush 后记录 `lastFlushAt`；新一轮的到期时间按 `max(item.updatedAt, lastFlushAt) + delay(priority)` 计算 —— 即"推完一轮重排重算"。
+
+## 8. 诊断（D-033 / D-034）
+
+### 8.1 OneBot 连接
+
+`OneBotDiagnostics` 把握手失败映射成可执行提示：
+
+| 现象 | hint |
+|---|---|
+| HTTP 426 | 该地址像 HTTP API 端口；BMA3 只支持正向 WS（`ws://`/`wss://`） |
+| 401 / 403 | token 与 OneBot 配置不一致 |
+| 404 | path 不对（正向 WS 常见 `/ws` 或 `/`） |
+| 400 | 不是 OneBot 11 正向 WS |
+| ConnectException | 服务没起 / 端口不对 / 被防火墙挡 |
+| UnknownHost | DNS |
+| SSLException | wss 证书/端口不匹配 |
+
+握手失败后还会**主动探测**同 host:port 的普通 HTTP（D-033 授权），返回码会追加到 hint 里
+（"该端口是 HTTP 服务，不是 WS 端点"）。结果进 `AccountRegistry.Fault`，
+由 `qq_account_list.lastError{phase,httpStatus,hint,at}` 暴露；`connected` 改为真实 socket 状态。
+
+### 8.2 MCP 401
+
+```json
+{"error":"unauthorized","errorCode":"MCP_UNAUTHORIZED",
+ "reason":"missing_authorization_header|token_mismatch",
+ "headerPresent":false,
+ "hint":"需要 Authorization: Bearer <token>；token 值来自 BMA3_MCP_TOKEN，变量名不是 token 本身"}
+```
+
+只出现环境变量名，日志升 ERROR。
+
+## 9. 配置
+
 
 ```yaml
 weighting:
@@ -201,7 +262,7 @@ qqconnect:
       selfName: "BotMosire"
 ```
 
-## 8. `set_config` / `get_config`
+## 10. `set_config` / `get_config`
 
 - `set_config { patch: {点分路径: 值}, unset: [路径] }`；
 - 写入前把候选树序列化到临时目录并用 `ConfigLoader` 完整校验 —— **非法配置不落盘**；
@@ -209,7 +270,7 @@ qqconnect:
 - **无白名单**（D-028）：端口/host 这类非热重载项写进去不会生效，返回 `reloaded:false` 并提示需重启；
 - `get_config` 只返回非敏感值（token 只以环境变量名出现）。
 
-## 9. 不变量
+## 11. 不变量
 
 1. 分数只有一处真源（`config/app.yaml`），只有一个写入口（`set_config`）。
 2. `qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三工具**不存在**。
@@ -219,7 +280,7 @@ qqconnect:
 6. `broadcast` 批次的锚点是最早的 pending 项，后到者不重置。
 7. 出站消息只有发送成功后才有 `external_message_id`；`UNKNOWN` 不重发。
 
-## 10. 验收判据（本批已覆盖）
+## 12. 验收判据（本批已覆盖）
 
 | # | 判据 | 证据 |
 |---|---|---|
@@ -234,9 +295,13 @@ qqconnect:
 | 9 | 出站发送成功后 `externalMessageId`/`self` 可读 | `QqToolsTest` |
 | 10 | 图片 URL 只在 `includeSegments` 时出现，正文仍 `[图片]` | `OneBot11CodecTest.keepsStructuredPayloadForMediaAndRelations`、`QqToolsTest` |
 | 11 | 图片先刷新链接再落盘、文本内联、超限失败、坏 fileId 不发网络请求 | `QqMediaViewToolTest`（4 例） |
-| 12 | `./mvnw -q test` PASS（69 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
+| 12 | `inbox_items` 能看到 M 之外；`inbox_get` 取回条目；逐条 ack + 过期 revision 拒绝；wait 超时不 ack | `InboxToolsTest`（4 例） |
+| 13 | 推完一轮重置时钟；低于注入筛选线只可见不唤醒 | `InboxPushScheduleTest`（7 例） |
+| 14 | 426/401/404/拒绝/DNS 的 hint；HTTP 探测能确认「这是 HTTP 端口」 | `OneBotDiagnosticsTest`（5 例） |
+| 15 | MCP 401 响应体自带 errorCode/reason/hint 且不含 token | `Bma3McpServerTest` |
+| 16 | `./mvnw -q test` PASS（80 tests / 1 skipped）；`dsh-plugin npm test` PASS（14） | 2026-11-11 本机 |
 
-## 11. 风险 / 未验证
+## 13. 风险 / 未验证
 
 - **真实 LLBot/DSH 联调 `NOT_RUN`**：`get_login_info`、`external_message_id` 回写、SSE 推送节奏都只有 fake/回环证据。
 - **重启后推送状态丢失**：`pushedItems` 是内存表，重启后所有未 ack item 会重新进入 pending（按 `updatedAt + delay` 计算，通常立即 flush 一次）。这是有意的"宁重推不漏推"，但需真实环境观察。

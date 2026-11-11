@@ -204,6 +204,45 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
+    public synchronized int purge(Instant cutoff, int maxItems) {
+        ensureOpen();
+        int removed = 0;
+        try {
+            if (cutoff != null) {
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        DELETE FROM inbox_item WHERE status = 'ACKED' AND updated_at < ?
+                        """)) {
+                    statement.setString(1, cutoff.toString());
+                    removed += statement.executeUpdate();
+                }
+            }
+            int total = countItems();
+            if (total > maxItems) {
+                int excess = total - maxItems;
+                try (PreparedStatement statement = connection.prepareStatement("""
+                        DELETE FROM inbox_item WHERE id IN (
+                          SELECT id FROM inbox_item WHERE status = 'ACKED'
+                          ORDER BY updated_at ASC LIMIT ?
+                        )
+                        """)) {
+                    statement.setInt(1, excess);
+                    removed += statement.executeUpdate();
+                }
+            }
+            return removed;
+        } catch (SQLException failure) {
+            throw new IllegalStateException("清理 Inbox item 失败", failure);
+        }
+    }
+
+    private int countItems() throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT COUNT(*) AS c FROM inbox_item")) {
+            return result.next() ? result.getInt("c") : 0;
+        }
+    }
+
+    @Override
     public synchronized void saveDelivery(Delivery delivery) {
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""

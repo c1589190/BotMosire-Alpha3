@@ -29,10 +29,14 @@ export function renderPanel(panel) {
     `${WAKE_REVISION_HEADER} inbox=${panel?.inboxId ?? 'bma3'}`
       + ` rev=${panel?.revision ?? 0} unread=${total} items=${items.length}/${total}`,
   ]
-  for (const item of items) {
+  for (let position = 0; position < items.length; position++) {
+    const item = items[position]
     const label = item?.sourceLabel ?? item?.source ?? 'unknown'
     const entries = Array.isArray(item?.entries) ? item.entries : []
-    lines.push(`[${label}] priority=${item?.priority ?? 0}`
+    // The 1-based position is what inbox_ack(indices/range) expects; it is only valid for this
+    // panel revision, which is exactly why the agent gets the revision in the header.
+    const index = Number.isInteger(item?.index) ? item.index : position + 1
+    lines.push(`[${label}] #${index} priority=${item?.priority ?? 0}`
       + ` total=${item?.totalMessages ?? entries.length} shown=${entries.length}`)
     for (const entry of entries) {
       lines.push(`  ${entry?.line ?? fallbackLine(entry)}`)

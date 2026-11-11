@@ -19,7 +19,7 @@ class InboxPanelTest {
         return new InboxService(store,
                 new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
                         Duration.ofMinutes(10), 3),
-                "bma3", () -> maxMessages, () -> maxItems);
+                "bma3", () -> new InboxRuntime(maxMessages, maxItems, true));
     }
 
     @Test
@@ -105,7 +105,7 @@ class InboxPanelTest {
             InboxService service = new InboxService(store,
                     new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30),
                             Duration.ofMinutes(10), 3),
-                    "bma3", maxMessages::get, () -> 6);
+                    "bma3", () -> new InboxRuntime(maxMessages.get(), 6, true));
             SourceView source = SourceView.of("qq_group/bot-1/1", "QQ群 1");
             for (int i = 1; i <= 6; i++) {
                 service.appendOrMerge(AppendItem.of(source,

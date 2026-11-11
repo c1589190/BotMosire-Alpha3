@@ -103,7 +103,8 @@ class Bma3McpServerTest {
     @Test
     void rejectsMissingBearer() throws Exception {
         Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
-                "bma3-test", "0.0.2-hotfix1", List.of(new EchoTool()));
+                "bma3-test", "0.0.2-hotfix1", List.of(new EchoTool()))
+                .authHint("BMA3_MCP_TOKEN");
         try {
             server.start();
             HttpResponse<String> response = HttpClient.newHttpClient().send(
@@ -117,6 +118,35 @@ class Bma3McpServerTest {
                             .build(),
                     HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body())
+                    .as("401 必须自己说清楚怎么修，而不是只留一行日志")
+                    .contains("MCP_UNAUTHORIZED")
+                    .contains("missing_authorization_header")
+                    .contains("BMA3_MCP_TOKEN");
+            assertThat(response.headers().firstValue("WWW-Authenticate")).isPresent();
+        } finally {
+            server.close();
+        }
+    }
+
+    @Test
+    void aWrongTokenIsDistinguishedFromAMissingOne() throws Exception {
+        Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
+                "bma3-test", "0.0.2-hotfix1", List.of(new EchoTool()))
+                .authHint("BMA3_MCP_TOKEN");
+        try {
+            server.start();
+            HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.boundPort() + PATH))
+                            .header("Authorization", "Bearer wrong")
+                            .POST(HttpRequest.BodyPublishers.noBody())
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body())
+                    .contains("token_mismatch")
+                    .contains("\"headerPresent\":true")
+                    .doesNotContain(TOKEN);
         } finally {
             server.close();
         }

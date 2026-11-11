@@ -41,10 +41,15 @@ public final class AccountRegistry implements AutoCloseable {
         }
     }
 
+    /** Why an account is not connected. {@code hint} is operator-facing and never carries a token. */
+    public record Fault(String phase, int httpStatus, String hint, java.time.Instant at) {
+    }
+
     private final OneBotClientFactory factory;
     private final Consumer<AccountEvent> eventSink;
     private final Map<String, Holder> active = new HashMap<>();
     private final Map<String, SelfIdentity> selfIdentities = new HashMap<>();
+    private final Map<String, Fault> faults = new HashMap<>();
 
     public AccountRegistry(Consumer<AccountEvent> eventSink) {
         this((config, listener) -> new OneBot11Client(config.endpoint(), config.token(), listener),
@@ -62,6 +67,9 @@ public final class AccountRegistry implements AutoCloseable {
         for (AccountConfig config : desired) {
             if (!valid(config)) {
                 rejected.add(config.accountId());
+                faults.put(config.accountId(), new Fault("config", -1,
+                        "endpoint 必须是 ws:// 或 wss://（OneBot 正向 WS）；当前: "
+                                + (config == null ? "null" : config.endpoint()), java.time.Instant.now()));
                 continue;
             }
             if (target.putIfAbsent(config.accountId(), config) != null) {
@@ -110,8 +118,7 @@ public final class AccountRegistry implements AutoCloseable {
             } catch (RuntimeException failure) {
                 replacement.close();
                 rejected.add(accountId);
-                LOG.warn("event=qq_account_restart_failed accountId={} errorType={}",
-                        accountId, failure.getClass().getSimpleName());
+                recordFault(accountId, "restart", failure, replacement);
             }
         }
         return new ReconcileResult(added, removed, restarted, rejected);
@@ -126,9 +133,49 @@ public final class AccountRegistry implements AutoCloseable {
         return active.keySet().stream().map(AccountId::new).toList();
     }
 
+    /** Last known connection fault, cleared on a successful connect. */
+    public synchronized Optional<Fault> fault(String accountId) {
+        return Optional.ofNullable(faults.get(accountId));
+    }
+
+    /** True when the account has a live socket (not merely a registry entry). */
+    public synchronized boolean connected(String accountId) {
+        Holder holder = active.get(accountId);
+        return holder != null && holder.client.connected();
+    }
+
+    /**
+     * Records a connect failure: maps it to an actionable hint and, when the operator allowed it,
+     * probes the same host:port with a plain HTTP GET to tell "HTTP API port" apart from "wrong
+     * path/token".
+     */
+    private void recordFault(String accountId, String phase, RuntimeException failure,
+                             OneBot11Client client) {
+        var diagnosis = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.of(failure);
+        String hint = diagnosis.hint();
+        if (client != null && client.endpoint() != null) {
+            int probe = io.mosire.bma3.qqconnect.onebot.OneBotDiagnostics.probeHttp(
+                    client.endpoint(), java.time.Duration.ofSeconds(2));
+            if (probe > 0) {
+                hint = hint + "（探测 " + client.endpoint().getHost() + ":"
+                        + (client.endpoint().getPort() > 0 ? client.endpoint().getPort() : 80)
+                        + " 的普通 HTTP 返回 " + probe + "：该端口是 HTTP 服务，不是 WS 端点）";
+            }
+        }
+        faults.put(accountId, new Fault(phase, diagnosis.httpStatus(), hint,
+                java.time.Instant.now()));
+        LOG.error("event=qq_account_connect_failed accountId={} phase={} status={} hint={}",
+                accountId, phase, diagnosis.httpStatus(), hint);
+    }
+
     /** The bot's own identity for an account, once {@code get_login_info} answered. */
     public synchronized Optional<SelfIdentity> self(String accountId) {
         return Optional.ofNullable(selfIdentities.get(accountId));
+    }
+
+    /** Snapshot of learned/overridden identities, for status tools. */
+    public synchronized Map<String, SelfIdentity> selfIdentitySummary() {
+        return Map.copyOf(selfIdentities);
     }
 
     /** Records an identity learned elsewhere (for example an explicit config override). */
@@ -155,12 +202,12 @@ public final class AccountRegistry implements AutoCloseable {
             client.start();
             client.awaitReady(Duration.ofSeconds(5));
             active.put(config.accountId(), new Holder(config, client));
+            faults.remove(config.accountId());
             learnIdentity(config.accountId(), client);
             return true;
         } catch (RuntimeException failure) {
             client.close();
-            LOG.warn("event=qq_account_start_failed accountId={} errorType={}",
-                    config.accountId(), failure.getClass().getSimpleName());
+            recordFault(config.accountId(), "connect", failure, client);
             return false;
         }
     }

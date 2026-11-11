@@ -35,6 +35,25 @@
 | D-027 | 2026-11-11 | 本会话用户消息 | 「1、qq_sender为什么不能和qq_private叠加？ 2、对，如果来源优先级小于-300，那就不注入了，直接丢掉 …… 4、额，我本来设想的是，Agent有标准的set_config工具，方便格式化修改自己的配置文件并走reload热重载，你没做吗？」 | `qq_sender` 与来源分数**叠加**；`< dropBelow` 的消息**不注入且不落消息板**；`set_config` 是分数的唯一写入口，写完靠 `ConfigWatcher` 热重载 |
 | D-028 | 2026-11-11 | 本会话用户消息 | 「a 不落！」「b 不搞白名单，Agent想咋改咋改」「c 是的」「d 叠加」「e 看Agent怎么配置，如果+300那确实应该立刻注入」「f 是的」 | 丢弃即不落库；`set_config` 无白名单；self 身份每账号可取；名称匹配叠加；分值由配置决定是否跨立即线；旧分数入口全部退休 |
 
+| D-029 | 2026-11-11 | 本会话用户消息 | 「N1 是的，出inbox注入筛选配置，一轮inbox被推送之后，重置一下等待时间，然后根据优先级排序、重新算等待时间来注入；每一个条目独立出ack」 | 每个 item **独立 ack**（全局 revision 只作观测）；推送一轮后**重置等待时钟**，按优先级重排、重算等待再推；新增 `inbox.push.minPriority` 作为注入筛选 |
+| D-030 | 2026-11-11 | 本会话用户消息 | 「N2 是的」 | 批量 ack 的序号 = **面板当前排序下的 1-based 显示序号**，并绑定 `revision` 校验；允许跨 source |
+| D-031 | 2026-11-11 | 本会话用户消息 | 「N3 可以设一个比较长的等待时间和数量限制」 | 保留期可配：`inbox.retention.maxAgeDays`（默认 30）+ `maxItems`（默认 5000）；只清 ACKED |
+| D-032 | 2026-11-11 | 本会话用户消息 | 「N4 是这样」 | `inbox_wait`：等"面板出现未 ack 条目"，默认 20s、硬顶 60s，**只读不 ack**，超时返回 `changed:false` |
+| D-033 | 2026-11-11 | 本会话用户消息 | 「N5 允许」 | OneBot 连接诊断可在握手失败后主动探测同 host:port 的普通 HTTP，用于区分"HTTP API 端口"与"路径/token 问题" |
+| D-034 | 2026-11-11 | 本会话用户消息 | 「N6 可以」 | MCP 401 响应体带 `errorCode`/`reason`/`headerPresent`/`hint`（只出现环境变量名，不出现 token 值），日志升 ERROR |
+| D-035 | 2026-11-11 | 本会话用户消息 | 「N7 先走标准read_image吧」 | 媒体先走"落盘 + `read_image`"；MCP ImageContent（`assetDocIds`）暂不接 |
+
+
+## D-029..D-035 代码环境语义
+
+- **D-029**：`InboxService.ackItems/ackIndices`；`PanelItem.index`；`lastFlushAt` 作为新一轮的排程锚点；`InboxRuntime.pushMinPriority` 控制"进面板但不唤醒"。
+- **D-030**：`inbox_ack` 的 `indices` / `rangeFrom+rangeTo`；`checkRevision` 拒绝过期 revision（`REVISION_CONFLICT`）。
+- **D-031**：`InboxStore.purge(cutoff, maxItems)`；`InboxService` 每 100 次 append 与启动时清理。
+- **D-032**：`InboxWaitTool`（`MAX_TIMEOUT_MS=60000`）；HTTP SSE 与工具共用 `InboxService.awaitPush`。
+- **D-033**：`OneBotDiagnostics.of/probeHttp`；`AccountRegistry.Fault` + `recordFault`；`qq_account_list.lastError`。
+- **D-034**：`Bma3McpServer.authFailure/unauthorizedBody` + `authHint`。
+- **D-035**：`QqMediaViewTool` 返回 `path` + `hint`；`ToolAssetResolver` 未接线。
+
 ## D-017..D-028 代码环境语义
 
 > 按 M-002：每条裁定除决定本身外，必须能定位到模块、数据结构、状态机、配置、并发/失败模式与验收。完整实现细节在 [spec](specs/2026-11-11-priority-rules-and-push-schedule-design.md)。

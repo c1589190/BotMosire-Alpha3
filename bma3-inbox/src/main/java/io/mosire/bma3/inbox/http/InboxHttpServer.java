@@ -93,9 +93,17 @@ public final class InboxHttpServer implements AutoCloseable {
             }
             if ("ack".equals(parts[4]) && parts.length == 5
                     && "POST".equals(exchange.getRequestMethod())) {
-                long requested = requestedRevision(exchange);
-                send(exchange, 200, mapper.writeValueAsString(
-                        requested < 0 ? service.ackPanel() : service.ackPanel(requested)));
+                AckResponse ack = handleAck(exchange);
+                send(exchange, ack.status(), mapper.writeValueAsString(ack.body()));
+                return;
+            }
+            if ("items".equals(parts[4]) && parts.length == 6
+                    && "GET".equals(exchange.getRequestMethod())) {
+                try {
+                    send(exchange, 200, mapper.writeValueAsString(service.item(parts[5])));
+                } catch (IllegalArgumentException failure) {
+                    send(exchange, 404, "{\"error\":\"item_not_found\"}");
+                }
                 return;
             }
             if ("items".equals(parts[4]) && "GET".equals(exchange.getRequestMethod())) {
@@ -182,17 +190,39 @@ public final class InboxHttpServer implements AutoCloseable {
         }
     }
 
-    /** Reads the optional ack revision; -1 means "ack the current panel". */
-    private long requestedRevision(HttpExchange exchange) throws IOException {
+    /**
+     * Per-item ack over HTTP: {@code {"itemIds":[…]}} or {@code {"indices":[…]} } ack exactly those
+     * items; {@code {"revision":N}} acks everything at or below that revision (what the DSH plugin
+     * sends after injecting a panel). Returns 409 when the caller's revision is stale.
+     */
+    private record AckResponse(int status, Object body) {
+    }
+
+    private AckResponse handleAck(HttpExchange exchange) throws IOException {
         byte[] body = exchange.getRequestBody().readAllBytes();
-        if (body.length == 0) {
-            return -1L;
+        var node = body.length == 0 ? null : mapper.readTree(body);
+        Long revision = node != null && node.has("revision") && node.path("revision").canConvertToLong()
+                ? node.path("revision").asLong() : null;
+        try {
+            if (node != null && node.has("itemIds") && node.path("itemIds").isArray()) {
+                java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+                node.path("itemIds").forEach(value -> ids.add(value.asText()));
+                return new AckResponse(200, service.ackItems(ids, revision));
+            }
+            if (node != null && node.has("indices") && node.path("indices").isArray()) {
+                java.util.List<Integer> indices = new java.util.ArrayList<>();
+                node.path("indices").forEach(value -> indices.add(value.asInt()));
+                return new AckResponse(200, service.ackIndices(indices, revision));
+            }
+            return new AckResponse(200,
+                    revision == null ? service.ackPanel() : service.ackPanel(revision));
+        } catch (IllegalArgumentException failure) {
+            String message = failure.getMessage() == null ? "ack_rejected" : failure.getMessage();
+            if (message.startsWith("REVISION_CONFLICT")) {
+                return new AckResponse(409, java.util.Map.of("error", "revision_conflict"));
+            }
+            return new AckResponse(400, java.util.Map.of("error", "ack_rejected", "detail", message));
         }
-        var node = mapper.readTree(body);
-        if (!node.has("revision")) {
-            return -1L;
-        }
-        return node.path("revision").asLong(-1L);
     }
 
     private Instant now(HttpExchange exchange) throws IOException {

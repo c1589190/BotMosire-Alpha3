@@ -4,7 +4,7 @@
 
 - 装配 config/logging/MCP/health/Inbox HTTP/SSE；把 adapter 事件送进 Inbox。
 - 通用优先级：`app/priority/PriorityResolver` = 最具体的 `weighting.sourcePriority` 规则 + `weighting.attributes` 加法加分；产出 `PriorityDecision(priority, dropped, immediate, reasons)`。
-- 热重载：`ConfigWatcher` 更新 `RuntimePolicy`，只影响后续 append/panel/发送。
+- 热重载：`ConfigWatcher`（mtime+size 签名）更新 `RuntimePolicy`，只影响后续 append/panel/发送；`set_config` 是唯一写入口。
 
 ## 边界
 

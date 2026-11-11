@@ -33,6 +33,7 @@ public class OneBot11Client implements AutoCloseable {
     private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pending =
             new ConcurrentHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
+    private volatile Throwable lastFailure;
 
     public OneBot11Client(URI endpoint, String token, Consumer<OneBotEvent> eventListener) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
@@ -50,12 +51,27 @@ public class OneBot11Client implements AutoCloseable {
         }
         builder.buildAsync(endpoint, new Listener()).whenComplete((webSocket, failure) -> {
             if (failure != null) {
+                lastFailure = failure;
                 ready.completeExceptionally(failure);
                 return;
             }
             socket.set(webSocket);
             ready.complete(webSocket);
         });
+    }
+
+    /** True while the socket is open; cleared on close/error so status tools stop lying. */
+    public boolean connected() {
+        return socket.get() != null;
+    }
+
+    /** The failure that kept this client from being ready, or the last socket error. */
+    public Throwable lastFailure() {
+        return lastFailure;
+    }
+
+    public URI endpoint() {
+        return endpoint;
     }
 
     public void awaitReady(Duration timeout) {
@@ -122,6 +138,9 @@ public class OneBot11Client implements AutoCloseable {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            socket.compareAndSet(webSocket, null);
+            lastFailure = new IllegalStateException(
+                    "OneBot 连接关闭 status=" + statusCode + " reason=" + reason);
             ready.completeExceptionally(new IllegalStateException("OneBot 连接关闭"));
             pending.forEach((echo, future) ->
                     future.completeExceptionally(new IllegalStateException("OneBot 连接关闭")));
@@ -131,6 +150,8 @@ public class OneBot11Client implements AutoCloseable {
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
+            socket.compareAndSet(webSocket, null);
+            lastFailure = error;
             ready.completeExceptionally(error);
             pending.forEach((echo, future) -> future.completeExceptionally(error));
             pending.clear();

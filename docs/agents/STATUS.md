@@ -1,10 +1,12 @@
-# STATUS —— 更新时间：2026-11-11 20:05 (UTC+8)
+# STATUS —— 更新时间：2026-11-11 21:20 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
 1. **0.0.3 批次 1（已完成）**：优先级规则 + 三档推送时序 + `set_config` 写入口 + 消息模型（发送人/结构化段/平台 id）。
 2. **0.0.3 批次 2（已完成）**：`qq_media_view` + `fileId` + `downloads` 落盘 + 上限/超时配置（D-019）。
-3. **0.0.3 批次 3..5（未做）**：Inbox 工具面与批量 ack（D-020）、错误可诊断性、真实联调。见 [`../superpowers/plans/2026-11-11-0.0.3-plan.md`](../superpowers/plans/2026-11-11-0.0.3-plan.md)。
+3. **0.0.3 批次 3（已完成）**：`inbox_items`/`inbox_get`/`inbox_wait`、逐条 ack（序号/范围/itemId + revision 校验）、注入筛选 + 时钟重置、保留期（D-020/D-029..D-032）。
+4. **0.0.3 批次 4（已完成）**：OneBot 连接诊断 + 主动探测、MCP 401 可读响应（D-033/D-034）。
+5. **0.0.3 批次 5（未做）**：真实 LLBot/DSH 联调。见 [`../superpowers/plans/2026-11-11-0.0.3-plan.md`](../superpowers/plans/2026-11-11-0.0.3-plan.md)。
 3. **不发布**：目标版本 0.0.3；本轮**未发版、未打 tag**（D-022）。
 
 ## 源码基线
@@ -19,7 +21,7 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 4 / qqconnect 13 / inbox 18 / webconnect 4（1 skipped）/ app 23 = **69 tests, 0 fail**（2026-11-11） |
+| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 23 / webconnect 4（1 skipped）/ app 23 = **80 tests, 0 fail**（2026-11-11） |
 | DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：14 tests |
 | 真实 QQ / LLBot 联调 | — | `NOT_RUN` |
 | 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
@@ -42,6 +44,10 @@
 - **消息模型**：`chat_message` 增 `sender_id`/`sender_name`/`segments_json`/`external_message_id`；`Segment` 带 `data` 白名单；出站发送成功后回写平台 id；`qq_reply_to_bot` 靠该索引判定。
 - **读取工具**：`qq_conversation_history`/`qq_conversation_read`/`qq_message_get` 均带 `sender{id,name}`/`externalMessageId`/`self`，`includeSegments=true` 返回结构化段；`read` 不再要求账号在线；旧的误导字段 `from` 已删除。
 - **媒体查看**：`qq_media_view` 只接受 `fileId`（`source+messageId+index` 编码），先 `get_msg`/`get_image` 刷新 rkey 链接再按上限下载；文本 ≤64KB 内联，其余落 `<dataDir>/downloads` 返回路径；坏 id/超限不落盘。
+- **Inbox 工具面**：`inbox_items`（含 M 之外的条目）、`inbox_get`、`inbox_wait`（只读、默认 20s/硬顶 60s）；`inbox_ack` 逐条 ack（`itemIds`/`indices`/`range` + `revision` 校验，冲突返回 409/`REVISION_CONFLICT`）。
+- **注入筛选与时钟**：`inbox.push.minPriority` 让条目"可见但不唤醒"；每轮 flush 后按 `max(updatedAt, lastFlushAt)` 重排重算。
+- **保留期**：`inbox.retention.maxAgeDays=30` / `maxItems=5000`，只清 ACKED。
+- **诊断**：`OneBotDiagnostics` 把 426/401/404/拒绝/DNS 映射成 hint，并在握手失败后主动探测同 host:port 的 HTTP；`qq_account_list` 输出真实 `connected` + `lastError`；MCP 401 响应体自带 `errorCode/reason/hint`。
 - **配置写入口**：`set_config`（点分路径 patch/unset，隔离校验 → 原子替换 → 等热重载，返回 `applied/reloaded/effective`，**无白名单**）；`get_config` 只读脱敏。
 - **bot 身份**：`qqconnect.accounts[].selfQq/selfName` 可配；缺省由 `get_login_info` 学习（失败只告警，相关属性保持关闭）。
 
@@ -53,15 +59,13 @@
 - **旧库迁移**：`chat_message` 新列是 additive；`qq-extras.db` 打开时 `DROP COLUMN priority` / `DROP TABLE qq_source_weight`；远端库需先备份。
 - **媒体未接 MCP ImageContent**：`qq_media_view` 目前返回本地路径（Agent 用 `read_image`）；`assetDocIds` + `ToolAssetResolver` 通道等真实宿主验证后再决定。
 - **媒体下载只有 fake CDN 证据**：真实 QQ CDN 的 302/rkey 行为 `NOT_RUN`。
-- **Inbox 工具面仍缺**：`inbox_items`/`inbox_get`/批量 ack/`inbox_wait`（批次 3）。
-- **诊断仍弱**：OneBot 握手状态码、MCP 401 响应体、发送上限读取工具（批次 4）。
 - **多消费者**：ack 仍是单面板全局游标。
 
 ## 下一步
 
-1. 批次 3：`inbox_items`/`inbox_get`/批量 ack（序号 + 范围 + revision 校验）/`inbox_wait`。
-2. 批次 4：OneBot 握手错误映射、MCP 401 可读响应、`qq_policy`。
-3. 真实宿主验证 MCP 图片通道，再决定媒体是否补 `assetDocIds`。
+1. 批次 5：真实 LLBot/DSH 联调（`get_login_info`、平台 id 回写、推送节奏、逐条 ack、`set_config` 热重载、诊断 hint）。
+2. 真实宿主验证 MCP 图片通道，再决定媒体是否补 `assetDocIds`（D-035 暂缓）。
+3. 联调通过后再决定 0.0.3 发版与版本号 bump。
 4. 全部就绪后做一次真实 LLBot/DSH 联调，再决定 0.0.3 发版与版本号 bump。
 
 ```bash

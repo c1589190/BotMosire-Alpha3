@@ -112,6 +112,8 @@ public final class ConfigLoader {
 
         JsonNode inbox = node.path("inbox");
         JsonNode inboxDisplay = inbox.path("display");
+        JsonNode inboxPush = inbox.path("push");
+        JsonNode inboxRetention = inbox.path("retention");
         JsonNode send = node.path("qqconnect").path("send");
         JsonNode media = node.path("qqconnect").path("media");
         JsonNode webconnect = node.path("webconnect");
@@ -139,7 +141,12 @@ public final class ConfigLoader {
                         new AppConfig.Inbox.Display(
                                 integer(inboxDisplay, "maxMessagesPerItem", 6),
                                 integer(inboxDisplay, "maxItemsPerPanel", 6),
-                                inboxDisplay.path("includeOmittedCount").asBoolean(true))),
+                                inboxDisplay.path("includeOmittedCount").asBoolean(true)),
+                        new AppConfig.Inbox.Push(
+                                integer(inboxPush, "minPriority", -1000)),
+                        new AppConfig.Inbox.Retention(
+                                integer(inboxRetention, "maxAgeDays", 30),
+                                integer(inboxRetention, "maxItems", 5000))),
                 new AppConfig.Webconnect(webconnect.path("enabled").asBoolean(false),
                         text(webconnect, "binary", "/snap/bin/chromium"),
                         webconnect.path("headless").asBoolean(true),

@@ -216,11 +216,18 @@ public record AppConfig(
         }
     }
 
-    public record Inbox(String inboxId, int httpPort, Display display) {
+    public record Inbox(String inboxId, int httpPort, Display display, Push push,
+                        Retention retention) {
 
         public Inbox {
             inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
             display = display == null ? Display.defaults() : display;
+            push = push == null ? Push.defaults() : push;
+            retention = retention == null ? Retention.defaults() : retention;
+        }
+
+        public Inbox(String inboxId, int httpPort, Display display) {
+            this(inboxId, httpPort, display, Push.defaults(), Retention.defaults());
         }
 
         public Inbox(String inboxId, int httpPort) {
@@ -228,7 +235,39 @@ public record AppConfig(
         }
 
         public static Inbox defaults() {
-            return new Inbox("bma3", 46500, Display.defaults());
+            return new Inbox("bma3", 46500, Display.defaults(), Push.defaults(),
+                    Retention.defaults());
+        }
+
+        /** Push filter: items below {@code minPriority} stay visible but never wake the agent. */
+        public record Push(int minPriority) {
+
+            public Push {
+                if (minPriority < -1000 || minPriority > 1000) {
+                    throw new IllegalArgumentException("inbox.push.minPriority 必须在 -1000..1000");
+                }
+            }
+
+            public static Push defaults() {
+                return new Push(-1000);
+            }
+        }
+
+        /** Retention: ACKED items are purged by age, then by count. Unacked rows are never purged. */
+        public record Retention(int maxAgeDays, int maxItems) {
+
+            public Retention {
+                if (maxAgeDays < 1 || maxAgeDays > 3650) {
+                    throw new IllegalArgumentException("inbox.retention.maxAgeDays 必须在 1..3650");
+                }
+                if (maxItems < 1 || maxItems > 1_000_000) {
+                    throw new IllegalArgumentException("inbox.retention.maxItems 必须在 1..1000000");
+                }
+            }
+
+            public static Retention defaults() {
+                return new Retention(30, 5000);
+            }
         }
 
         public record Display(int maxMessagesPerItem, int maxItemsPerPanel,
