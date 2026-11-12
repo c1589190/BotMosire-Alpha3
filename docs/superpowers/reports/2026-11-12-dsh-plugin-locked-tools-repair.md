@@ -54,7 +54,11 @@ bash(...) / read_image(...)
 ## 4. 发布状态
 
 - 版本：`0.0.4-hotfix1`（Java jar 仅版本号变化；功能修复在 DSH 插件侧）。
-- 发布产物：`bma3-app-0.0.4-hotfix1.jar`、`mosire-bma3-dsh-0.0.4-hotfix1.tgz`、`SHA256SUMS`。
-- 安装包内含 `package/lib/host-tools.js`、`package/lib/self.js`、`package/lib/preset.js` 等 10 个文件。
+- GitHub Pre-release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-hotfix1>；tag `v0.0.4-hotfix1` → commit `f450608`。
+- 发布产物：
+  - `bma3-app-0.0.4-hotfix1.jar` — sha256 `96463fb5275e797c5870d336278b2d896edb1b6fad675061f0a8b9a55020e8d9`
+  - `mosire-bma3-dsh-0.0.4-hotfix1.tgz` — sha256 `8eeddeb3fbdf82263adcd646c7229cce8e1bb5f952ec3ce0f3c31aab21da7f1f`
+  - `SHA256SUMS`
+- 回下载校验：`sha256sum -c SHA256SUMS` OK；jar `--version` = `0.0.4-hotfix1`；tgz `package.json` version = `0.0.4-hotfix1`，内含 `lib/host-tools.js`、`lib/self.js`、`lib/preset.js` 等 10 个文件。
 - 安装后验证顺序：`bma3_self_status` → `bma3_self_repair` → `bma3_self_status` → `bash`/`read_image`。
 - 若 `bma3_self_repair` 返回 `MOUNT_PENDING_INJECT`，说明当前 agent scope 缺少 `shell`/`fs`/`attachments` 之一，需要把 `errors` 原文发回来。

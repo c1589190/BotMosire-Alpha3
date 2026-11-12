@@ -35,7 +35,8 @@
 - 版本号：`0.0.4-hotfix1`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
 - 发布：**v0.0.4-hotfix1**（2026-11-12，用户「发布0.0.4-hotfix1」授权），上一版 `v0.0.4-early`（commit `fc99132`）保留。
   - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-hotfix1>（Pre-release）
-  - assets：`bma3-app-0.0.4-hotfix1.jar`、`mosire-bma3-dsh-0.0.4-hotfix1.tgz`、`SHA256SUMS`
+  - tag `v0.0.4-hotfix1` → commit `f450608`
+  - assets：`bma3-app-0.0.4-hotfix1.jar`（sha256 `96463fb5…`）、`mosire-bma3-dsh-0.0.4-hotfix1.tgz`（sha256 `8eeddeb3…`）、`SHA256SUMS`
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -52,7 +53,7 @@
 | 真实 LLBot 私聊发送 | `tools/e2e-local/llbot_send_test.py` | **PASS 6/6**：文本 `SENT`、私聊文件 `upload_private_file` `SENT via base64://`、OUT 回写 messageId、真实入站回复 |
 | 真实 LLBot 只读探测 | `LlbotProbe ws://47.100.101.156:3001/ <token> 955432692` | **PASS 8/8**：22 群、34 成员（15 title/4 card）、`get_group_member_info.title` 存在、历史 100/300 正常而 1000 超时/retcode1200→工具降级到 300、真实 `get_forward_msg` 形状 `data.messages[].content[]` 可由 `forwardId` 展开、`get_group_system_msg` 正常 |
 | jlink/jpackage smoke | `bash packaging/smoke.sh` | **PASS**（app-image 启动且 `/healthz` 200） |
-| GitHub Release 资产回下载 | `gh release download v0.0.4-hotfix1` + `sha256sum -c SHA256SUMS` | **PASS**（发布后回填）：jar/tgz sha256 OK、jar `--version` = `0.0.4-hotfix1`；插件 tgz 含 `lib/inbox.js` 等 10 个文件 |
+| GitHub Release 资产回下载 | `gh release download v0.0.4-hotfix1` + `sha256sum -c SHA256SUMS` | **PASS**：jar/tgz sha256 OK、jar `--version` = `0.0.4-hotfix1`、tgz `package.json` version = `0.0.4-hotfix1`、含 `lib/inbox.js` 等 10 个文件 |
 | 真实群文件 / 真实卡片 / 真实群邀请 / 真实 DSH resume / 真实部署者报警 | — | `NOT_RUN`（见报告 §5） |
 
 证据路径：`/tmp/bma3-e2e-004/`（app.log、data/*.db、fake.log）；报告
