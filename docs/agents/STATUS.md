@@ -2,7 +2,15 @@
 
 ## 当前目标 / 进行中范围
 
-**0.0.4-early：watchdog + 投递模型 + 身份目录 + 富消息 + 协议内文件/历史**。
+**0.0.4-hotfix1（当前发布）**：修复「重装插件后 bash/read_image 消失」。
+根因：`host-tools.js` 把解析失败的 `undefined` 也缓存；`bma3_self_status.lockedTools` 只看 global 视图；
+`bma3_self_reload` 不会重挂 preset 子行。修复：不缓存 miss + `invalidateHostToolCache()` + 新增
+`bma3_self_repair` + `lockedTools/missingLockedTools` 按 agent scope 计算 + 自动 repair。
+报告：[`../superpowers/reports/2026-11-12-dsh-plugin-locked-tools-repair.md`](../superpowers/reports/2026-11-12-dsh-plugin-locked-tools-repair.md)。
+版本统一为 `0.0.4-hotfix1`；发布流程：本地门禁 → commit → tag `v0.0.4-hotfix1` → push → Pre-release。
+（历史：`0.0.4-early` 已于 2026-11-12 发布。）
+
+**0.0.4-early（上一版，已发布）**：watchdog + 投递模型 + 身份目录 + 富消息 + 协议内文件/历史。
 设计：[`../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md`](../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md)（D-042..D-050）；
 计划：[`../superpowers/plans/2026-11-12-0.0.4-plan.md`](../superpowers/plans/2026-11-12-0.0.4-plan.md)；
 回归报告：[`../superpowers/reports/2026-11-12-0.0.4-e2e-report.md`](../superpowers/reports/2026-11-12-0.0.4-e2e-report.md)。
@@ -24,10 +32,10 @@
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
 - 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
-- 版本号：`0.0.4-early`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
-- 发布：**v0.0.4-early**（2026-11-12；由用户「发布0.0.4-early」授权，覆盖 D-050 的「本轮不推送」）。
-  - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-early>（Pre-release）
-  - tag `v0.0.4-early` → commit `fc99132`；assets：`bma3-app-0.0.4-early.jar`、`mosire-bma3-dsh-0.0.4-early.tgz`、`SHA256SUMS`
+- 版本号：`0.0.4-hotfix1`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 发布：**v0.0.4-hotfix1**（2026-11-12，用户「发布0.0.4-hotfix1」授权），上一版 `v0.0.4-early`（commit `fc99132`）保留。
+  - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-hotfix1>（Pre-release）
+  - assets：`bma3-app-0.0.4-hotfix1.jar`、`mosire-bma3-dsh-0.0.4-hotfix1.tgz`、`SHA256SUMS`
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
@@ -35,7 +43,7 @@
 | 检查 | 命令 | 结果 |
 |---|---|---|
 | Java 全量测试 | `./mvnw -o test` | **PASS**：core 7 / agentlib 5 / qqconnect 26 / inbox 29 / webconnect 4（1 skipped）/ watchdog 6 / app 26 = **103 tests，0 fail**（102 pass + 1 skip） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：24 tests |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：28 tests |
 | 0.0.4 主 e2e | `tools/e2e-local/drive6.py` | **PASS 36/36**（watchdog/目录/卡片/1B/dismiss/文件/历史/搜索/热重载/断线重连） |
 | 重启不重推 | `tools/e2e-local/drive6b.py` | **PASS 5/5**（pushRevision/计数器持久化、冻结条目不 pending、不自动重推、新消息仍推进） |
 | 真插件客户端 roundtrip | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> 46701` | **PASS 9/9**（窗口 6/8 → 两轮 ack 8 条、itemIds、不重复推） |
@@ -44,7 +52,7 @@
 | 真实 LLBot 私聊发送 | `tools/e2e-local/llbot_send_test.py` | **PASS 6/6**：文本 `SENT`、私聊文件 `upload_private_file` `SENT via base64://`、OUT 回写 messageId、真实入站回复 |
 | 真实 LLBot 只读探测 | `LlbotProbe ws://47.100.101.156:3001/ <token> 955432692` | **PASS 8/8**：22 群、34 成员（15 title/4 card）、`get_group_member_info.title` 存在、历史 100/300 正常而 1000 超时/retcode1200→工具降级到 300、真实 `get_forward_msg` 形状 `data.messages[].content[]` 可由 `forwardId` 展开、`get_group_system_msg` 正常 |
 | jlink/jpackage smoke | `bash packaging/smoke.sh` | **PASS**（app-image 启动且 `/healthz` 200） |
-| GitHub Release 资产回下载 | `gh release download v0.0.4-early` + `sha256sum -c SHA256SUMS` | **PASS**：jar sha256 OK、`--version` = `0.0.4-early`；插件 tgz sha256 OK、内容含 `lib/inbox.js` 等 10 个文件 |
+| GitHub Release 资产回下载 | `gh release download v0.0.4-hotfix1` + `sha256sum -c SHA256SUMS` | **PASS**（发布后回填）：jar/tgz sha256 OK、jar `--version` = `0.0.4-hotfix1`；插件 tgz 含 `lib/inbox.js` 等 10 个文件 |
 | 真实群文件 / 真实卡片 / 真实群邀请 / 真实 DSH resume / 真实部署者报警 | — | `NOT_RUN`（见报告 §5） |
 
 证据路径：`/tmp/bma3-e2e-004/`（app.log、data/*.db、fake.log）；报告
@@ -89,7 +97,7 @@
 3. 真实卡片样本（json/xml）与真实群邀请接受（需要一条真实待处理邀请）；
 4. 真实部署者 QQ 报警（需要真实账号）；
 5. `qq_search` 视数据量再评估 FTS5；
-6. 0.0.4-early 已发布；后续真机项（群文件/真实卡片/DSH resume/部署者报警）通过后再决定下一个版本。
+6. 0.0.4-hotfix1 已发布；后续真机项（群文件/真实卡片/DSH resume/部署者报警）通过后再决定下一个版本。
 
 ```bash
 git status --short --branch

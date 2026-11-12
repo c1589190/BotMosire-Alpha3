@@ -10,12 +10,14 @@ function workspace() {
   return mkdtempSync(path.join(tmpdir(), 'bma3-self-'))
 }
 
-function fakeHarness(cwd, names) {
+function fakeHarness(cwd, names, options = {}) {
   const sections = []
   const restrictions = []
   const tools = []
   let onCreated
+  let agentRef
   const listeners = new Map()
+  const scoped = new Set(options.scopedNames ?? [])
   const agentCtx = {
     systemPrompt: {
       section(section) {
@@ -26,15 +28,26 @@ function fakeHarness(cwd, names) {
         return 0
       },
     },
+    get() {
+      return undefined
+    },
+    inject(_names, callback) {
+      callback(agentCtx)
+    },
+    shell: { sandboxMode: undefined },
     tools: (() => {
       // 尽量贴近 DSH 的语义：
       //  - definitions() 返回全局 + 该 agent 自己的 scoped 注册
       //  - restrict() 只接受"可限制的"（全局/继承）名字；出现 scope-local 或未知全局名字就抛
-      const scoped = new Set()
       const restrictable = new Set(names)
       return {
-        definitions() {
-          return [...names, ...scoped].map((name) => ({ name }))
+        definitions(scope) {
+          const visible = scope === agentRef ? [...names, ...scoped] : [...names]
+          return visible.map((name) => ({ name }))
+        },
+        get(name, scope) {
+          const visible = scope === agentRef ? [...names, ...scoped] : [...names]
+          return visible.includes(name) ? { name } : undefined
         },
         restrict(filter) {
           const unknown = [...filter.allow ?? [], ...filter.deny ?? []]
@@ -52,6 +65,16 @@ function fakeHarness(cwd, names) {
         },
       }
     })(),
+    plugin(plugin, config) {
+      if (options.invokeApply && typeof plugin?.apply === 'function') {
+        plugin.apply(agentCtx, config)
+      }
+      const basename = plugin?.name === 'tool-bash'
+        ? 'bash' : plugin?.name === 'tool-fs' ? 'read_image' : undefined
+      if (!basename) return { dispose() {} }
+      scoped.add(basename)
+      return { dispose: () => scoped.delete(basename) }
+    },
     effect(fn) {
       return fn()
     },
@@ -67,13 +90,15 @@ function fakeHarness(cwd, names) {
     },
   }
   const agent = { session: { header: { cwd } }, ctx: agentCtx }
-  apply(ctx)
+  agentRef = agent
+  apply(ctx, { hostToolEntry: options.hostToolEntry })
   return {
     agent,
     sections,
     restrictions,
     tools,
     listeners,
+    scoped,
     async created() {
       await onCreated({ agent })
     },
@@ -298,4 +323,50 @@ test('the allow list never names scope-local tools (tools.restrict would throw)'
     .execute({}, {})).text)
   assert.equal(status.error, null, '工具策略不能报错')
   assert.ok(status.allow.includes('bash'))
+})
+
+
+test('status reports scoped bash/read_image as lockedTools without poisoning restrict()', async () => {
+  const cwd = workspace()
+  const globalOnly = GLOBAL_NAMES.filter((name) => name !== 'bash' && name !== 'read_image')
+  const h = fakeHarness(cwd, globalOnly, { scopedNames: ['bash', 'read_image'] })
+  await h.created()
+
+  const status = JSON.parse((await h.tools.find((tool) => tool.name === 'bma3_self_status')
+    .execute({}, {})).text)
+  assert.deepEqual(status.lockedTools.sort(), ['bash', 'read_image'])
+  assert.deepEqual(status.missingLockedTools, [])
+  const allow = h.restrictions.at(-1).allow
+  assert.ok(!allow.includes('bash'), 'scoped bash 不能进 restrict() 的 allow')
+  assert.ok(!allow.includes('read_image'), 'scoped read_image 不能进 restrict() 的 allow')
+})
+
+test('bma3_self_repair force-mounts missing bash/read_image', async () => {
+  const cwd = workspace()
+  const bashModule = path.join(cwd, 'fake-tool-bash.mjs')
+  const fsModule = path.join(cwd, 'fake-tool-fs.mjs')
+  writeFileSync(bashModule, "export const name='tool-bash'; export const inject=[]; export function apply(ctx){ ctx.tools.register({name:'bash'}) }\n")
+  writeFileSync(fsModule, "export const name='tool-fs'; export const inject=[]; export function apply(ctx){ ctx.tools.register({name:'read_image'}) }\n")
+  const globalOnly = GLOBAL_NAMES.filter((name) => name !== 'bash' && name !== 'read_image')
+  const h = fakeHarness(cwd, globalOnly, {
+    hostToolEntry: (spec) => spec.includes('dsh-tool-fs') ? fsModule : bashModule,
+    invokeApply: true,
+  })
+  await h.created()
+
+  const before = JSON.parse((await h.tools.find((tool) => tool.name === 'bma3_self_status')
+    .execute({}, {})).text)
+  assert.deepEqual(before.missingLockedTools.sort(), ['bash', 'read_image'])
+
+  const repair = JSON.parse((await h.tools.find((tool) => tool.name === 'bma3_self_repair')
+    .execute({}, {})).text)
+  assert.equal(repair.changed, true)
+  assert.deepEqual(repair.after, [])
+  assert.ok(h.scoped.has('bash'))
+  assert.ok(h.scoped.has('read_image'))
+
+  const after = JSON.parse((await h.tools.find((tool) => tool.name === 'bma3_self_status')
+    .execute({}, {})).text)
+  assert.deepEqual(after.missingLockedTools, [])
+  assert.deepEqual(after.lockedTools.sort(), ['bash', 'read_image'])
 })

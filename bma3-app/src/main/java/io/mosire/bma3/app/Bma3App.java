@@ -239,7 +239,7 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.4-early", tools)
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.4-hotfix1", tools)
                     .authHint(config.server().tokenEnv());
             mcp.start();
 

@@ -1,4 +1,4 @@
-import { hostToolRowName } from './host-tools.js'
+import { hostToolRowName, invalidateHostToolCache } from './host-tools.js'
 
 export const PRESET_ID = 'bma3'
 
@@ -11,6 +11,9 @@ export const PRESET_ID = 'bma3'
  * from this preset stay visible even when the loader restricts global MCP tools.
  */
 export function presetDefinition() {
+  // Re-resolve host tool entries on every (re)registration. A stale negative cache from a
+  // mid-reinstall lookup used to leave the tool-bash/tool-fs rows as bare specifiers forever.
+  invalidateHostToolCache()
   return {
     id: PRESET_ID,
     name: 'BMA3',

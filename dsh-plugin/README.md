@@ -111,3 +111,30 @@ createRequire(process.argv[1]).resolve('@deepseek-ai/dsh-web-app')   # 宿主里
   lastMcpStartId/lastError/appliedControlId`；响应可带 `control`（`restore`/`remind`）。
   插件应用后回报 `appliedControlId`，服务端清除 pending control。
 - `mcpStartId` 变化（BMA3 进程重启）时注入一次提醒，让 Agent 必要时重连 MCP。
+
+
+## 0.0.4-hotfix1：lockedTools 修复（bash/read_image 重装后消失）
+
+### 根因
+
+- `host-tools.js` 过去把**解析失败也写进缓存**：`dsh plugin` 重装期间宿主树短暂不可解析，缓存里留下 `undefined`，之后同一进程里 `presetDefinition()` 一直拿到裸包名，`tool-bash` / `tool-fs` 行挂不上，`bash`/`read_image` 就从会话里消失。
+- `bma3_self_status.lockedTools` 之前只看 **global** 工具视图；bash/read_image 是 agent-scope 工具，所以即使它们其实在，状态也会显示空数组，误导排查。
+- `bma3_self_reload` 只重应用 `agentconfig` 的工具组，不会重新挂 preset 子行。
+
+### 修复
+
+- `host-tools.js`：**不再缓存 miss**；新增 `invalidateHostToolCache()`，`presetDefinition()` 每次注册前强制重解析。
+- `bma3_self_status`：`lockedTools` / `missingLockedTools` 改为按当前 agent 的可见工具（`definitions(agent)` + `get(name, agent)`）计算；`requiredLockedTools` 按平台给出 bash/read_image 或 pwsh/read_image。
+- 新增 `bma3_self_repair`：从宿主安装树直接 `import()` `dsh-tool-bash` / `dsh-tool-fs`，用 `ctx.plugin(...)` 挂到当前 agent scope；3s 内未完成注入会返回 `MOUNT_PENDING_INJECT`，不会卡死。
+- `agent/created` 后 500ms、`tools/change` 后 250ms 自动尝试 repair；`bma3_self_reload` 也会先 repair 再返回状态。
+- 如果 preset 行后来才挂上，repair 再检查一次；已有同名工具不会重复挂。
+
+### 验证
+
+- `cd dsh-plugin && npm test` → **28 tests**：
+  - scoped `bash`/`read_image` 不会污染 `tools.restrict()` 的 allow；
+  - `bma3_self_status.lockedTools` 能看到 scoped 工具；
+  - `bma3_self_repair` 能挂载缺失的 bash/read_image 并让 `missingLockedTools` 变空；
+  - host tool miss 不再被永久缓存；`invalidateHostToolCache` 能清掉正缓存。
+
+安装后先跑一次 `bma3_self_status`：若 `missingLockedTools` 非空，再跑 `bma3_self_repair`，然后重新调用 `bash`/`read_image` 验证。

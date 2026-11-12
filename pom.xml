@@ -6,7 +6,7 @@
 
   <groupId>io.mosire.bma3</groupId>
   <artifactId>bma3-parent</artifactId>
-  <version>0.0.4-early</version>
+  <version>0.0.4-hotfix1</version>
   <packaging>pom</packaging>
   <name>BotMosire-Alpha3</name>
   <description>Independent DSH-side IM/browser inbox service.</description>

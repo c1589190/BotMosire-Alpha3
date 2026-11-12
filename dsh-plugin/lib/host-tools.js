@@ -98,8 +98,25 @@ export function hostToolEntry(specifier, entryPoint = process.argv[1]) {
   const cacheKey = `${entryPoint}\u0000${specifier}`
   if (cache.has(cacheKey)) return cache.get(cacheKey)
   const resolved = lookupHostTool(specifier, entryPoint)
-  cache.set(cacheKey, resolved)
+  // Never cache a miss: a `dsh plugin` reinstall can temporarily make the host tree
+  // unresolvable, and a cached `undefined` would keep bash/read_image unmounted for the
+  // rest of the process (the "reinstall makes bash disappear" regression).
+  if (resolved !== undefined) cache.set(cacheKey, resolved)
   return resolved
+}
+
+/** Number of positive cached entries for one host entry; diagnostics/tests only. */
+export function hostToolCacheSize(entryPoint = process.argv[1]) {
+  const prefix = `${entryPoint}\u0000`
+  return [...cache.keys()].filter((key) => key.startsWith(prefix)).length
+}
+
+/** Drop cached lookups for one host entry (default: this process). */
+export function invalidateHostToolCache(entryPoint = process.argv[1]) {
+  const prefix = `${entryPoint}\u0000`
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(prefix)) cache.delete(key)
+  }
 }
 
 function lookupHostTool(specifier, entryPoint) {

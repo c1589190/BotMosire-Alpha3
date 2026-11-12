@@ -7,7 +7,7 @@
 ## 前提
 
 - 本机已 `./mvnw -o -q -pl bma3-app -am package -DskipTests` 产出
-  `bma3-app/target/bma3-app-0.0.4-early.jar`；
+  `bma3-app/target/bma3-app-0.0.4-hotfix1.jar`；
 - 脚本里写死 `/tmp/bma3-e2e`（工作目录）与端口 `45701`（假 OneBot WS）、`46701`（事件注入 HTTP）、`18080`（假 CDN/HTTP 端口）。
 
 ## 跑法
@@ -25,7 +25,7 @@ nohup java -cp "/tmp/bma3-e2e:$JW:$SLF" FakeOneBot 45701 46701 \
 # 3. 配置 + 启动（端口全 0，从 stdout 读回真实端口）
 #    config/app.yaml 见下方"最小配置"；normalDelaySeconds 调成 2 便于观察
 env BMA3_MCP_TOKEN=e2e-mcp-token LLBOT_TOKEN=e2e-llbot-token \
-  java -jar bma3-app/target/bma3-app-0.0.4-early.jar --config /tmp/bma3-e2e \
+  java -jar bma3-app/target/bma3-app-0.0.4-hotfix1.jar --config /tmp/bma3-e2e \
   > /tmp/bma3-e2e/app.log 2>&1 &
 # 4. 驱动
 python3 tools/e2e-local/drive.py      # 优先级/时序/配置/丢弃/历史（14 项）
@@ -92,9 +92,9 @@ flush 被旧连接抢走、`reconcile` 持锁卡住入站。
 ```bash
 JW=~/.m2/repository/org/java-websocket/Java-WebSocket/1.6.0/Java-WebSocket-1.6.0.jar
 SLF=$(ls ~/.m2/repository/org/slf4j/slf4j-api/*/slf4j-api-*.jar | tail -1)
-javac -proc:none -cp "bma3-app/target/bma3-app-0.0.4-early.jar:$JW:$SLF" -d /tmp/probe \
+javac -proc:none -cp "bma3-app/target/bma3-app-0.0.4-hotfix1.jar:$JW:$SLF" -d /tmp/probe \
   tools/e2e-local/LlbotProbe.java
-java -cp "/tmp/probe:bma3-app/target/bma3-app-0.0.4-early.jar:$JW:$SLF" \
+java -cp "/tmp/probe:bma3-app/target/bma3-app-0.0.4-hotfix1.jar:$JW:$SLF" \
   LlbotProbe ws://<llbot-host>:3001/ <token> 955432692
 ```
 
@@ -109,7 +109,7 @@ java -cp "/tmp/probe:bma3-app/target/bma3-app-0.0.4-early.jar:$JW:$SLF" \
 ```bash
 # 先按 llbot_real_probe 的方式起临时 run 目录，把 LLBOT_TOKEN 设进环境
 BMA3_MCP_TOKEN=real-send-token LLBOT_TOKEN=<token> \
-  java -jar bma3-app/target/bma3-app-0.0.4-early.jar --config /tmp/bma3-llbot-live &
+  java -jar bma3-app/target/bma3-app-0.0.4-hotfix1.jar --config /tmp/bma3-llbot-live &
 BMA3_TEST_QQ=<your qq> python3 tools/e2e-local/llbot_send_test.py
 ```
 

@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 
-import { describeHostTools } from './host-tools.js'
+import { describeHostTools, hostToolEntry, invalidateHostToolCache } from './host-tools.js'
 
 export const DEFAULT_PROMPT = '你是 BMA3 的角色。'
 export const DEFAULT_TOOL_GROUPS = Object.freeze([
@@ -45,7 +46,25 @@ const BASIC_BMA3_BASENAMES = new Set([
   'qq_friend_list',
 ])
 /** Registered on the agent's own layer: exempt from restrictions, and NOT restrictable. */
-const SCOPED_BMA3_TOOLS = new Set(['bma3_self_status', 'bma3_self_reload'])
+const SCOPED_BMA3_TOOLS = new Set([
+  'bma3_self_status',
+  'bma3_self_reload',
+  'bma3_self_repair',
+])
+
+/**
+ * Host tool packages that the preset is supposed to mount. The repair path uses the same absolute
+ * `file:` entries as the preset rows, so a plugin reinstall that leaves the rows unmounted can be
+ * fixed without restarting DSH.
+ */
+export const HOST_TOOL_REPAIRS = Object.freeze({
+  bash: { spec: '@deepseek-ai/dsh-tool-bash', config: {} },
+  pwsh: { spec: '@deepseek-ai/dsh-tool-pwsh', config: {} },
+  read_image: {
+    spec: '@deepseek-ai/dsh-tool-fs',
+    config: { read: false, readImage: true, write: false, edit: false },
+  },
+})
 const SUBAGENT_BASENAMES = new Set([
   'subagent',
   'subagent_fork',
@@ -164,6 +183,48 @@ function globalToolNames(agentCtx) {
   }
 }
 
+/** Names actually visible to this agent: global + this agent's scoped registrations. */
+function visibleToolNames(agentCtx, agent) {
+  const names = new Set()
+  try {
+    const definitions = agent && agentCtx?.tools?.definitions
+      ? agentCtx.tools.definitions(agent)
+      : agentCtx?.tools?.definitions?.()
+    if (Array.isArray(definitions)) {
+      for (const definition of definitions) {
+        if (definition?.name) names.add(definition.name)
+      }
+    }
+  } catch {
+    // Fall back to the global view below.
+  }
+  if (names.size === 0) {
+    for (const name of globalToolNames(agentCtx)) names.add(name)
+  }
+  // `definitions(scope)` may not include a tool whose registration is still settling; ask for the
+  // exact locked names as a second opinion.
+  for (const basename of LOCKED_TOOL_BASENAMES) {
+    try {
+      if (agentCtx?.tools?.get?.(basename, agent)) names.add(basename)
+    } catch {
+      // ignore
+    }
+  }
+  return [...names]
+}
+
+function requiredLockedTools() {
+  return process.platform === 'win32' ? ['pwsh', 'read_image'] : ['bash', 'read_image']
+}
+
+function lockedToolStatus(agentCtx, agent) {
+  const visible = visibleToolNames(agentCtx, agent)
+  const present = visible.filter((name) => LOCKED_TOOL_BASENAMES.includes(baseName(name)))
+  const missing = requiredLockedTools().filter((basename) =>
+    !visible.some((name) => baseName(name) === basename))
+  return { visible, present, missing }
+}
+
 export class SelfState {
   constructor(cwd, pluginConfig = {}) {
     this.cwd = path.resolve(String(cwd))
@@ -181,6 +242,10 @@ export class SelfState {
     this.applying = false
     this.pending = false
     this.onReload = null
+    this.agent = null
+    this.hostToolEntry = pluginConfig.hostToolEntry ?? hostToolEntry
+    this.hostToolMounts = new Map()
+    this.repairTimer = null
   }
 
   loadInitial() {
@@ -242,6 +307,7 @@ export class SelfState {
   status(agentCtx) {
     const names = globalToolNames(agentCtx)
     const resolved = resolveToolGroups(this.config.defaultTools, names)
+    const visible = lockedToolStatus(agentCtx, this.agent)
     const presetOnly = new Set(PRESET_PROVIDED_GROUPS)
     for (const name of LOCKED_TOOL_BASENAMES) presetOnly.add(name)
     return {
@@ -261,9 +327,102 @@ export class SelfState {
       presetProvidedGroups: [...PRESET_PROVIDED_GROUPS],
       presetLockedTools: [...LOCKED_TOOL_BASENAMES],
       globalToolCount: names.length,
-      lockedTools: resolved.allow.filter((name) => LOCKED_TOOL_BASENAMES.includes(baseName(name))),
+      visibleToolCount: visible.visible.length,
+      requiredLockedTools: requiredLockedTools(),
+      lockedTools: visible.present,
+      missingLockedTools: visible.missing,
       error: Object.values(this.errors).filter(Boolean).join(' | ') || null,
     }
+  }
+
+  /**
+   * DSH plugin reinstall can leave the preset child rows (tool-bash/tool-fs) unmounted while the
+   * `self` row survives. Mount the missing host tool plugins into this agent scope directly.
+   * The entries are the same absolute host paths the preset uses; Cordis owns their disposal.
+   */
+  async repairHostTools(agentCtx, { force = false } = {}) {
+    const before = lockedToolStatus(agentCtx, this.agent)
+    const mounted = []
+    const errors = []
+    for (const basename of before.missing) {
+      if (basename === 'bash' && process.platform === 'win32') continue
+      if (basename === 'pwsh' && process.platform !== 'win32') continue
+      const repair = HOST_TOOL_REPAIRS[basename]
+      if (!repair) continue
+      const previous = this.hostToolMounts.get(repair.spec)
+      if (previous && !force) continue
+      if (previous && force) {
+        try {
+          await previous?.dispose?.()
+        } catch {
+          // The old fiber may already be gone with the agent scope.
+        }
+        this.hostToolMounts.delete(repair.spec)
+      }
+      let entry
+      try {
+        invalidateHostToolCache()
+        entry = this.hostToolEntry(repair.spec)
+      } catch (error) {
+        errors.push({ tool: basename, error: `resolve: ${error.message}` })
+        continue
+      }
+      if (!entry) {
+        errors.push({ tool: basename, error: 'HOST_TOOL_NOT_RESOLVED' })
+        continue
+      }
+      try {
+        const module = await import(pathToFileURL(entry).href)
+        const config = typeof module.Config === 'function'
+          ? module.Config(repair.config)
+          : repair.config
+        let handle
+        if (typeof agentCtx.plugin === 'function') {
+          handle = agentCtx.plugin({
+            name: module.name ?? repair.spec,
+            inject: module.inject ?? [],
+            apply: module.apply,
+          }, config)
+          const outcome = await Promise.race([
+            Promise.resolve(handle).then(() => 'ready'),
+            new Promise((resolve) => {
+              const timer = setTimeout(() => resolve('pending'), 3000)
+              timer.unref?.()
+            }),
+          ])
+          if (outcome === 'pending') {
+            errors.push({ tool: basename, error: 'MOUNT_PENDING_INJECT' })
+            this.hostToolMounts.set(repair.spec, handle)
+            continue
+          }
+        } else if (typeof module.apply === 'function') {
+          handle = module.apply(agentCtx, config)
+        } else {
+          throw new Error('host tool module has no apply()')
+        }
+        this.hostToolMounts.set(repair.spec, handle)
+        mounted.push(basename)
+      } catch (error) {
+        errors.push({ tool: basename, error: error?.message ?? String(error) })
+      }
+    }
+    // Registrations settle on the next microtask/tick; inspect after that.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const after = lockedToolStatus(agentCtx, this.agent)
+    if (mounted.length > 0) {
+      this.errors.tools = null
+    }
+    return { changed: mounted.length > 0, before: before.missing, after: after.missing,
+      mounted, errors }
+  }
+
+  scheduleRepair(agentCtx, delay = 400) {
+    if (this.repairTimer) clearTimeout(this.repairTimer)
+    this.repairTimer = setTimeout(() => {
+      this.repairTimer = null
+      this.repairHostTools(agentCtx).catch(() => {})
+    }, delay)
+    this.repairTimer.unref?.()
   }
 
   applyToolPolicy(agentCtx, { force = false } = {}) {
@@ -307,7 +466,7 @@ export class SelfState {
     return this.status(agentCtx)
   }
 
-  reload(agentCtx) {
+  async reload(agentCtx) {
     this.errors = { config: null, prompt: null, tools: null }
     try {
       this.config = this.readConfig()
@@ -317,8 +476,9 @@ export class SelfState {
     }
     this.promptText(true)
     this.applyToolPolicy(agentCtx, { force: true })
+    const repair = await this.repairHostTools(agentCtx)
     this.onReload?.()
-    return this.status(agentCtx)
+    return { ...this.status(agentCtx), repair }
   }
 }
 
@@ -352,7 +512,16 @@ function registerSelfTools(agentCtx, state) {
       description: 'Reload systemprompt.md and agentconfig.json, then reapply the default tool groups. The bash/pwsh and read_image tools stay locked available.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: OUTPUT,
-      execute: async () => ({ text: JSON.stringify(state.reload(agentCtx), null, 2) }),
+      execute: async () => ({ text: JSON.stringify(await state.reload(agentCtx), null, 2) }),
+    },
+    {
+      name: 'bma3_self_repair',
+      description: 'Force-mount the preset host tools (bash/pwsh/read_image) into this session when a DSH plugin reinstall left lockedTools empty. Uses the same absolute host entries as the preset; no restart needed.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: OUTPUT,
+      execute: async () => ({
+        text: JSON.stringify(await state.repairHostTools(agentCtx, { force: true }), null, 2),
+      }),
     },
   ]
   for (const definition of definitions) {
@@ -364,12 +533,38 @@ function registerSelfTools(agentCtx, state) {
   }
 }
 
-export function apply(ctx, _config = {}) {
+export function apply(ctx, config = {}) {
   if (!ctx?.on) return
+  const repairLiveAgents = async () => {
+    const agents = typeof ctx.get === 'function' ? ctx.get('agents') : ctx.agents
+    const list = Array.isArray(agents?.list?.()) ? agents.list() : []
+    for (const agent of list) {
+      if (agent?.session?.header?.agentPreset !== 'bma3') continue
+      const cwd = agent?.session?.header?.cwd
+      if (!cwd || !agent?.ctx) continue
+      const state = new SelfState(cwd, config)
+      state.agent = agent
+      state.loadInitial()
+      // Existing sessions do not re-run agent/created on plugin reload; make the repair tool
+      // available and mount the missing host tools in place.
+      registerSelfTools(agent.ctx, state)
+      try {
+        await state.repairHostTools(agent.ctx)
+      } catch {
+        // Repair is best-effort; status/repair tool reports the detail.
+      }
+    }
+  }
+  const repairTimer = setTimeout(() => {
+    repairLiveAgents().catch(() => {})
+  }, 800)
+  repairTimer.unref?.()
+
   ctx.on('agent/created', async ({ agent }) => {
     const cwd = agent?.session?.header?.cwd
     if (!cwd) return
-    const state = new SelfState(cwd)
+    const state = new SelfState(cwd, config)
+    state.agent = agent
     state.loadInitial()
 
     /**
@@ -428,6 +623,10 @@ export function apply(ctx, _config = {}) {
 
     registerSelfTools(agent.ctx, state)
     state.applyToolPolicy(agent.ctx)
-    agent.ctx?.on?.('tools/change', () => state.applyToolPolicy(agent.ctx))
+    state.scheduleRepair(agent.ctx, 500)
+    agent.ctx?.on?.('tools/change', () => {
+      state.applyToolPolicy(agent.ctx)
+      state.scheduleRepair(agent.ctx, 250)
+    })
   })
 }
