@@ -53,6 +53,8 @@ public final class AccountRegistry implements AutoCloseable {
     private final Map<String, Fault> faults = new ConcurrentHashMap<>();
     /** Accounts the operator asked for, including ones that never connected. */
     private final Set<String> configured = ConcurrentHashMap.newKeySet();
+    /** Last desired config per account; used by the watchdog to reconnect without a config change. */
+    private final Map<String, AccountConfig> desiredByAccount = new ConcurrentHashMap<>();
 
     public AccountRegistry(Consumer<AccountEvent> eventSink) {
         this((config, listener) -> new OneBot11Client(config.endpoint(), config.token(), listener),
@@ -83,6 +85,8 @@ public final class AccountRegistry implements AutoCloseable {
         }
         configured.clear();
         configured.addAll(target.keySet());
+        desiredByAccount.clear();
+        desiredByAccount.putAll(target);
         desired.stream()
                 .filter(config -> config != null && config.accountId() != null
                         && !config.accountId().isBlank())
@@ -113,6 +117,11 @@ public final class AccountRegistry implements AutoCloseable {
                 continue;
             }
             if (current.config().equals(config)) {
+                // Same config but the socket is gone: this is exactly the "dead until restart"
+                // case the watchdog exists to fix. Reconnect eagerly here as well.
+                if (!current.client().connected()) {
+                    forceReconnect(accountId);
+                }
                 continue;
             }
             // Slow path (connect + awaitReady) runs without any registry lock held.
@@ -138,6 +147,53 @@ public final class AccountRegistry implements AutoCloseable {
             }
         }
         return new ReconcileResult(added, removed, restarted, rejected);
+    }
+
+    /**
+     * Replaces one account's client with a fresh connection, even when its config did not change.
+     *
+     * @return true when the replacement connected; false when the account is unknown or the
+     *         replacement failed (the fault is recorded and the old holder is left in place)
+     */
+    public boolean forceReconnect(String accountId) {
+        if (accountId == null || accountId.isBlank()) {
+            return false;
+        }
+        AccountConfig config = desiredByAccount.get(accountId);
+        Holder current = active.get(accountId);
+        if (config == null && current != null) {
+            config = current.config();
+        }
+        if (config == null) {
+            return false;
+        }
+        OneBot11Client replacement = create(config);
+        if (replacement == null) {
+            return false;
+        }
+        try {
+            replacement.start();
+            replacement.awaitReady(Duration.ofSeconds(5));
+            Holder previous = active.put(accountId, new Holder(config, replacement));
+            if (previous != null && previous.client() != replacement) {
+                previous.client().close();
+            }
+            faults.remove(accountId);
+            learnIdentity(accountId, replacement);
+            LOG.info("event=qq_account_reconnected accountId={}", accountId);
+            return true;
+        } catch (RuntimeException failure) {
+            replacement.close();
+            recordFault(accountId, "reconnect", failure, replacement);
+            LOG.info("event=qq_account_reconnect_failed accountId={} type={}",
+                    accountId, failure.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /** Desired configurations, for the watchdog's account probe. */
+    public List<AccountConfig> desiredConfigs() {
+        return List.copyOf(desiredByAccount.values());
     }
 
     public Optional<OneBot11Client> client(AccountId accountId) {

@@ -97,7 +97,8 @@ public final class ConfigLoader {
                 text(server, "host", "127.0.0.1"),
                 integer(server, "port", 8765),
                 text(server, "mcpPath", "/mcp"),
-                text(server, "tokenEnv", "BMA3_MCP_TOKEN"));
+                text(server, "tokenEnv", "BMA3_MCP_TOKEN"),
+                integer(server, "healthPort", 8766));
 
         List<AppConfig.Account> accounts = new ArrayList<>();
         for (JsonNode account : node.path("qqconnect").path("accounts")) {
@@ -114,6 +115,7 @@ public final class ConfigLoader {
         JsonNode inboxDisplay = inbox.path("display");
         JsonNode inboxPush = inbox.path("push");
         JsonNode inboxRetention = inbox.path("retention");
+        JsonNode inboxDismiss = inbox.path("dismiss");
         JsonNode send = node.path("qqconnect").path("send");
         JsonNode media = node.path("qqconnect").path("media");
         JsonNode webconnect = node.path("webconnect");
@@ -123,6 +125,12 @@ public final class ConfigLoader {
         }
         JsonNode weighting = node.path("weighting");
         JsonNode logging = node.path("logging");
+        JsonNode watchdog = node.path("watchdog");
+        JsonNode deployer = node.path("deployer");
+        List<String> readyzCritical = new ArrayList<>();
+        for (JsonNode critical : watchdog.path("readyzCritical")) {
+            readyzCritical.add(critical.asText());
+        }
         return new AppConfig(
                 Path.of(dataDir),
                 serverConfig,
@@ -141,12 +149,19 @@ public final class ConfigLoader {
                         new AppConfig.Inbox.Display(
                                 integer(inboxDisplay, "maxMessagesPerItem", 6),
                                 integer(inboxDisplay, "maxItemsPerPanel", 6),
-                                inboxDisplay.path("includeOmittedCount").asBoolean(true)),
+                                inboxDisplay.path("includeOmittedCount").asBoolean(true),
+                                integer(inboxDisplay, "maxCharsPerItem", 1200)),
                         new AppConfig.Inbox.Push(
-                                integer(inboxPush, "minPriority", -1000)),
+                                integer(inboxPush, "minPriority", -1000),
+                                integer(inboxPush, "maxFirstPushDelaySeconds", 60)),
                         new AppConfig.Inbox.Retention(
                                 integer(inboxRetention, "maxAgeDays", 30),
-                                integer(inboxRetention, "maxItems", 5000))),
+                                integer(inboxRetention, "maxItems", 5000)),
+                        new AppConfig.Inbox.Dismiss(
+                                inboxDismiss.path("autoEnabled").asBoolean(false),
+                                integer(inboxDismiss, "autoBelowPriority", 0),
+                                integer(inboxDismiss, "autoAfterSeconds", 1800),
+                                integer(inboxDismiss, "autoMaxPerRound", 200))),
                 new AppConfig.Webconnect(webconnect.path("enabled").asBoolean(false),
                         text(webconnect, "binary", "/snap/bin/chromium"),
                         webconnect.path("headless").asBoolean(true),
@@ -155,14 +170,29 @@ public final class ConfigLoader {
                         integer(weighting, "immediateThreshold", 300),
                         integer(weighting, "dropBelow", -300),
                         integer(weighting, "maxPriority", 1000),
-                        integer(weighting, "normalDelaySeconds", 30),
-                        integer(weighting, "importantDelaySeconds", 1),
+                        integer(weighting, "normalDelaySeconds", 60),
+                        integer(weighting, "importantDelaySeconds", 3),
                         integerMapOr(weighting.path("sourcePriority"),
                                 AppConfig.Weighting.defaultSourcePriority()),
                         integerMapOr(weighting.path("attributes"),
                                 AppConfig.Weighting.defaultAttributes()),
                         contentRules(weighting.path("rules"))),
-                new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")));
+                new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")),
+                new AppConfig.Deployer(
+                        text(deployer, "qq", ""),
+                        deployer.path("enabled").asBoolean(false)),
+                new AppConfig.Watchdog(
+                        watchdog.path("enabled").asBoolean(true),
+                        integer(watchdog, "intervalSeconds", 10),
+                        integer(watchdog, "probeTimeoutMs", 2000),
+                        integer(watchdog, "failureThreshold", 2),
+                        integer(watchdog, "recoveryCooldownSeconds", 30),
+                        integer(watchdog, "alertCooldownSeconds", 600),
+                        integer(watchdog, "pluginHeartbeatTimeoutSeconds", 45),
+                        watchdog.path("diskMinFreeMb").asLong(200),
+                        readyzCritical.isEmpty()
+                                ? AppConfig.Watchdog.defaults().readyzCritical()
+                                : readyzCritical));
     }
 
     private static String interpolate(String raw, Map<String, String> env) {

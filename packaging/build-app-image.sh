@@ -6,7 +6,7 @@ cd "$ROOT"
 
 ./mvnw -q -pl bma3-app -am package -DskipTests
 
-JAR="$(find bma3-app/target -maxdepth 1 -name 'bma3-app-*.jar' ! -name '*.original' | head -1)"
+JAR="$(ls -t bma3-app/target/bma3-app-*.jar 2>/dev/null | grep -v 'original' | head -1)"
 if [[ -z "${JAR}" ]]; then
   echo "app jar not found" >&2
   exit 1

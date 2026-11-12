@@ -92,7 +92,7 @@ class ConfigLoaderTest {
         writeConfig("""
                 inbox:
                   display:
-                    maxMessagesPerItem: 2
+                    maxMessagesPerItem: 0
                 """);
 
         assertThatThrownBy(() -> ConfigLoader.load(tempDir))

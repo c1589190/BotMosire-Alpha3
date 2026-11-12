@@ -63,24 +63,22 @@ class PriorityResolverTest {
     @Test
     void senderAndSourceRulesStack() {
         Map<String, Integer> attributes = new LinkedHashMap<>(attributes());
-        attributes.put("qq_sender/10001", 50);
+        attributes.put("qq_person_id/10001", 50);
         PriorityDecision decision = resolver(sources(), attributes)
                 .resolve(GROUP, "10001", "南沐秋", PriorityAttributes.none());
         assertThat(decision.priority()).isEqualTo(250);
-        assertThat(decision.reasons()).anyMatch(reason -> reason.contains("qq_sender/10001"));
+        assertThat(decision.reasons()).anyMatch(reason -> reason.contains("qq_person_id/10001"));
     }
 
     @Test
-    void nameRuleMatchesOnDisplayNameSubstring() {
+    void nicknameRulesAreNotScoreKeysAnymore() {
+        // D-048: qq_name/ was retired. A display-name match must not move the score; name
+        // resolution belongs to qq_search, and per-person weight uses the stable QQ number.
         Map<String, Integer> attributes = new LinkedHashMap<>(attributes());
         attributes.put("qq_name/管理", 40);
-        PriorityDecision hit = resolver(sources(), attributes)
+        PriorityDecision decision = resolver(sources(), attributes)
                 .resolve(GROUP, "10001", "群管理小王", PriorityAttributes.none());
-        assertThat(hit.priority()).isEqualTo(240);
-
-        PriorityDecision miss = resolver(sources(), attributes)
-                .resolve(GROUP, "10001", "路人", PriorityAttributes.none());
-        assertThat(miss.priority()).isEqualTo(200);
+        assertThat(decision.priority()).isEqualTo(200);
     }
 
     @Test
@@ -109,7 +107,7 @@ class PriorityResolverTest {
     @Test
     void scoreIsClampedByMaxPriority() {
         Map<String, Integer> attributes = new LinkedHashMap<>(attributes());
-        attributes.put("qq_sender/10001", 900);
+        attributes.put("qq_person_id/10001", 900);
         PriorityDecision decision = resolver(sources(), attributes)
                 .resolve(GROUP, "10001", "路人", PriorityAttributes.of("qq_at_bot"));
         assertThat(decision.priority()).isEqualTo(1000);

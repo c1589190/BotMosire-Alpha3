@@ -1,6 +1,7 @@
 # Inbox 总面板 / SSE / 通用来源与优先级设计
 
-> **状态**：已确认（2026-11-10）
+> **状态**：历史（0.0.3）· **部分被取代**（2026-11-12）：0.0.4 设计 §3/§5 取代本文的 N/M 硬上限（改为 1..50 + `maxCharsPerItem`）与「同源续接」语义；面板/SSE/来源通用性/不带 URL 等仍有效。
+> **取代者**：[`2026-11-12-0.0.4-watchdog-delivery-design.md`](2026-11-12-0.0.4-watchdog-delivery-design.md)
 > **需求来源**：本会话用户消息（逐字见 §1 与 `docs/superpowers/DESIGN_RULINGS.md` D-009..D-016）
 > **取代**：`2026-11-09-bma3-foundation-design.md` §8 中 persona 之外的 Inbox 展示/订阅细节；不取代 Inbox 状态机与消息板职责
 > **类型**：项目设计（专题）

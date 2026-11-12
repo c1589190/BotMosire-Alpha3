@@ -80,7 +80,7 @@ class SetConfigToolTest {
             SetConfigTool tool = new SetConfigTool(new ConfigToolContext(root, env, effective::get));
 
             ToolResult result = tool.execute(call(Map.of(
-                    "patch", Map.of("inbox.display.maxMessagesPerItem", 2))));
+                    "patch", Map.of("inbox.display.maxMessagesPerItem", 0))));
 
             assertThat(result.success()).isFalse();
             assertThat(result.code()).isEqualTo("CONFIG_INVALID");

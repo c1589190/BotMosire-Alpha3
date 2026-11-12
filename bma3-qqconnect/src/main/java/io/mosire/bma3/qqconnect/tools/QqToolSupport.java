@@ -32,10 +32,20 @@ final class QqToolSupport {
                         "列出 Bot 账号的 QQ 好友（OneBot get_friend_list）；只读。"),
                 new QqThreadListTool(context),
                 new QqConversationHistoryTool(context),
+                new QqGroupMembersTool(context),
+                new QqGroupMemberInfoTool(context),
+                new QqSearchTool(context),
+                new QqCardViewTool(context),
+                new QqForwardViewTool(context),
+                new QqGroupRequestListTool(context),
+                new QqGroupRequestDecideTool(context),
+                new QqGroupInviteAcceptTool(context),
+                new QqRemoteHistoryTool(context),
                 new QqMessageGetTool(context),
                 new QqConversationReadTool(context),
                 new QqConversationSendTool(context),
                 new QqConversationSendImageTool(context),
+                new QqConversationSendFileTool(context),
                 new QqMediaViewTool(context),
                 new QqReplyTool(context),
                 new QqPrivateSendTool(context),
@@ -100,6 +110,8 @@ final class QqToolSupport {
         var sender = node.putObject("sender");
         sender.put("id", message.inbound().senderId());
         sender.put("name", message.inbound().senderName());
+        sender.put("card", message.inbound().senderCard());
+        sender.put("role", message.inbound().senderRole());
         node.put("text", messageText(message));
         if (includeSegments) {
             String lookupId = lookupId(message);
@@ -110,7 +122,10 @@ final class QqToolSupport {
                 ObjectNode item = segments.addObject();
                 item.put("type", segment.type());
                 item.put("text", segment.text());
-                if (QqMediaSupport.isMedia(segment.type())) {
+                if (QqMediaSupport.isMedia(segment.type())
+                        || "forward".equals(segment.type())
+                        || "json".equals(segment.type())
+                        || "xml".equals(segment.type())) {
                     item.put("fileId", io.mosire.bma3.core.media.MediaId.of(
                             message.inbound().source().format(), lookupId, index).encode());
                 }

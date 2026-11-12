@@ -54,6 +54,16 @@ final class QqMediaSupport {
     }
 
     static Optional<Resolved> resolve(QqToolContext context, String fileId) {
+        Resolved resolved = resolveAny(context, fileId).orElseThrow();
+        if (!isMedia(resolved.segment().type())) {
+            throw new IllegalArgumentException(
+                    "UNSUPPORTED_MEDIA: 该段不是媒体: " + resolved.segment().type());
+        }
+        return Optional.of(resolved);
+    }
+
+    /** Resolves any segment by fileId (media, card or forward); callers decide what they accept. */
+    static Optional<Resolved> resolveAny(QqToolContext context, String fileId) {
         Optional<MediaId> decoded = MediaId.decode(fileId);
         if (decoded.isEmpty()) {
             throw new IllegalArgumentException("INVALID_FILE_ID: " + fileId);
@@ -68,12 +78,7 @@ final class QqMediaSupport {
         if (media.index() >= segments.size()) {
             throw new IllegalArgumentException("MEDIA_NOT_FOUND: 段落序号越界 " + media.index());
         }
-        Segment segment = segments.get(media.index());
-        if (!isMedia(segment.type())) {
-            throw new IllegalArgumentException(
-                    "UNSUPPORTED_MEDIA: 该段不是媒体: " + segment.type());
-        }
-        return Optional.of(new Resolved(segment, fileId));
+        return Optional.of(new Resolved(segments.get(media.index()), fileId));
     }
 
     /** Fresh URL if the platform can still resolve it, otherwise the stored one. */

@@ -14,7 +14,8 @@ public record QqToolContext(
         Path imageRoot,
         QqExtrasStore extras,
         Supplier<QqSendPolicy> sendPolicy,
-        Supplier<QqMediaPolicy> mediaPolicy) {
+        Supplier<QqMediaPolicy> mediaPolicy,
+        io.mosire.bma3.qqconnect.directory.QqDirectoryStore directory) {
 
     public QqToolContext {
         sendPolicy = sendPolicy == null ? QqSendPolicy::defaults : sendPolicy;
@@ -30,10 +31,18 @@ public record QqToolContext(
                 : policy;
     }
 
+    /** Compatibility constructor: no directory cache yet. */
+    public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
+                         ConsumerConversationStore consumers, Path imageRoot,
+                         QqExtrasStore extras, Supplier<QqSendPolicy> sendPolicy,
+                         Supplier<QqMediaPolicy> mediaPolicy) {
+        this(accounts, board, consumers, imageRoot, extras, sendPolicy, mediaPolicy, null);
+    }
+
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,
                          ConsumerConversationStore consumers) {
         this(accounts, board, consumers, Path.of(".").toAbsolutePath().normalize(), null, null,
-                null);
+                null, null);
     }
 
     public QqToolContext(AccountRegistry accounts, MessageBoardStore board,

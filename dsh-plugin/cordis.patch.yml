@@ -8,6 +8,9 @@
         inboxId: bma3
         tokenEnv: BMA3_INBOX_TOKEN
         autoStart: true
+        # 默认 ~/.dsh/storages/bma3-inbox.json；写盘内容只有 sessionId/水位/暂停标志
+        # stateFile: /home/you/.dsh/storages/bma3-inbox.json
+        heartbeatMs: 15000
 
     - id: bma3-preset
       name: '@mosire/bma3-dsh'

@@ -5,15 +5,21 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.mosire.bma3.inbox.core.ControlCommand;
+import io.mosire.bma3.inbox.core.DismissRequest;
+import io.mosire.bma3.inbox.core.DismissResult;
 import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
+import io.mosire.bma3.inbox.core.PluginHeartbeat;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +68,17 @@ public final class InboxHttpServer implements AutoCloseable {
         return boundPort;
     }
 
+    /** True while the HTTP listener is up; used by the watchdog. */
+    public synchronized boolean running() {
+        return server != null;
+    }
+
+    /** Watchdog remediation: stop and rebind the same host/port. */
+    public synchronized void restart() {
+        close();
+        start();
+    }
+
     private void handle(HttpExchange exchange) throws IOException {
         try {
             String path = exchange.getRequestURI().getPath();
@@ -96,6 +113,23 @@ public final class InboxHttpServer implements AutoCloseable {
             if ("ack".equals(parts[4]) && parts.length == 5 && "POST".equals(method)) {
                 AckResponse ack = handleAck(exchange);
                 send(exchange, ack.status(), mapper.writeValueAsString(ack.body()));
+                return;
+            }
+            if ("dismiss".equals(parts[4]) && parts.length == 5 && "POST".equals(method)) {
+                send(exchange, 200, mapper.writeValueAsString(handleDismiss(exchange)));
+                return;
+            }
+            if ("runtime".equals(parts[4]) && parts.length == 5 && "GET".equals(method)) {
+                send(exchange, 200, mapper.writeValueAsString(service.runtimeInfo()));
+                return;
+            }
+            if ("plugin".equals(parts[4]) && parts.length == 5 && "GET".equals(method)) {
+                send(exchange, 200, mapper.writeValueAsString(pluginState()));
+                return;
+            }
+            if ("plugin".equals(parts[4]) && parts.length == 6
+                    && "heartbeat".equals(parts[5]) && "POST".equals(method)) {
+                send(exchange, 200, mapper.writeValueAsString(handleHeartbeat(exchange)));
                 return;
             }
             if ("items".equals(parts[4]) && parts.length == 6 && "GET".equals(method)) {
@@ -208,6 +242,61 @@ public final class InboxHttpServer implements AutoCloseable {
             }
             return new AckResponse(400, Map.of("error", "ack_rejected", "detail", message));
         }
+    }
+
+    /**
+     * Bulk "clear without reading" (D-042). The body is a {@link DismissRequest}; an empty body
+     * means "dismiss the visible panel window, but keep important items".
+     */
+    private DismissResult handleDismiss(HttpExchange exchange) throws IOException {
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        var node = body.length == 0 ? mapper.createObjectNode() : mapper.readTree(body);
+        Set<String> ids = new LinkedHashSet<>();
+        if (node.path("itemIds").isArray()) {
+            node.path("itemIds").forEach(value -> ids.add(value.asText()));
+        }
+        return service.dismiss(new DismissRequest(
+                node.path("scope").asText("visible"),
+                ids,
+                node.path("sourcePrefix").asText(""),
+                node.hasNonNull("priorityBelow") ? node.path("priorityBelow").asInt() : null,
+                node.hasNonNull("priorityAtLeast") ? node.path("priorityAtLeast").asInt() : null,
+                node.hasNonNull("olderThanSeconds") ? node.path("olderThanSeconds").asLong() : null,
+                node.path("limit").asInt(100),
+                node.path("dryRun").asBoolean(false),
+                node.path("allowImportant").asBoolean(false),
+                node.path("reason").asText("")));
+    }
+
+    private Map<String, Object> handleHeartbeat(HttpExchange exchange) throws IOException {
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        var node = body.length == 0 ? mapper.createObjectNode() : mapper.readTree(body);
+        PluginHeartbeat heartbeat = new PluginHeartbeat(
+                node.path("sessionId").asText(""),
+                node.path("bound").asBoolean(false),
+                node.path("sse").asText("unknown"),
+                node.path("lastPushRevision").asLong(0L),
+                node.path("lastMcpStartId").asText(""),
+                node.path("lastError").asText(""),
+                node.path("appliedControlId").asText(""),
+                Instant.now());
+        ControlCommand control = service.pluginHeartbeat(heartbeat);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("control", control);
+        response.put("mcpStartId", service.runtimeInfo().mcpStartId());
+        response.put("pushRevision", service.pushRevision());
+        return response;
+    }
+
+    private Map<String, Object> pluginState() {
+        Map<String, Object> state = new LinkedHashMap<>();
+        PluginHeartbeat heartbeat = service.lastHeartbeat();
+        state.put("heartbeat", heartbeat);
+        state.put("healthy", heartbeat != null && heartbeat.healthy());
+        state.put("control", service.pendingControl());
+        state.put("mcpStartId", service.runtimeInfo().mcpStartId());
+        state.put("pluginSessionId", service.pluginSessionId());
+        return state;
     }
 
     private boolean authorized(HttpExchange exchange) {

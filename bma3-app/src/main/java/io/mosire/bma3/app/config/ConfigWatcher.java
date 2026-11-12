@@ -27,6 +27,9 @@ public final class ConfigWatcher implements AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile String lastSignature;
+    private volatile java.time.Instant lastReloadAt;
+    private volatile String lastReloadError = "";
+    private volatile long reloadCount;
 
     private ConfigWatcher(Path root, Map<String, String> env, Consumer<AppConfig> listener) {
         this.root = root;
@@ -62,9 +65,14 @@ public final class ConfigWatcher implements AutoCloseable {
         try {
             AppConfig config = ConfigLoader.load(root, env);
             listener.accept(config);
+            lastReloadAt = java.time.Instant.now();
+            lastReloadError = "";
+            reloadCount++;
         } catch (ConfigException failure) {
+            lastReloadError = "rejected:" + failure.getMessage();
             LOG.warn("event=config_reload_rejected reason={}", failure.getMessage());
         } catch (RuntimeException failure) {
+            lastReloadError = "failed:" + failure.getClass().getSimpleName();
             LOG.warn("event=config_reload_failed type={}", failure.getClass().getSimpleName());
         }
     }
@@ -85,6 +93,18 @@ public final class ConfigWatcher implements AutoCloseable {
         } catch (Exception failure) {
             return "unreadable";
         }
+    }
+
+    public java.time.Instant lastReloadAt() {
+        return lastReloadAt;
+    }
+
+    public String lastReloadError() {
+        return lastReloadError;
+    }
+
+    public long reloadCount() {
+        return reloadCount;
     }
 
     @Override

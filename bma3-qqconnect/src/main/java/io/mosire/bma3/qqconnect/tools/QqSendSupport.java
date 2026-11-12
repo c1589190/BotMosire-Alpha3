@@ -50,7 +50,9 @@ final class QqSendSupport {
             String state;
             String messageId = "";
             try {
-                var response = client.sendAction(actionName, params).join();
+                var response = client.sendAction(actionName, params)
+                        .orTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                        .join();
                 boolean ok = "ok".equals(response.path("status").asText())
                         && response.path("retcode").asInt(-1) == 0;
                 state = ok ? "SENT" : "FAILED_BEFORE_SEND";

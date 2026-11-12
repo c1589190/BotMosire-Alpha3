@@ -5,7 +5,6 @@ import io.mosire.bma3.core.priority.PriorityAttributes;
 import io.mosire.bma3.core.priority.PriorityRules;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -19,14 +18,14 @@ import java.util.function.Supplier;
  * this message do", and the score is compared against two explicit thresholds
  * ({@code dropBelow}, {@code immediateThreshold}) instead of being overloaded as a boolean.</p>
  *
- * <p>Pattern deltas live in the same attribute map: {@code qq_sender/<qq>} matches the message
- * sender and {@code qq_name/<substring>} matches the sender's display name, so "this person is
- * worth +50 in every group" is one config line rather than a second scoring system.</p>
+ * <p>Per-person deltas live in the same attribute map as {@code qq_person_id/<qq>} — an exact
+ * match on the stable QQ number. Display names are deliberately not score keys (D-048): a nickname
+ * is mutable and ambiguous, so name resolution belongs to the generic search tool, not the priority
+ * formula.</p>
  */
 public final class PriorityResolver {
 
-    public static final String SENDER_PREFIX = "qq_sender/";
-    public static final String NAME_PREFIX = "qq_name/";
+    public static final String PERSON_PREFIX = "qq_person_id/";
 
     private final Supplier<AppConfig.Weighting> weighting;
 
@@ -105,29 +104,19 @@ public final class PriorityResolver {
         return delta;
     }
 
-    /** Adds {@code qq_sender/…} and {@code qq_name/…} rule values that match this message. */
+    /** Adds {@code qq_person_id/<qq>} rule values that match this message's sender. */
     private static int patternDelta(AppConfig.Weighting current, String senderId,
                                     String senderName, List<String> reasons) {
         int delta = 0;
-        String name = senderName == null ? "" : senderName.toLowerCase(Locale.ROOT);
         for (Map.Entry<String, Integer> entry : current.attributes().entrySet()) {
             String key = entry.getKey();
             Integer value = entry.getValue();
             if (key == null || value == null || value == 0) {
                 continue;
             }
-            if (key.startsWith(SENDER_PREFIX)) {
-                String target = key.substring(SENDER_PREFIX.length());
+            if (key.startsWith(PERSON_PREFIX)) {
+                String target = key.substring(PERSON_PREFIX.length());
                 if (!target.isBlank() && target.equals(senderId)) {
-                    delta += value;
-                    reasons.add(key + " " + signed(value));
-                }
-                continue;
-            }
-            if (key.startsWith(NAME_PREFIX)) {
-                String needle = key.substring(NAME_PREFIX.length());
-                if (!needle.isBlank() && !name.isBlank()
-                        && name.contains(needle.toLowerCase(Locale.ROOT))) {
                     delta += value;
                     reasons.add(key + " " + signed(value));
                 }

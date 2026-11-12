@@ -230,45 +230,71 @@ public final class Bma3McpServer implements AutoCloseable {
         return tools.stream().map(AgentTool::name).toList();
     }
 
+    /** True while the front listener is up; used by the watchdog. */
+    public boolean healthy() {
+        return started && frontServer != null;
+    }
+
+    /**
+     * Watchdog remediation: stop the listeners and start them again on the same host/port.
+     *
+     * <p>Unlike {@link #close()}, this does not make the instance permanently closed. In-flight
+     * MCP sessions are dropped, which is the point: the DSH client reconnects and re-lists tools.</p>
+     */
+    public void restart() {
+        synchronized (lifecycleLock) {
+            stopComponents();
+            closed.set(false);
+        }
+        start();
+    }
+
     @Override
     public void close() {
         synchronized (lifecycleLock) {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
-            boolean wasStarted = started;
-            HttpServer front = frontServer;
-            frontServer = null;
-            if (front != null) {
-                try {
-                    front.stop(0);
-                } catch (RuntimeException ignored) {
-                    // 幂等关闭。
-                }
+            stopComponents();
+        }
+    }
+
+    /** Stops listeners/executors without changing the permanent-closed flag. */
+    private void stopComponents() {
+        boolean wasStarted = started;
+        HttpServer front = frontServer;
+        frontServer = null;
+        if (front != null) {
+            try {
+                front.stop(0);
+            } catch (RuntimeException ignored) {
+                // 幂等关闭。
             }
-            AgentToMcpServer internal = internalServer;
-            internalServer = null;
-            if (internal != null) {
-                try {
-                    internal.close();
-                } catch (RuntimeException ignored) {
-                    // 同上。
-                }
+        }
+        AgentToMcpServer internal = internalServer;
+        internalServer = null;
+        if (internal != null) {
+            try {
+                internal.close();
+            } catch (RuntimeException ignored) {
+                // 同上。
             }
-            ExecutorService executor = frontExecutor;
-            frontExecutor = null;
-            if (executor != null) {
-                executor.shutdownNow();
-            }
-            byte[] expected = expectedAuthorization;
-            if (expected != null) {
-                Arrays.fill(expected, (byte) 0);
-                expectedAuthorization = null;
-            }
-            started = false;
-            if (wasStarted) {
-                LOG.info("event=mcp_stopped");
-            }
+        }
+        ExecutorService executor = frontExecutor;
+        frontExecutor = null;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+        byte[] expected = expectedAuthorization;
+        if (expected != null) {
+            Arrays.fill(expected, (byte) 0);
+            expectedAuthorization = null;
+        }
+        started = false;
+        boundPort = -1;
+        internalPort = -1;
+        if (wasStarted) {
+            LOG.info("event=mcp_stopped");
         }
     }
 

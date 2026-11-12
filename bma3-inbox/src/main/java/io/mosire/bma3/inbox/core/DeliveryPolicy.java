@@ -16,4 +16,8 @@ public record DeliveryPolicy(
     public Duration delayFor(boolean important) {
         return important ? importantDelay : normalDelay;
     }
+
+    public static DeliveryPolicy defaults() {
+        return new DeliveryPolicy(300, Duration.ofSeconds(3), Duration.ofSeconds(60));
+    }
 }

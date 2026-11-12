@@ -1,6 +1,6 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**版本 `0.0.3-hotfix7`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**版本 `0.0.4-early`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -11,7 +11,7 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.3-hotfix7`**：Java 21 独立
 
 看到仓库后按这个顺序做，不要先改代码：
 
-1. 下载或编译 `bma3-app-0.0.3-hotfix7.jar`；
+1. 下载或编译 `bma3-app-0.0.4-early.jar`；
 2. 准备运行目录、`config/app.yaml` 和 token 文件；
 3. 启动 jar，确认 MCP 和 Inbox 端口；
 4. 把 `dsh-plugin` link 进目标 DSH profile；
@@ -22,13 +22,13 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.3-hotfix7`**：Java 21 独立
 
 Release 资产（推荐给只看仓库的 Agent）：
 
-<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.3-hotfix7/bma3-app-0.0.3-hotfix7.jar>
+<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.4-early/bma3-app-0.0.4-early.jar>
 
 从源码编译：
 
 ```bash
 ./mvnw -q -pl bma3-app -am package -DskipTests
-ls -lh bma3-app/target/bma3-app-0.0.3-hotfix7.jar
+ls -lh bma3-app/target/bma3-app-0.0.4-early.jar
 ```
 
 要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release jar 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
@@ -52,6 +52,7 @@ server:
   port: 8765
   mcpPath: /mcp
   tokenEnv: BMA3_MCP_TOKEN
+  healthPort: 8766          # /healthz /readyz /watchdog；0=随机
 
 qqconnect:
   accounts:
@@ -74,11 +75,18 @@ inbox:
   inboxId: bma3
   httpPort: 46500
   display:
-    maxMessagesPerItem: 6   # 4..8
-    maxItemsPerPanel: 6     # 4..8
+    maxMessagesPerItem: 6   # 1..50
+    maxItemsPerPanel: 6     # 1..50
     includeOmittedCount: true
+    maxCharsPerItem: 1200   # 单条目字符上限；0=不限（不设总字符上限）
   push:
-    minPriority: -1000      # 低于此分数：进面板但永不唤醒
+    minPriority: -1000      # 已废弃/忽略：所有未被 dropBelow 丢弃的条目都会推送
+    maxFirstPushDelaySeconds: 60
+  dismiss:
+    autoEnabled: false      # watchdog 自动清理低优先 backlog
+    autoBelowPriority: 0
+    autoAfterSeconds: 1800
+    autoMaxPerRound: 200
   retention:
     maxAgeDays: 30
     maxItems: 5000
@@ -89,8 +97,8 @@ weighting:
   immediateThreshold: 300
   dropBelow: -300
   maxPriority: 1000
-  importantDelaySeconds: 1
-  normalDelaySeconds: 30
+  importantDelaySeconds: 3
+  normalDelaySeconds: 60
   sourcePriority:
     "*": 0
     qq_private: 300
@@ -103,8 +111,22 @@ weighting:
     qq_reply_to_bot: 100
     qq_self_name: 60
     qq_command: 100
-    # qq_sender/132843233: 50
-    # qq_name/管理: 40
+    # qq_person_id/132843233: 50   # 稳定 QQ 号；昵称搜索用 qq_search
+
+deployer:
+  qq: ""                 # 组件 DOWN 时用可用账号私聊这个 QQ；空=关闭
+  enabled: false
+
+watchdog:
+  enabled: true
+  intervalSeconds: 10
+  probeTimeoutMs: 2000
+  failureThreshold: 2
+  recoveryCooldownSeconds: 30
+  alertCooldownSeconds: 600
+  pluginHeartbeatTimeoutSeconds: 45
+  diskMinFreeMb: 200
+  readyzCritical: [mcp, inboxHttp, qqAccount, db]
 
 webconnect:
   enabled: true
@@ -124,14 +146,14 @@ webconnect:
 export BMA3_MCP_TOKEN="$(cat /opt/bma3/token)"
 export LLBOT_ACCESS_TOKEN="..."          # 云端 LLBot/OneBot token
 export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium Manager
-java -jar bma3-app-0.0.3-hotfix7.jar --config /opt/bma3/run
+java -jar bma3-app-0.0.4-early.jar --config /opt/bma3/run
 ```
 
 启动日志会打印实际 MCP/health/Inbox 端口；默认配置对应：
 
 - MCP：`http://127.0.0.1:8765/mcp`
 - Inbox HTTP：`http://127.0.0.1:46500`
-- health：启动日志中的随机回环端口
+- health：`http://127.0.0.1:8766/healthz`（liveness）、`/readyz`（readiness）、`/watchdog`（Bearer）
 
 验证 Inbox（Bearer 用 `/opt/bma3/token`）：
 
@@ -162,6 +184,8 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
     tokenFile: /opt/bma3/token
     sessionId: session-...   # 可选；省略时取第一个 idle 会话
     autoStart: true
+    # stateFile: /home/you/.dsh/storages/bma3-inbox.json  # 默认即此路径
+    heartbeatMs: 15000
 
 - id: bma3-persona
   disabled: true   # legacy; 人设现在由 bma3-preset 内的 self loader 提供
@@ -184,7 +208,7 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 
 `tokenFile` 必须是 0600 的 Inbox Bearer 文件。一个 inbox 只有一条 SSE；source 只是面板里的条目，不存在 per-source 订阅。普通群消息是否进入面板由服务端统一优先级决定（群内 @/命令等信号会提高优先级），不再需要 `minPriority`。
 
-插件连上后自动注入受限面板；需要指定接收会话时调用 `bma3_inbox_bind`，用 `bma3_inbox_status` 查看连接/游标，`bma3_inbox_ack` 手动推进读游标（正常注入成功后插件会自动 ack）。唤醒文本以 `[INBOX_PANEL]` 开头，只带受限窗口和关系摘要。
+插件连上后自动注入受限面板；需要指定接收会话时调用 `bma3_inbox bind`，绑定会**落盘**，DSH 重启后插件会 `agents.resume` 恢复该会话并自动启动 SSE。`bma3_inbox status` 查看连接/游标/push 水位/心跳；`bma3_inbox ack` 手动推进读游标（正常注入成功后插件会自动按 itemIds ack）。唤醒文本以 `[INBOX_PANEL]` 开头，只带受限窗口和关系摘要；同源推送后又有新消息时另开一条并标「（消息更新活跃）」。
 
 ### 4. 添加 BMA3 MCP（完整工具需要）
 
@@ -216,16 +240,20 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 加载后可用的工具组：
 
 - QQ 账号：`qq_account_list/status`（`qq_account_list` 带 `connected`/`lastError`/`self`）
-- 会话导航：`qq_thread_list`、`qq_conversation_history`、`qq_message_get`
-- 读写：`qq_conversation_read/ack/send/send_image`、`qq_reply`、`qq_private_send`
-- 媒体：`qq_media_view`（按 `fileId` 查看图片/文件；文本可内联，图片等落到 `downloads/` 返回路径）
+- 会话导航：`qq_thread_list`、`qq_conversation_history`、`qq_message_get`、`qq_search`
+- 读写：`qq_conversation_read/ack/send/send_image/send_file`、`qq_reply`、`qq_private_send`
+- 媒体/富消息：`qq_media_view`、`qq_card_view`（json/xml 卡片、群邀请 groupId+sequence）、`qq_forward_view`（合并转发一层展开、分页）
+- 群关系：`qq_group_list`、`qq_group_members`（群名片/角色/头衔）、`qq_group_member_info`、`qq_group_request_list/decide`、`qq_group_invite_accept`
+- 平台历史：`qq_remote_history`（只读穿透，count 1..1000；真实 LLBot 对 1000 不稳定，自动降级 1000→300→100 并记录 attempts）
 - 用户备注：`qq_user_note_list/upsert`（只存别名/标签/备注，不存分数）
-- 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；来源规则与属性加分都在这里）
+- 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；`qq_person_id/<qq>` 是稳定的人维度加分键）
 - 目录：`qq_group_list`、`qq_friend_list`
-- Inbox：`inbox_status/list/items/get/ack/wait`（ack 支持 itemIds / 1-based 序号 / 范围 + revision 校验）
+- Inbox：`inbox_status/list/items/get/ack/dismiss/wait`（ack 幂等；dismiss 支持 `visible/filter/ids`、`priorityBelow`、`olderThanSeconds`、`dryRun`）
+- Watchdog：`bma3_watchdog_status/probe/remediate`
 - 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`
 
 `qq_conversation_send_image` 的 `imagePath` 必须在 `dataDir` 下，适合把登录 QR 截图发给用户。
+`qq_conversation_send_file` 先尝试 `base64://`，再试绝对路径；若 LLBot 在另一台机器，可用 bash 把文件放到 QQ 机后传 `providerPath`（不在 BMA3 开文件服务器）。
 
 ### 5. 常见问题
 
@@ -247,8 +275,8 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 ## 构建与测试
 
 ```bash
-./mvnw -q test                 # Java 19 suites / 50 tests（1 个真实浏览器 smoke 默认跳过）
-(cd dsh-plugin && npm test)    # 14 tests
+./mvnw -q test                 # Java 103 tests（102 pass + 1 个真实浏览器 smoke 默认跳过）
+(cd dsh-plugin && npm test)    # 24 tests
 bash packaging/smoke.sh        # jlink/jpackage app-image + /healthz smoke
 ```
 

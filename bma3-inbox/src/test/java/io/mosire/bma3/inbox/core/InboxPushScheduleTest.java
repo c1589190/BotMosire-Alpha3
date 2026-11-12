@@ -123,32 +123,38 @@ class InboxPushScheduleTest {
     }
 
     @Test
-    void aBusySourceDoesNotPostponeItsOwnBatch() {
+    void aSameSourceAppendResetsItsOwnDeadline() {
         InboxService service = service();
-        long start = System.nanoTime();
         append(service, "qq_group/1", 200, "第一条");
         sleep(250L);
+        long before = System.nanoTime();
         append(service, "qq_group/1", 200, "第二条");
 
         InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
-        long elapsedMillis = Duration.ofNanos(System.nanoTime() - start).toMillis();
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - before).toMillis();
 
         assertThat(pushed).isNotNull();
         assertThat(elapsedMillis)
-                .as("同一个来源继续发消息只是合并窗口，不能把批次时钟往后推")
-                .isLessThan(600L);
+                .as("同源新消息要把该条目的等待重置，而不是沿用第一条的锚点")
+                .isGreaterThanOrEqualTo(300L);
     }
 
     @Test
-    void itemsBelowThePushFilterStayVisibleButNeverWake() {
+    void lowPriorityItemsStillPushAfterTheNormalDelay() {
+        // The old pushMinPriority hard mute is gone: an item that survived dropBelow must wake
+        // after the normal delay even when its score is below the immediate threshold.
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
         SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("filter.db"));
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, IMMEDIATE_THRESHOLD, 30, 5000));
-        append(service, "qq_group/1", 200, "太低，不推");
+        append(service, "qq_group/1", 200, "低优先也要推");
 
-        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(500))).isNull();
-        assertThat(service.panel().items()).as("工具侧仍然看得到").hasSize(1);
+        assertThat(service.awaitPush(service.pushRevision(), Duration.ofMillis(150)))
+                .as("还没到 normalDelay，不能提前推")
+                .isNull();
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        assertThat(pushed).as("normalDelay 到点后必须推，而不是永远静音").isNotNull();
+        assertThat(service.panel().items()).hasSize(1);
     }
 
     @Test
@@ -202,9 +208,8 @@ class InboxPushScheduleTest {
     }
 
     @Test
-    void aPushedItemIsReopenedAndContinuedInsteadOfDuplicated() {
-        // 同一来源只保留一条：新消息到来时，若存在"已推送但未确认"的旧条目，
-        // 就解冻它、给新消息打「续」标、并进去 —— 面板里不会出现同源两条。
+    void aPushedItemIsFrozenAndTheNextMessageOpensASecondItem() {
+        // 1B：推送后不再续接；同源新消息另开一条，第二条带「消息更新活跃」标记。
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
         SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("frozen.db"));
         InboxService service = new InboxService(store, policy, "bma3",
@@ -212,52 +217,114 @@ class InboxPushScheduleTest {
         append(service, "qq_private/1", 300, "第一条");
         InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
         long seen = pushed.revision();
-        String itemId = pushed.items().getFirst().id();
-        assertThat(service.item(itemId).frozen()).as("推送后先冻结").isTrue();
+        String firstId = pushed.items().getFirst().id();
+        assertThat(service.item(firstId).frozen()).as("推送后先冻结").isTrue();
 
-        InboxItem continued = service.appendOrMerge(AppendItem.of(
+        service.appendOrMerge(AppendItem.of(
                 SourceView.of("qq_private/1", "QQ私聊 1"),
                 new InboxEntry(2, Instant.now(), "u", "第二条", List.of()), 300, Instant.now()));
 
-        assertThat(continued.id()).as("同来源不新开条目").isEqualTo(itemId);
-        assertThat(service.items()).hasSize(1);
-        assertThat(continued.frozen()).as("续上后重新变为未冻结").isFalse();
-        assertThat(continued.totalMessages()).isEqualTo(2);
-        assertThat(continued.entries().getLast().markers())
-                .as("续上的消息带续标").contains(InboxService.CONTINUATION_MARKER);
+        assertThat(service.items()).as("同源允许两条").hasSize(2);
+        InboxItem first = service.item(firstId);
+        assertThat(first.frozen()).isTrue();
+        InboxItem second = service.items().stream()
+                .filter(item -> !item.id().equals(firstId)).findFirst().orElseThrow();
+        assertThat(second.continued()).as("第二条带「消息更新活跃」").isTrue();
+        assertThat(second.frozen()).isFalse();
 
-        // 内容变了：拿旧 revision ack 会被拒（要求重新看一遍），随后按新 revision 能确认
-        assertThatThrownBy(() -> service.ackItems(Set.of(itemId), seen))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("REVISION_CONFLICT");
-        service.ackItems(Set.of(itemId), service.panel().revision());
+        // ack 第一条时同源已经有第二条：这是设计允许的，不应该 409。
+        service.ackItems(Set.of(firstId), seen);
+        assertThat(service.item(firstId).status()).isEqualTo(ItemStatus.ACKED);
+        assertThat(service.items()).hasSize(1);
+    }
+
+    @Test
+    void ackingAnAlreadyAckedItemIsAnIdempotentNoOp() {
+        InboxService service = service();
+        append(service, "qq_group/1", 300, "一条");
+        InboxPanel pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+        String id = pushed.items().getFirst().id();
+        service.ackItems(Set.of(id), pushed.revision());
+        InboxAck again = service.ackItems(Set.of(id), pushed.revision());
+        assertThat(again.remaining()).isZero();
         assertThat(service.items()).isEmpty();
     }
 
     @Test
-    void consolidateSourcesFoldsDuplicateUnackedItemsIntoTheNewest() {
+    void aRestartDoesNotReplayFrozenItems() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("consolidate.db"));
-        // 旧数据形态：同来源三条未确认条目（模拟改动前写下的数据）
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("restart.db"));
+        InboxService first = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        append(first, "qq_group/1", 300, "重启前已推送");
+        InboxPanel pushed = first.awaitPush(first.pushRevision(), Duration.ofSeconds(2));
+        long pushRevision = first.pushRevision();
+        assertThat(pushed).isNotNull();
+        first.close();
+
+        InboxService restarted = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
+        assertThat(restarted.pushRevision()).isEqualTo(pushRevision);
+        assertThat(restarted.awaitPush(restarted.pushRevision(), Duration.ofMillis(250)))
+                .as("已冻结未确认条目重启后不自动重推")
+                .isNull();
+        assertThat(restarted.panel().items()).hasSize(1);
+    }
+
+    @Test
+    void dismissClearsLowPriorityItemsAndProtectsImportantOnes() {
+        InboxService service = service();
+        append(service, "qq_group/1", 100, "低优先");
+        append(service, "qq_private/2", 350, "重要");
+        DismissResult result = service.dismiss(new DismissRequest("filter", Set.of(), "",
+                1000, null, null, 100, false, false, "test"));
+        assertThat(result.dismissed()).isEqualTo(1);
+        assertThat(result.skippedImportant()).isEqualTo(1);
+        assertThat(service.items()).extracting(InboxItem::source)
+                .containsExactly("qq_private/2");
+    }
+
+    @Test
+    void dismissDryRunDoesNotChangeState() {
+        InboxService service = service();
+        append(service, "qq_group/1", 100, "低优先");
+        DismissResult result = service.dismiss(new DismissRequest("visible", Set.of(), "",
+                null, null, null, 100, true, false, "preview"));
+        assertThat(result.matched()).isEqualTo(1);
+        assertThat(result.dismissed()).isZero();
+        assertThat(service.items()).hasSize(1);
+    }
+
+    @Test
+    void panelTruncatesPerItemTextToTheConfiguredBudget() {
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("budget.db"));
+        InboxService service = new InboxService(store, policy, "bma3",
+                () -> new InboxRuntime(6, 6, true, -1000, 30, 5000, 100, 60,
+                        Integer.MIN_VALUE, 1800, 200));
+        append(service, "qq_group/1", 300, "长".repeat(800));
+        PanelItem item = service.panel().items().getFirst();
+        assertThat(item.truncatedChars()).isPositive();
+        assertThat(item.entries().getFirst().render().length())
+                .as("单条目注入文本受 maxCharsPerItem 约束")
+                .isLessThanOrEqualTo(160);
+    }
+
+    @Test
+    void sameSourceDuplicatesAreAllowedAndNeverConsolidated() {
+        DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
+        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("duplicates.db"));
         for (int round = 1; round <= 3; round++) {
             InboxService service = new InboxService(store, policy, "bma3",
                     () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
             service.append(AppendItem.of(SourceView.of("qq_private/1", "QQ私聊 1"),
-                    new InboxEntry(round, Instant.now().plusSeconds(round), "u", "第 " + round + " 条",
-                            List.of()), 300, Instant.now()));
+                    new InboxEntry(round, Instant.now().plusSeconds(round), "u",
+                            "第 " + round + " 条", List.of()), 300, Instant.now()));
             service.close();
         }
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
-        // 构造时已经跑过一次统一合并
-        assertThat(service.items()).hasSize(1);
-        InboxItem survivor = service.items().getFirst();
-        assertThat(survivor.totalMessages()).isEqualTo(3);
-        assertThat(survivor.continued()).as("合并后的条目带续接标记").isTrue();
-        assertThat(survivor.entries()).extracting(InboxEntry::text)
-                .containsExactly("第 1 条", "第 2 条", "第 3 条");
-        assertThat(service.list().getFirst().continued()).isTrue();
-        assertThat(service.consolidateSources()).as("再跑一次没有可合并的").isZero();
+        assertThat(service.items()).as("同源三条未确认条目合法保留").hasSize(3);
     }
 
     @Test

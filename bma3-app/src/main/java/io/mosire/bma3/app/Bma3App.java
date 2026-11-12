@@ -31,7 +31,9 @@ import io.mosire.bma3.inbox.tools.InboxTools;
 import io.mosire.bma3.qqconnect.account.AccountConfig;
 import io.mosire.bma3.qqconnect.account.AccountEvent;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
+import io.mosire.bma3.qqconnect.directory.QqDirectoryStore;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
+import io.mosire.bma3.qqconnect.tools.QqDeployerNotifier;
 import io.mosire.bma3.qqconnect.tools.QqExtrasStore;
 import io.mosire.bma3.qqconnect.tools.QqSendPolicy;
 import io.mosire.bma3.qqconnect.tools.QqSignalExtractor;
@@ -41,6 +43,16 @@ import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqTools;
 import io.mosire.bma3.webconnect.BrowserOptions;
 import io.mosire.bma3.webconnect.BrowserService;
+import io.mosire.bma3.watchdog.JsonWatchdogStore;
+import io.mosire.bma3.watchdog.WatchdogEngine;
+import io.mosire.bma3.watchdog.probe.Probes;
+import io.mosire.bma3.watchdog.remediation.DeployerAlertListener;
+import io.mosire.bma3.watchdog.remediation.Remediations;
+import io.mosire.bma3.watchdog.spi.Health;
+import io.mosire.bma3.watchdog.spi.ProbeResult;
+import io.mosire.bma3.watchdog.spi.WatchdogOptions;
+import io.mosire.bma3.watchdog.task.Tasks;
+import io.mosire.bma3.watchdog.tool.WatchdogTools;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,7 +62,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,13 +85,16 @@ public final class Bma3App implements AutoCloseable {
     private final BrowserService browser;
     private final QqExtrasStore qqExtras;
     private final ConfigWatcher watcher;
+    private final WatchdogEngine watchdog;
+    private final QqDirectoryStore directory;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
                     SqliteInboxStore inboxStore, InboxService inboxService,
                     HealthServer health, InboxHttpServer inboxHttp,
                     AccountRegistry accounts, Bma3McpServer mcp,
                     BrowserService browser, QqExtrasStore qqExtras,
-                    ConfigWatcher watcher) {
+                    ConfigWatcher watcher, WatchdogEngine watchdog,
+                    QqDirectoryStore directory) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -88,6 +106,8 @@ public final class Bma3App implements AutoCloseable {
         this.browser = browser;
         this.qqExtras = qqExtras;
         this.watcher = watcher;
+        this.watchdog = watchdog;
+        this.directory = directory;
     }
 
     public static Bma3App start(AppConfig config) {
@@ -112,41 +132,80 @@ public final class Bma3App implements AutoCloseable {
                 config.dataDir().resolve("bot.db"));
         SqliteInboxStore inboxStore = new SqliteInboxStore(
                 config.dataDir().resolve("inbox.db"));
-        AppConfig.Weighting weighting = config.weighting();
+        QqDirectoryStore directory = new QqDirectoryStore(
+                config.dataDir().resolve("qq-directory.db"));
         AtomicReference<AppConfig> current = new AtomicReference<>(config);
         AtomicReference<RuntimePolicy> runtime =
                 new AtomicReference<>(RuntimePolicy.from(config));
         SourceLabels sourceLabels = SourceLabels.builder()
-                .register(new QqSourceLabeler()).build();
+                .register(new QqSourceLabeler(() -> directory)).build();
         SourceKeyer sourceKeyer = new QqSourceKeyer();
         PriorityResolver priorities = new PriorityResolver(() -> runtime.get().weighting());
-        DeliveryPolicy deliveryPolicy = new DeliveryPolicy(
-                weighting.immediateThreshold(),
-                Duration.ofSeconds(weighting.importantDelaySeconds()),
-                Duration.ofSeconds(weighting.normalDelaySeconds()));
+        Supplier<DeliveryPolicy> deliveryPolicy = () -> {
+            var weight = runtime.get().weighting();
+            return new DeliveryPolicy(weight.immediateThreshold(),
+                    Duration.ofSeconds(weight.importantDelaySeconds()),
+                    Duration.ofSeconds(weight.normalDelaySeconds()));
+        };
         InboxService inboxService = new InboxService(
                 inboxStore, deliveryPolicy, config.inbox().inboxId(), () -> {
                     var policy = runtime.get();
+                    var dismiss = policy.dismiss();
                     return new io.mosire.bma3.inbox.core.InboxRuntime(
                             policy.display().maxMessagesPerItem(),
                             policy.display().maxItemsPerPanel(),
                             policy.display().includeOmittedCount(),
                             policy.push().minPriority(),
                             policy.retention().maxAgeDays(),
-                            policy.retention().maxItems());
+                            policy.retention().maxItems(),
+                            policy.display().maxCharsPerItem(),
+                            policy.push().maxFirstPushDelaySeconds(),
+                            dismiss.autoEnabled() ? dismiss.autoBelowPriority()
+                                    : Integer.MIN_VALUE,
+                            dismiss.autoAfterSeconds(),
+                            dismiss.autoMaxPerRound());
                 });
-        HealthServer health = new HealthServer();
-        InboxHttpServer inboxHttp = new InboxHttpServer(
-                config.server().host(), config.inbox().httpPort(),
-                config.inbox().inboxId(), mcpToken, inboxService);
+        inboxService.setMcpStartId("mcp-" + UUID.randomUUID().toString().substring(0, 8));
+        if (config.inbox().push().minPriority() > -1000) {
+            LOG.warn("event=inbox_push_min_priority_ignored value={} hint={}",
+                    config.inbox().push().minPriority(),
+                    "minPriority 不再硬静音；所有未被 weighting.dropBelow 丢弃的条目都会推送");
+        }
+
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
         AtomicReference<AccountRegistry> registry = new AtomicReference<>();
         AccountRegistry accounts = new AccountRegistry(event -> ingest(board, inboxService,
-                priorities, sourceKeyer, registry.get(), current, qqExtras, sourceLabels, event));
+                priorities, sourceKeyer, registry.get(), current, qqExtras, sourceLabels,
+                directory, event));
         registry.set(accounts);
+        QqToolContext qqContext = new QqToolContext(
+                accounts, board, board, config.dataDir(), qqExtras,
+                () -> {
+                    var send = runtime.get().send();
+                    return QqSendPolicy.from(send.maxTextChars(), send.overflow());
+                },
+                () -> {
+                    var media = runtime.get().media();
+                    Path dir = media.dir().isBlank()
+                            ? config.dataDir().resolve("downloads") : Path.of(media.dir());
+                    return new io.mosire.bma3.qqconnect.tools.QqMediaPolicy(dir,
+                            media.maxInlineBytes(), media.maxDownloadBytes(),
+                            Duration.ofSeconds(media.timeoutSeconds()));
+                }, directory);
+
+        AtomicReference<WatchdogEngine> watchdogRef = new AtomicReference<>();
+        HealthServer health = new HealthServer(config.server().host(),
+                config.server().healthPort(), mcpToken, () -> {
+                    WatchdogEngine engine = watchdogRef.get();
+                    return engine == null ? null : engine.snapshot();
+                });
+        InboxHttpServer inboxHttp = new InboxHttpServer(
+                config.server().host(), config.inbox().httpPort(),
+                config.inbox().inboxId(), mcpToken, inboxService);
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
+        WatchdogEngine watchdog = null;
         try {
             inboxHttp.start();
             List<AccountConfig> resolved = resolveAccounts(config, env);
@@ -158,26 +217,17 @@ public final class Bma3App implements AutoCloseable {
                 current.set(next);
                 runtime.set(RuntimePolicy.from(next));
             });
+            ConfigWatcher activeWatcher = watcher;
 
             ConfigToolContext configTools = new ConfigToolContext(configRoot, env, current::get);
+            watchdog = new WatchdogEngine(() -> watchdogOptions(current.get()),
+                    new JsonWatchdogStore(config.dataDir().resolve("watchdog")));
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
-            tools.addAll(QqTools.all(new QqToolContext(
-                    accounts, board, board, config.dataDir(), qqExtras,
-                    () -> {
-                        var send = runtime.get().send();
-                        return QqSendPolicy.from(send.maxTextChars(), send.overflow());
-                    },
-                    () -> {
-                        var media = runtime.get().media();
-                        Path dir = media.dir().isBlank()
-                                ? config.dataDir().resolve("downloads") : Path.of(media.dir());
-                        return new io.mosire.bma3.qqconnect.tools.QqMediaPolicy(dir,
-                                media.maxInlineBytes(), media.maxDownloadBytes(),
-                                Duration.ofSeconds(media.timeoutSeconds()));
-                    })));
+            tools.addAll(QqTools.all(qqContext));
             tools.addAll(InboxTools.all(inboxService));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
+            tools.addAll(WatchdogTools.all(watchdog));
             if (config.webconnect().enabled()) {
                 browser = new BrowserService(new BrowserOptions(
                         config.webconnect().binary(),
@@ -189,12 +239,61 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(browser.tools());
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.3-hotfix7", tools)
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.4-early", tools)
                     .authHint(config.server().tokenEnv());
             mcp.start();
+
+            watchdog.addProbe(Probes.process())
+                    .addProbe(Probes.disk(config.dataDir()))
+                    .addProbe(Probes.db(board::ping, inboxStore::ping))
+                    .addProbe(Probes.named("directory", () -> directory.ping()
+                            ? ProbeResult.up("directory", "SELECT 1")
+                            : ProbeResult.down("directory", "DB_UNAVAILABLE", "SELECT 1 failed")))
+                    .addProbe(Probes.inboxHttp(config.server().host(), inboxHttp.boundPort(),
+                            config.inbox().inboxId(), mcpToken, inboxHttp::running))
+                    .addProbe(Probes.inboxBacklog(inboxService, 120_000L))
+                    .addProbe(Probes.mcp(mcp))
+                    .addProbe(Probes.qqAccount(accounts))
+                    .addProbe(Probes.qqZombie(accounts))
+                    .addProbe(Probes.dshPlugin(inboxService,
+                            Duration.ofSeconds(config.watchdog()
+                                    .pluginHeartbeatTimeoutSeconds())))
+                    .addProbe(Probes.webconnect(config.webconnect().enabled(),
+                            config.webconnect().binary()))
+                    .addProbe(Probes.named("config", () -> {
+                        if (activeWatcher.lastReloadError().isBlank()) {
+                            return ProbeResult.up("config", "reload ok",
+                                    Map.of("reloads",
+                                            Long.toString(activeWatcher.reloadCount())));
+                        }
+                        return ProbeResult.degraded("config", "RELOAD_REJECTED",
+                                activeWatcher.lastReloadError());
+                    }));
+            watchdog.addRemediation(Remediations.reconnectQq(accounts))
+                    .addRemediation(Remediations.restartInboxHttp(inboxHttp))
+                    .addRemediation(Remediations.restartMcp(mcp))
+                    .addRemediation(Remediations.nudgePlugin(inboxService));
+            watchdog.addTask(Tasks.autoDismiss(inboxService, Duration.ofSeconds(60)));
+            Consumer<String> deployerAlert = text -> {
+                AppConfig latest = current.get();
+                if (!latest.deployer().configured()) {
+                    return;
+                }
+                new QqDeployerNotifier(qqContext, latest.deployer().qq(), true).send(text);
+            };
+            watchdog.onEvent(new DeployerAlertListener(deployerAlert,
+                    Duration.ofSeconds(config.watchdog().alertCooldownSeconds()),
+                    config.watchdog().enabled()));
+            watchdog.start();
+            watchdogRef.set(watchdog);
+
             return new Bma3App(config, board, inboxStore, inboxService, health,
-                    inboxHttp, accounts, mcp, browser, qqExtras, watcher);
+                    inboxHttp, accounts, mcp, browser, qqExtras, watcher, watchdog,
+                    directory);
         } catch (RuntimeException failure) {
+            if (watchdog != null) {
+                watchdog.close();
+            }
             if (mcp != null) {
                 mcp.close();
             }
@@ -204,6 +303,7 @@ public final class Bma3App implements AutoCloseable {
             if (watcher != null) {
                 watcher.close();
             }
+            directory.close();
             accounts.close();
             qqExtras.close();
             inboxHttp.close();
@@ -212,6 +312,22 @@ public final class Bma3App implements AutoCloseable {
             board.close();
             throw failure;
         }
+    }
+
+    private static WatchdogOptions watchdogOptions(AppConfig config) {
+        var watchdog = config.watchdog();
+        return new WatchdogOptions(
+                watchdog.enabled(),
+                Duration.ofSeconds(watchdog.intervalSeconds()),
+                Duration.ofMillis(watchdog.probeTimeoutMs()),
+                watchdog.failureThreshold(),
+                Duration.ofSeconds(watchdog.recoveryCooldownSeconds()),
+                Duration.ofSeconds(watchdog.alertCooldownSeconds()),
+                config.dataDir().resolve("watchdog"),
+                watchdog.readyzCritical(),
+                200,
+                Duration.ofSeconds(watchdog.pluginHeartbeatTimeoutSeconds()),
+                watchdog.diskMinFreeMb() * 1024L * 1024L);
     }
 
     /**
@@ -223,7 +339,7 @@ public final class Bma3App implements AutoCloseable {
                                PriorityResolver priorities, SourceKeyer sourceKeyer,
                                AccountRegistry accounts, AtomicReference<AppConfig> current,
                                QqExtrasStore extras, SourceLabels sourceLabels,
-                               AccountEvent accountEvent) {
+                               QqDirectoryStore directory, AccountEvent accountEvent) {
         OneBotEvent event = accountEvent.event();
         SourceAddress source = event.source(accountEvent.accountId());
         SourceView view = sourceLabels.view(source);
@@ -253,12 +369,15 @@ public final class Bma3App implements AutoCloseable {
                 event.segments(),
                 Direction.INBOUND,
                 senderId,
-                event.senderName()));
+                event.senderName(),
+                event.senderCard(),
+                event.senderRole()));
         if (!appended.created()) {
             return;
         }
         var note = extras.note(accountEvent.accountId(), senderId).orElse(null);
-        InboxEntry entry = entry(event, appended.message().localSeq(), note);
+        InboxEntry entry = entry(event, appended.message().localSeq(), note,
+                accountEvent.accountId(), directory);
         inboxService.appendOrMerge(AppendItem.of(view, entry, decision.priority(), Instant.now()));
     }
 
@@ -296,14 +415,26 @@ public final class Bma3App implements AutoCloseable {
     }
 
     private static InboxEntry entry(OneBotEvent event, long localSeq,
-                                    QqExtrasStore.UserNote note) {
-        String sender = event.senderName() == null || event.senderName().isBlank()
-                ? Long.toString(event.userId()) : event.senderName();
+                                    QqExtrasStore.UserNote note, String accountId,
+                                    QqDirectoryStore directory) {
+        String sender = event.displayName().isBlank()
+                ? Long.toString(event.userId()) : event.displayName();
         if (note != null && !note.displayName().isBlank()) {
             sender = note.displayName();
         }
         StringBuilder body = new StringBuilder();
         List<String> markers = new ArrayList<>();
+        if (!event.senderCard().isBlank() && !event.senderName().isBlank()
+                && !event.senderCard().equals(event.senderName())) {
+            markers.add("[昵称:" + event.senderName() + "]");
+        }
+        if (event.groupId() > 0L && directory != null) {
+            directory.member(accountId, Long.toString(event.groupId()),
+                            Long.toString(event.userId()))
+                    .map(QqDirectoryStore.Member::title)
+                    .filter(title -> !title.isBlank())
+                    .ifPresent(title -> markers.add("[头衔:" + title + "]"));
+        }
         for (var segment : event.segments()) {
             String type = segment.type();
             if ("text".equals(type)) {
@@ -325,6 +456,11 @@ public final class Bma3App implements AutoCloseable {
                 case "record" -> markers.add("[语音]");
                 case "video" -> markers.add("[视频]");
                 case "forward" -> markers.add("[合并转发]");
+                case "json", "xml" -> {
+                    String title = segment.data("title");
+                    markers.add(title == null || title.isBlank()
+                            ? "[卡片]" : "[卡片] " + title);
+                }
                 default -> markers.add("[" + type + "]");
             }
         }
@@ -373,11 +509,17 @@ public final class Bma3App implements AutoCloseable {
 
     @Override
     public void close() {
+        if (watchdog != null) {
+            watchdog.close();
+        }
         if (browser != null) {
             browser.close();
         }
         if (qqExtras != null) {
             qqExtras.close();
+        }
+        if (directory != null) {
+            directory.close();
         }
         if (watcher != null) {
             watcher.close();

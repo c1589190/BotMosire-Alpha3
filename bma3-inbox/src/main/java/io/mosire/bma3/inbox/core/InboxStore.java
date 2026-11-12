@@ -18,14 +18,17 @@ public interface InboxStore extends AutoCloseable {
 
     Optional<InboxItem> item(String id);
 
-    /** The current unread item for one thread/source, if any. */
+    /** The current open (not yet pushed) item for one thread/source, if any. */
     Optional<InboxItem> activeForSource(String source);
 
-    /** Drops items that were merged into another item of the same source. */
-    void delete(List<String> itemIds);
+    /**
+     * Whether this source already has a pushed-but-unacked item. A new item created in that state
+     * is marked {@code continued} so the panel can say "（消息更新活跃）".
+     */
+    boolean hasUnackedFrozenForSource(String source);
 
-    /** Newest pushed, still-unacked item for one source; the one a new message should continue. */
-    Optional<InboxItem> reopenableForSource(String source);
+    /** Drops rows (used by retention/explicit cleanup only). */
+    void delete(List<String> itemIds);
 
     List<InboxItem> items();
 
@@ -46,6 +49,19 @@ public interface InboxStore extends AutoCloseable {
     long ackedRevision();
 
     void saveAckedRevision(long revision);
+
+    /** Monotonic push revision, persisted so a restart does not replay frozen items. */
+    long pushRevision();
+
+    void savePushRevision(long revision);
+
+    /** Free-form text state (plugin session id, desired control id, …). */
+    String state(String key);
+
+    void setState(String key, String value);
+
+    /** Cheap liveness check used by the watchdog. */
+    boolean ping();
 
     @Override
     void close();

@@ -2,69 +2,105 @@ package io.mosire.bma3.inbox.core;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
  * Single-inbox aggregate panel. It owns display windows and revisions, not message fact.
  *
- * <p>Two rules from the operator shape everything here:</p>
+ * <p>0.0.4 delivery model (D-043..D-045):</p>
  * <ul>
- *   <li><b>Every item is acked independently.</b> The global revision cursor is only an
- *       observation ("how far the panel has been read"), never a visibility switch.</li>
- *   <li><b>Pushes are batched by score.</b> Items at/above {@code importantThreshold} push after
- *       the short delay, everything else after the batch delay, anchored on the earliest pending
- *       item; after a push round the clock resets and the remaining/new items are re-sorted and
- *       re-scheduled from that moment.</li>
+ *   <li><b>One open item per source</b>; once an item is pushed it is frozen and a later message
+ *       opens a new item. Two items of the same source are legal and expected.</li>
+ *   <li><b>The push revision is durable</b>: {@code pushRevision} and {@code frozen_revision} are
+ *       persisted, so a Java restart does not replay items that were already handed out.</li>
+ *   <li><b>Ack is idempotent</b>: acking an already-acked item is a no-op 200, not an error.</li>
+ *   <li><b>Dismiss is the "clear without reading" path</b>: filter-based bulk ack that never
+ *       deletes rows and protects important items by default.</li>
  * </ul>
  */
 public final class InboxService {
 
     private static final int PURGE_EVERY_APPENDS = 100;
+    private static final int MAX_RECENT_ERRORS = 20;
+    private static final int MAX_DISMISS_PREVIEW = 50;
 
     private final InboxStore store;
-    private final DeliveryPolicy policy;
+    private final Supplier<DeliveryPolicy> policy;
     private final String inboxId;
     private final Supplier<InboxRuntime> runtime;
+    private final String processId = "inbox-" + UUID.randomUUID().toString().substring(0, 8);
+    private final long startedAtEpochMillis = System.currentTimeMillis();
+
     private long panelRevision;
     private long pushRevision;
     private long ackedRevision;
     private boolean closed;
     private int appendsSincePurge;
-    /** itemId -> the item revision that was already handed to a push. */
-    private final Map<String, Integer> pushedItems = new HashMap<>();
+
     /**
-     * itemId -> when this item first started owing a push. Anchoring on the <b>first</b> message is
-     * what makes "a busy source cannot postpone its own batch" true: merging only refreshes
-     * {@code updatedAt}, so that field must not be the anchor.
+     * itemId -> when this item last became due. A same-source append <b>resets</b> it (D-044);
+     * different items still race on the earliest deadline.
      */
     private final Map<String, Instant> pendingSince = new HashMap<>();
+    /** itemId -> first time this item owed a push; used by the first-push hard cap. */
+    private final Map<String, Instant> pendingFirstSeen = new HashMap<>();
+
+    private final AtomicLong ackConflicts;
+    private final AtomicLong pushes;
+    private final AtomicLong repushes;
+    private final AtomicLong dismissed;
+    private final Deque<String> recentErrors = new ArrayDeque<>();
+
+    private volatile String mcpStartId = "";
+    private PluginHeartbeat lastHeartbeat;
+    private ControlCommand pendingControl;
+    private long controlSequence;
 
     public InboxService(InboxStore store, DeliveryPolicy policy) {
-        this(store, policy, "bma3");
+        this(store, () -> policy, "bma3", InboxRuntime::defaults);
     }
 
     public InboxService(InboxStore store, DeliveryPolicy policy, String inboxId) {
-        this(store, policy, inboxId, InboxRuntime::defaults);
+        this(store, () -> policy, inboxId, InboxRuntime::defaults);
     }
 
     public InboxService(InboxStore store, DeliveryPolicy policy, String inboxId,
                         Supplier<InboxRuntime> runtime) {
+        this(store, () -> policy, inboxId, runtime);
+    }
+
+    public InboxService(InboxStore store, Supplier<DeliveryPolicy> policy, String inboxId,
+                        Supplier<InboxRuntime> runtime) {
         this.store = store;
-        this.policy = policy;
+        this.policy = policy == null ? DeliveryPolicy::defaults : policy;
         this.inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
         this.runtime = runtime == null ? InboxRuntime::defaults : runtime;
         this.panelRevision = store.panelRevision();
         this.ackedRevision = store.ackedRevision();
+        this.pushRevision = store.pushRevision();
+        this.ackConflicts = metric("metric_ack_conflicts");
+        this.pushes = metric("metric_pushes");
+        this.repushes = metric("metric_repushes");
+        this.dismissed = metric("metric_dismissed");
+        loadErrors();
         purgeNow();
-        consolidateSources();
+    }
+
+    private DeliveryPolicy policy() {
+        DeliveryPolicy current = policy.get();
+        return current == null ? DeliveryPolicy.defaults() : current;
     }
 
     /** Legacy append: one new item, no merge. */
@@ -76,133 +112,59 @@ public final class InboxService {
         InboxItem item = new InboxItem(
                 "itm-" + UUID.randomUUID(), request.source().raw(), request.source().label(),
                 summary, entries, 1, revision, request.priority(),
-                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1, 0L, false);
+                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1,
+                0L, false);
         store.append(item);
         afterAppend(item);
         return item;
     }
 
     /**
-     * Append one rendered message to the source's active window, or start a new item when the
-     * previous one was delivered/acked. The item keeps only the last N entries.
+     * Append one message to the source's open window, or start a new item when the previous one was
+     * already pushed. A pushed item is never reopened: the new message becomes a second item of the
+     * same source (D-043), marked {@code continued} so the panel can say the source is still active.
      */
     public synchronized InboxItem appendOrMerge(AppendItem request) {
         long revision = nextRevision();
         var active = store.activeForSource(request.source().raw());
         if (active.isEmpty()) {
-            // 同一来源只保留一条：如果有"已推送但还没被确认"的旧条目，就把新消息续到它上面
-            // （解冻 + 续标），而不是在面板里再开一条同来源的。这样 Agent 看到的永远是
-            // "这个来源到目前为止的完整内容"，且条目变了会被重新推送。
-            var reopenable = store.reopenableForSource(request.source().raw());
-            if (reopenable.isPresent()) {
-                return mergeInto(reopenable.orElseThrow(), request, revision, true);
-            }
+            boolean continued = store.hasUnackedFrozenForSource(request.source().raw());
             InboxEntry entry = request.entry();
             List<InboxEntry> entries = entry == null ? List.of() : List.of(entry);
             String summary = entry == null ? request.summary() : entry.render();
             InboxItem created = new InboxItem(
                     "itm-" + UUID.randomUUID(), request.source().raw(), request.source().label(),
                     summary, entries, 1, revision, request.priority(),
-                    ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1, 0L, false);
+                    ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1,
+                    0L, continued);
             store.append(created);
             afterAppend(created);
             return created;
         }
-
-        return mergeInto(active.orElseThrow(), request, revision, false);
+        return mergeInto(active.orElseThrow(), request, revision);
     }
 
-    /**
-     * Appends one message to an existing item.
-     *
-     * @param continuation true when the target had already been delivered: the item is reopened
-     *                     (unfrozen) and the new entry carries the {@value #CONTINUATION_MARKER}
-     *                     marker, so a reader can tell "this item grew after you saw it".
-     */
-    private InboxItem mergeInto(InboxItem target, AppendItem request, long revision,
-                                boolean continuation) {
-        InboxItem item = continuation ? target.withFrozen(0L).withContinued(true) : target;
+    /** Appends one message to the source's open (not yet pushed) item. */
+    private InboxItem mergeInto(InboxItem target, AppendItem request, long revision) {
         InboxEntry incoming = request.entry();
-        if (continuation && incoming != null) {
-            incoming = incoming.withMarker(CONTINUATION_MARKER);
-        }
-        List<InboxEntry> entries = new ArrayList<>(item.entries());
+        List<InboxEntry> entries = new ArrayList<>(target.entries());
         String summary;
         if (incoming != null) {
             entries.add(incoming);
             entries = trim(entries);
-            summary = render(entries);
+            summary = renderCapped(entries);
         } else {
-            summary = item.summary().isBlank() ? request.summary()
-                    : item.summary() + "\n" + request.summary();
+            summary = target.summary().isBlank() ? request.summary()
+                    : target.summary() + "\n" + request.summary();
         }
-        InboxItem updated = item.withPanelState(
-                summary, entries, item.totalMessages() + 1, revision,
-                Math.max(item.priority(), request.priority()), Instant.now(),
-                item.revision() + 1);
+        InboxItem updated = target.withPanelState(
+                summary, entries, target.totalMessages() + 1, revision,
+                Math.max(target.priority(), request.priority()), Instant.now(),
+                target.revision() + 1);
         store.update(updated);
         afterAppend(updated);
         return updated;
     }
-
-    /** Marker appended to a message that arrived after its item had already been delivered. */
-    public static final String CONTINUATION_MARKER = "续";
-
-    /**
-     * Unified consolidation: one unacked item per source.
-     *
-     * <p>Live traffic already continues a source into its delivered item ({@link #mergeInto}), but
-     * data written before that rule — or by an older build — can still hold several unacked items
-     * for one source. This folds them into the newest one: older entries first (chronological), the
-     * survivor's own entries last, the join point marked {@value #CONTINUATION_MARKER}, and the
-     * absorbed rows dropped (the message board remains the fact source).</p>
-     *
-     * @return number of items absorbed
-     */
-    public synchronized int consolidateSources() {
-        Map<String, List<InboxItem>> bySource = new HashMap<>();
-        for (InboxItem item : visibleItems()) {
-            bySource.computeIfAbsent(item.source(), key -> new ArrayList<>()).add(item);
-        }
-        int absorbed = 0;
-        for (List<InboxItem> group : bySource.values()) {
-            if (group.size() < 2) {
-                continue;
-            }
-            group.sort(Comparator.comparing(InboxItem::createdAt));
-            InboxItem survivor = group.remove(group.size() - 1);
-            int max = Math.max(1, runtime.get().maxMessagesPerItem());
-            List<InboxEntry> entries = new ArrayList<>();
-            int total = 0;
-            for (InboxItem older : group) {
-                entries.addAll(older.entries());
-                total += Math.max(1, older.totalMessages());
-            }
-            List<InboxEntry> own = new ArrayList<>(survivor.entries());
-            if (!own.isEmpty() && !entries.isEmpty()) {
-                own.set(0, own.getFirst().withMarker(CONTINUATION_MARKER));
-            }
-            entries.addAll(own);
-            total += Math.max(0, survivor.totalMessages());
-            if (entries.size() > max) {
-                entries = new ArrayList<>(entries.subList(entries.size() - max, entries.size()));
-            }
-            InboxItem merged = survivor.withPanelState(render(entries), List.copyOf(entries), total,
-                    nextRevision(), survivor.priority(), Instant.now(), survivor.revision() + 1)
-                    .withContinued(true);
-            store.update(merged);
-            List<String> absorbedIds = group.stream().map(InboxItem::id).toList();
-            store.delete(absorbedIds);
-            absorbedIds.forEach(id -> {
-                pushedItems.remove(id);
-                pendingSince.remove(id);
-            });
-            absorbed += absorbedIds.size();
-        }
-        return absorbed;
-    }
-
-
 
     public synchronized InboxPanel panel() {
         InboxRuntime current = runtime.get();
@@ -212,7 +174,7 @@ public final class InboxService {
         List<PanelItem> items = new ArrayList<>();
         for (int index = 0; index < Math.min(maxItems, eligible.size()); index++) {
             items.add(panelItem(eligible.get(index), current.maxMessagesPerItem(),
-                    includeOmitted, index + 1));
+                    current.maxCharsPerItem(), includeOmitted, index + 1));
         }
         return new InboxPanel(inboxId, panelRevision, pushRevision, ackedRevision, Instant.now(),
                 items, eligible.size(),
@@ -237,15 +199,9 @@ public final class InboxService {
                 .orElseThrow(() -> new IllegalArgumentException("ITEM_NOT_FOUND"));
     }
 
-    /** Acks every visible item at or below the revision the caller actually saw. */
     /**
-     * Acks what a client <b>was actually shown</b>, up to the revision it reported.
-     *
-     * <p>This is deliberately narrower than "every item with {@code eventRevision <= revision}":
-     * a panel only renders the top {@code maxItemsPerPanel} items, so a revision-based ack would
-     * silently acknowledge items that never made it into the window. Only items currently in the
-     * delivered state ({@code pushedItems[id] == revision}) are eligible, which after a flush is
-     * exactly the panel that was handed out.</p>
+     * Acks what a client <b>was actually shown</b>, up to the revision it reported. Only frozen
+     * (delivered) items are eligible, so a window-overflow row is never silently acknowledged.
      */
     public synchronized InboxAck ackPanel(long requestedRevision) {
         long target = Math.min(Math.max(0L, requestedRevision), panelRevision);
@@ -253,26 +209,23 @@ public final class InboxService {
             return new InboxAck(ackedRevision, status().unread(), panelRevision);
         }
         int acked = 0;
+        long covered = ackedRevision;
         for (InboxItem item : store.items()) {
-            if (item.status() == ItemStatus.ACKED) {
-                continue;
-            }
-            Integer pushed = pushedItems.get(item.id());
-            if (pushed == null || pushed != item.revision()) {
-                // Never handed to a client (window overflow), or changed after the push.
+            if (item.status() == ItemStatus.ACKED || !item.frozen()) {
                 continue;
             }
             if (item.eventRevision() > target) {
                 continue;
             }
             store.update(item.withStatus(ItemStatus.ACKED));
-            pushedItems.remove(item.id());
             pendingSince.remove(item.id());
+            pendingFirstSeen.remove(item.id());
+            covered = Math.max(covered, item.eventRevision());
             acked++;
         }
-        ackedRevision = Math.max(ackedRevision, target);
-        store.saveAckedRevision(ackedRevision);
         if (acked > 0) {
+            ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
+            store.saveAckedRevision(ackedRevision);
             nextRevision();
         }
         notifyAll();
@@ -282,18 +235,20 @@ public final class InboxService {
     /** Explicit "ack everything visible" (tool path); requires no push state. */
     public synchronized InboxAck ackPanel() {
         int acked = 0;
+        long covered = ackedRevision;
         for (InboxItem item : store.items()) {
             if (item.status() == ItemStatus.ACKED) {
                 continue;
             }
             store.update(item.withStatus(ItemStatus.ACKED));
-            pushedItems.remove(item.id());
             pendingSince.remove(item.id());
+            pendingFirstSeen.remove(item.id());
+            covered = Math.max(covered, item.eventRevision());
             acked++;
         }
-        ackedRevision = panelRevision;
-        store.saveAckedRevision(ackedRevision);
         if (acked > 0) {
+            ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
+            store.saveAckedRevision(ackedRevision);
             nextRevision();
         }
         notifyAll();
@@ -303,12 +258,19 @@ public final class InboxService {
     /**
      * Acks exactly the given items. Per-item ack is the authoritative path; the global cursor is
      * advanced to the newest revision covered by the acked items purely for observability.
+     *
+     * <p>Idempotent (D-043): asking again for items that are already ACKED is a successful no-op.
+     * Only ids that do not exist at all, or an item that changed after the caller saw it, fail.</p>
      */
     public synchronized InboxAck ackItems(Set<String> itemIds, Long expectedRevision) {
         if (itemIds == null || itemIds.isEmpty()) {
             throw new IllegalArgumentException("ITEM_IDS_EMPTY");
         }
         checkItemRevision(itemIds, expectedRevision);
+        boolean anyKnown = store.items().stream().anyMatch(item -> itemIds.contains(item.id()));
+        if (!anyKnown) {
+            throw new IllegalArgumentException("ITEM_NOT_FOUND: " + itemIds);
+        }
         long covered = ackedRevision;
         int acked = 0;
         for (InboxItem item : store.items()) {
@@ -316,13 +278,14 @@ public final class InboxService {
                 continue;
             }
             store.update(item.withStatus(ItemStatus.ACKED));
-            pushedItems.remove(item.id());
             pendingSince.remove(item.id());
+            pendingFirstSeen.remove(item.id());
             covered = Math.max(covered, item.eventRevision());
             acked++;
         }
         if (acked == 0) {
-            throw new IllegalArgumentException("ITEM_NOT_FOUND: " + itemIds);
+            // Idempotent re-ack: everything requested was already acknowledged.
+            return new InboxAck(ackedRevision, status().unread(), panelRevision);
         }
         ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
         store.saveAckedRevision(ackedRevision);
@@ -346,6 +309,100 @@ public final class InboxService {
     }
 
     /**
+     * Bulk "clear without reading" (D-042). Marks rows ACKED; never deletes message content.
+     * Important items are skipped unless {@code allowImportant} is set.
+     */
+    public synchronized DismissResult dismiss(DismissRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("DISMISS_REQUEST_EMPTY");
+        }
+        InboxRuntime current = runtime.get();
+        List<InboxItem> visible = visibleItems();
+        List<InboxItem> scoped;
+        if ("ids".equals(request.scope())) {
+            scoped = visible.stream().filter(item -> request.itemIds().contains(item.id())).toList();
+        } else if ("visible".equals(request.scope())) {
+            int capacity = Math.min(current.maxItemsPerPanel(), visible.size());
+            scoped = visible.subList(0, capacity);
+        } else {
+            scoped = visible;
+        }
+        Instant cutoff = request.olderThanSeconds() == null ? null
+                : Instant.now().minusSeconds(request.olderThanSeconds());
+        int importantThreshold = policy().importantThreshold();
+        List<InboxItem> matched = new ArrayList<>();
+        int matchedBeforeLimit = 0;
+        int skippedImportant = 0;
+        for (InboxItem item : scoped) {
+            if (!request.sourcePrefix().isEmpty()
+                    && !item.source().startsWith(request.sourcePrefix())) {
+                continue;
+            }
+            if (request.priorityBelow() != null && item.priority() >= request.priorityBelow()) {
+                continue;
+            }
+            if (request.priorityAtLeast() != null && item.priority() < request.priorityAtLeast()) {
+                continue;
+            }
+            if (cutoff != null && !item.updatedAt().isBefore(cutoff)) {
+                continue;
+            }
+            if (!request.allowImportant() && item.priority() >= importantThreshold) {
+                skippedImportant++;
+                continue;
+            }
+            matchedBeforeLimit++;
+            if (matched.size() < request.limit()) {
+                matched.add(item);
+            }
+        }
+        boolean truncated = matchedBeforeLimit > matched.size();
+        int dismissedCount = 0;
+        long covered = ackedRevision;
+        if (!request.dryRun()) {
+            for (InboxItem item : matched) {
+                store.update(item.withStatus(ItemStatus.ACKED));
+                pendingSince.remove(item.id());
+                pendingFirstSeen.remove(item.id());
+                covered = Math.max(covered, item.eventRevision());
+                dismissedCount++;
+            }
+            if (dismissedCount > 0) {
+                ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
+                store.saveAckedRevision(ackedRevision);
+                nextRevision();
+                add(dismissed, "metric_dismissed", dismissedCount);
+                org.slf4j.LoggerFactory.getLogger(InboxService.class).info(
+                        "event=inbox_dismiss reason={} matched={} dismissed={} skippedImportant={} dryRun={}",
+                        safeReason(request.reason()), matchedBeforeLimit, dismissedCount,
+                        skippedImportant, request.dryRun());
+                notifyAll();
+            }
+        }
+        List<DismissResult.DismissedItem> preview = matched.stream()
+                .limit(MAX_DISMISS_PREVIEW)
+                .map(item -> new DismissResult.DismissedItem(item.id(), item.source(),
+                        item.sourceLabel(), item.priority(), item.totalMessages(), item.updatedAt(),
+                        item.status().name(), item.continued()))
+                .toList();
+        return new DismissResult(matchedBeforeLimit, dismissedCount, skippedImportant,
+                status().unread(), truncated, request.reason(), preview);
+    }
+
+    /** Watchdog maintenance entry: applies the configured auto-dismiss policy, if enabled. */
+    public synchronized DismissResult autoDismiss() {
+        InboxRuntime current = runtime.get();
+        if (!current.autoDismissEnabled()) {
+            return new DismissResult(0, 0, 0, status().unread(), false, "auto-disabled", List.of());
+        }
+        DismissRequest request = new DismissRequest("filter", Set.of(), "",
+                current.autoDismissBelowPriority(), null,
+                (long) current.autoDismissAfterSeconds(), current.autoDismissMaxPerRound(),
+                false, false, "auto");
+        return dismiss(request);
+    }
+
+    /**
      * Strict check for the index path: a 1-based index is resolved against the <b>current</b> panel,
      * so a stale revision could acknowledge the wrong item.
      */
@@ -357,25 +414,23 @@ public final class InboxService {
     }
 
     /**
-     * Item-scoped check for the itemId path.
-     *
-     * <p>An itemId names exactly what the client was shown, so unrelated traffic must not reject the
-     * ack: while an agent is being woken up the inbox routinely advances (every append and every ack
-     * bumps {@code panelRevision}), and requiring equality made the wake-up ack fail with 409 almost
-     * every time on a busy account — the acknowledged items then stayed pending and were injected
-     * again. Only an item that <b>itself</b> changed after the client's revision is a real conflict,
-     * because acking it would drop content the client never saw.</p>
+     * Item-scoped check for the itemId path. Unrelated traffic must not reject the ack; only an item
+     * that itself changed after the client's revision is a real conflict.
      */
     private void checkItemRevision(Set<String> itemIds, Long expectedRevision) {
         if (expectedRevision == null) {
             return;
         }
         if (expectedRevision > panelRevision) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("REVISION_CONFLICT expected>panel current=" + panelRevision);
             throw new IllegalArgumentException(
                     "REVISION_CONFLICT: expected=" + expectedRevision + " current=" + panelRevision);
         }
         for (InboxItem item : store.items()) {
             if (itemIds.contains(item.id()) && item.eventRevision() > expectedRevision) {
+                bump(ackConflicts, "metric_ack_conflicts");
+                recordError("REVISION_CONFLICT item=" + item.id());
                 throw new IllegalArgumentException("REVISION_CONFLICT: expected=" + expectedRevision
                         + " item=" + item.id() + " itemRevision=" + item.eventRevision());
             }
@@ -403,20 +458,15 @@ public final class InboxService {
     /**
      * Blocks until the pending batch is due, then returns the panel that must be pushed.
      *
-     * <p>Timing rule: an item scored at or above {@code policy.importantThreshold} is pushed after
-     * the short delay, everything else waits for the batch delay; the batch is anchored on the
-     * <b>earliest</b> pending item (a later arrival never postpones it), and when any immediate item
-     * becomes due the whole pending set flushes together. <b>After a push round the clock resets</b>
-     * — items that changed later are re-sorted and re-scheduled from that flush. Items already
-     * handed to a push are not pushed again until they change or are acked.</p>
-     *
-     * <p>Returns {@code null} on timeout (heartbeat/no change).</p>
+     * <p>An item at/above {@code importantThreshold} waits the short delay, everything else the
+     * batch delay; a same-source append resets its own deadline (D-044), while different items keep
+     * racing on the earliest deadline. An open item that keeps being merged is still pushed once
+     * {@code maxFirstPushDelaySeconds} has elapsed. Items already handed to a push are not pushed
+     * again until they are acked or a new item is created.</p>
      */
     public synchronized InboxPanel awaitPush(long lastPushRevision, Duration timeout) {
         long deadline = System.nanoTime() + Math.max(0, timeout.toNanos());
         while (!closed) {
-            // A push that another thread performed while we were waiting is still ours to deliver:
-            // delivery is a cursor (pushRevision), not a race between waiters.
             if (pushRevision > lastPushRevision) {
                 return panel();
             }
@@ -456,37 +506,39 @@ public final class InboxService {
 
     /**
      * Earliest due instant across items that can actually be delivered now; null when nothing is.
-     *
-     * <p>Delivery is bounded by the panel window: only the top {@code maxItemsPerPanel} visible
-     * items can appear in one push. An item ranked below the window is <b>not</b> "due" yet — it
-     * has to wait for the client to ack something and free a slot. Without that rule a pending item
-     * that can never fit would keep the flush loop spinning forever, re-sending a panel that does
-     * not contain it.</p>
+     * Delivery is bounded by the panel window; an item ranked below the window must wait for an ack
+     * to free a slot.
      */
     private Instant nextDue() {
         InboxRuntime current = runtime.get();
         List<InboxItem> visible = visibleItems();
         int capacity = Math.max(1, current.maxItemsPerPanel());
-        java.util.Set<String> window = new java.util.HashSet<>();
+        Set<String> window = new HashSet<>();
         for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
             window.add(visible.get(index).id());
         }
         Instant earliest = null;
         for (InboxItem item : visible) {
-            if (item.priority() < current.pushMinPriority()) {
-                continue;
-            }
-            Integer pushed = pushedItems.get(item.id());
-            if (pushed != null && pushed == item.revision()) {
+            // D-044 follow-up: every item that survived dropBelow must eventually push. The old
+            // pushMinPriority hard mute is deliberately gone; low-priority items simply ride the
+            // normalDelay batch.
+            if (item.frozen()) {
                 continue;                       // already handed out, waiting for ack
             }
             if (!window.contains(item.id())) {
                 continue;                       // no slot until something is acked
             }
+            Instant first = pendingFirstSeen.computeIfAbsent(item.id(), id -> item.updatedAt());
             Instant anchor = pendingSince.computeIfAbsent(item.id(), id -> item.updatedAt());
-            Duration delay = item.priority() >= policy.importantThreshold()
-                    ? policy.importantDelay() : policy.normalDelay();
+            Duration delay = item.priority() >= policy().importantThreshold()
+                    ? policy().importantDelay() : policy().normalDelay();
             Instant due = anchor.plus(delay);
+            if (current.maxFirstPushDelaySeconds() > 0) {
+                Instant hard = first.plusSeconds(current.maxFirstPushDelaySeconds());
+                if (hard.isBefore(due)) {
+                    due = hard;
+                }
+            }
             if (earliest == null || due.isBefore(earliest)) {
                 earliest = due;
             }
@@ -495,33 +547,36 @@ public final class InboxService {
     }
 
     /**
-     * Hands every pending item to one push and resets the batch clock. Called when the earliest due
-     * item fires, which is why a low-priority item that arrived one second ago still rides along
-     * with an immediate one.
+     * Hands every pending item in the current window to one push and advances the durable push
+     * revision. Only items that this panel actually renders are frozen; window-overflow items keep
+     * their pending state and are pushed in a later round.
      */
     private void flushPending() {
         InboxRuntime current = runtime.get();
         List<InboxItem> visible = visibleItems();
         int capacity = Math.max(1, current.maxItemsPerPanel());
-        // Only the items that this panel actually renders are marked delivered. Anything ranked
-        // below the window keeps its pending state and is pushed in a later round, once acks free
-        // a slot — never silently marked delivered.
         List<String> frozen = new ArrayList<>();
+        int repushCount = 0;
         for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
             InboxItem item = visible.get(index);
-            if (item.priority() < current.pushMinPriority()) {
+            if (item.frozen()) {
                 continue;
             }
-            pushedItems.put(item.id(), item.revision());
-            pendingSince.remove(item.id());
             frozen.add(item.id());
+            pendingSince.remove(item.id());
+            pendingFirstSeen.remove(item.id());
+            if (item.continued()) {
+                repushCount++;
+            }
+        }
+        if (frozen.isEmpty()) {
+            return;
         }
         pushRevision++;
-        // 推送即冻结：这些条目从此不再吸同来源的新消息，后续消息另开新条目。
-        // 这样"被 ack 的内容"永远等于"被推送的内容"，ack 不会因条目自身变化而冲突。
-        if (!frozen.isEmpty()) {
-            store.freeze(frozen, pushRevision);
-        }
+        store.savePushRevision(pushRevision);
+        store.freeze(frozen, pushRevision);
+        bump(pushes, "metric_pushes");
+        add(repushes, "metric_repushes", repushCount);
         notifyAll();
     }
 
@@ -541,21 +596,21 @@ public final class InboxService {
             }
             available++;
             unread++;
-            if (item.priority() >= policy.importantThreshold()) {
+            if (item.priority() >= policy().importantThreshold()) {
                 remainingImportant++;
             }
         }
         int pending = 0;
         for (InboxItem item : store.items()) {
-            Integer pushed = pushedItems.get(item.id());
-            if (item.status() != ItemStatus.ACKED
-                    && (pushed == null || pushed != item.revision())) {
+            if (item.status() != ItemStatus.ACKED && !item.frozen()) {
                 pending++;
             }
         }
         Instant next = nextDue();
         return new InboxStatus(available, acked, remainingImportant, pending,
-                next == null ? "" : next.toString(), panelRevision, ackedRevision, unread);
+                next == null ? "" : next.toString(), panelRevision, ackedRevision, unread,
+                pushRevision, ackConflicts.get(), pushes.get(), repushes.get(), dismissed.get(),
+                List.copyOf(recentErrors));
     }
 
     public synchronized List<ItemSummary> list() {
@@ -567,21 +622,90 @@ public final class InboxService {
                 .toList();
     }
 
+    // ---------------------------------------------------------------- plugin bridge
+
+    /** Records the DSH plugin heartbeat; returns the command it should apply next, if any. */
+    public synchronized ControlCommand pluginHeartbeat(PluginHeartbeat heartbeat) {
+        if (heartbeat == null) {
+            throw new IllegalArgumentException("HEARTBEAT_EMPTY");
+        }
+        this.lastHeartbeat = heartbeat;
+        if (!heartbeat.sessionId().isBlank()) {
+            store.setState("plugin_session_id", heartbeat.sessionId());
+        }
+        if (pendingControl != null
+                && pendingControl.id().equals(heartbeat.appliedControlId())) {
+            pendingControl = null;
+        }
+        notifyAll();
+        return pendingControl;
+    }
+
+    public synchronized PluginHeartbeat lastHeartbeat() {
+        return lastHeartbeat;
+    }
+
+    public synchronized ControlCommand pendingControl() {
+        return pendingControl;
+    }
+
+    /** Sets the desired binding and queues a control command for the plugin. */
+    public synchronized ControlCommand requestControl(String action, String sessionId,
+                                                      String remind) {
+        String target = sessionId == null ? "" : sessionId.trim();
+        if (target.isEmpty()) {
+            target = store.state("plugin_session_id");
+        }
+        if (pendingControl != null && pendingControl.action().equals(action)
+                && pendingControl.sessionId().equals(target)) {
+            return pendingControl;
+        }
+        ControlCommand command = new ControlCommand(
+                "ctl-" + (++controlSequence) + "-" + UUID.randomUUID().toString().substring(0, 8),
+                action, target, remind, Instant.now());
+        pendingControl = command;
+        if (!target.isBlank()) {
+            store.setState("plugin_session_id", target);
+        }
+        notifyAll();
+        return command;
+    }
+
+    public synchronized String pluginSessionId() {
+        return store.state("plugin_session_id");
+    }
+
+    public synchronized InboxRuntimeInfo runtimeInfo() {
+        return new InboxRuntimeInfo(processId, mcpStartId, startedAtEpochMillis,
+                panelRevision, pushRevision, ackedRevision);
+    }
+
+    public void setMcpStartId(String mcpStartId) {
+        this.mcpStartId = mcpStartId == null ? "" : mcpStartId;
+    }
+
+    public String inboxId() {
+        return inboxId;
+    }
+
+    // ---------------------------------------------------------------- lifecycle
+
     public synchronized void close() {
         closed = true;
         notifyAll();
     }
 
     private void afterAppend(InboxItem item) {
-        // The batch clock starts at the FIRST message that owes a push; merging more messages into
-        // the same window must not move it (operator ruling: 不重置时间). The entry is dropped when
-        // the item is flushed or acked, so a later message starts a fresh clock.
-        pendingSince.putIfAbsent(item.id(), Instant.now());
+        // D-044: a same-source append resets this item's deadline; the first-seen anchor is kept
+        // so a continuously active source still gets its first push after the hard cap.
+        Instant now = Instant.now();
+        pendingSince.put(item.id(), now);
+        pendingFirstSeen.putIfAbsent(item.id(), now);
         pendingSince.keySet().removeIf(id -> store.item(id).isEmpty());
+        pendingFirstSeen.keySet().removeIf(id -> store.item(id).isEmpty());
         appendsSincePurge++;
         if (appendsSincePurge >= PURGE_EVERY_APPENDS) {
             purgeNow();
-        consolidateSources();
         }
         notifyAll();
     }
@@ -593,7 +717,7 @@ public final class InboxService {
             Instant cutoff = Instant.now().minus(Duration.ofDays(current.retentionMaxAgeDays()));
             store.purge(cutoff, current.retentionMaxItems());
         } catch (RuntimeException failure) {
-            // Retention is housekeeping: never let it break an append.
+            recordError("PURGE_FAILED " + failure.getClass().getSimpleName());
             org.slf4j.LoggerFactory.getLogger(InboxService.class)
                     .warn("event=inbox_purge_failed errorType={}", failure.getClass().getSimpleName());
         }
@@ -613,6 +737,17 @@ public final class InboxService {
         return List.copyOf(entries.subList(entries.size() - max, entries.size()));
     }
 
+    private String renderCapped(List<InboxEntry> entries) {
+        int cap = Math.max(2000, runtime.get().maxCharsPerItem() * 4);
+        String rendered = render(entries);
+        if (cap <= 0 || rendered.length() <= cap) {
+            return rendered;
+        }
+        int end = rendered.offsetByCodePoints(0,
+                Math.min(rendered.codePointCount(0, rendered.length()), cap));
+        return rendered.substring(0, end) + "…";
+    }
+
     private static String render(List<InboxEntry> entries) {
         StringBuilder text = new StringBuilder();
         for (InboxEntry entry : entries) {
@@ -624,8 +759,8 @@ public final class InboxService {
         return text.toString();
     }
 
-    private static PanelItem panelItem(InboxItem item, int maxMessages, boolean includeOmitted,
-                                       int index) {
+    private static PanelItem panelItem(InboxItem item, int maxMessages, int maxChars,
+                                       boolean includeOmitted, int index) {
         List<InboxEntry> entries = item.entries();
         if (entries.isEmpty() && !item.summary().isBlank()) {
             entries = List.of(new InboxEntry(0, item.updatedAt(), "", item.summary(), List.of()));
@@ -634,9 +769,119 @@ public final class InboxService {
         if (entries.size() > max) {
             entries = List.copyOf(entries.subList(entries.size() - max, entries.size()));
         }
+        int renderedBefore = entries.stream().mapToInt(entry -> entry.render().length()).sum();
+        if (maxChars > 0 && renderedBefore > maxChars) {
+            entries = capEntries(entries, maxChars);
+        }
+        int renderedAfter = entries.stream().mapToInt(entry -> entry.render().length()).sum();
+        int truncatedChars = Math.max(0, renderedBefore - renderedAfter);
         int omitted = includeOmitted ? Math.max(0, item.totalMessages() - entries.size()) : 0;
         return new PanelItem(index, item.id(), item.source(), item.sourceLabel(), item.priority(),
                 entries, item.totalMessages(), omitted, item.status(), item.updatedAt(),
-                item.continued());
+                item.continued(), truncatedChars);
+    }
+
+    /** Keeps the newest entries that fit; a single over-long entry is truncated. */
+    private static List<InboxEntry> capEntries(List<InboxEntry> entries, int maxChars) {
+        List<InboxEntry> kept = new ArrayList<>();
+        int used = 0;
+        for (int index = entries.size() - 1; index >= 0; index--) {
+            InboxEntry entry = entries.get(index);
+            int length = entry.render().length() + (kept.isEmpty() ? 0 : 1);
+            if (kept.isEmpty() && length > maxChars) {
+                kept.add(0, truncateEntry(entry, maxChars));
+                break;
+            }
+            if (used + length > maxChars) {
+                break;
+            }
+            kept.add(0, entry);
+            used += length;
+        }
+        return List.copyOf(kept);
+    }
+
+    private static InboxEntry truncateEntry(InboxEntry entry, int maxChars) {
+        String prefix = entry.render().substring(0,
+                Math.max(0, entry.render().length() - entry.text().length()));
+        int budget = Math.max(8, maxChars - prefix.length() - 2);
+        String text = entry.text();
+        int points = text.codePointCount(0, text.length());
+        if (points > budget) {
+            text = text.substring(0, text.offsetByCodePoints(0, budget));
+        }
+        List<String> markers = new ArrayList<>(entry.markers());
+        if (!markers.contains("…")) {
+            markers.add("…");
+        }
+        return new InboxEntry(entry.localSeq(), entry.at(), entry.sender(), text, markers);
+    }
+
+    private void recordError(String code) {
+        recentErrors.addLast(Instant.now() + " " + code);
+        while (recentErrors.size() > MAX_RECENT_ERRORS) {
+            recentErrors.removeFirst();
+        }
+        try {
+            store.setState("recent_errors", String.join("\n", recentErrors));
+        } catch (RuntimeException ignored) {
+            // Observability must never break the delivery path.
+        }
+    }
+
+    private AtomicLong metric(String key) {
+        try {
+            String raw = store.state(key);
+            return new AtomicLong(raw.isBlank() ? 0L : Long.parseLong(raw.trim()));
+        } catch (RuntimeException failure) {
+            return new AtomicLong();
+        }
+    }
+
+    private void bump(AtomicLong counter, String key) {
+        counter.incrementAndGet();
+        persistMetric(counter, key);
+    }
+
+    private void add(AtomicLong counter, String key, long delta) {
+        if (delta <= 0) {
+            return;
+        }
+        counter.addAndGet(delta);
+        persistMetric(counter, key);
+    }
+
+    private void persistMetric(AtomicLong counter, String key) {
+        try {
+            store.setState(key, Long.toString(counter.get()));
+        } catch (RuntimeException ignored) {
+            // Same: metrics are best effort.
+        }
+    }
+
+    private void loadErrors() {
+        try {
+            String raw = store.state("recent_errors");
+            if (raw == null || raw.isBlank()) {
+                return;
+            }
+            for (String line : raw.split("\n")) {
+                if (!line.isBlank()) {
+                    recentErrors.addLast(line);
+                }
+            }
+            while (recentErrors.size() > MAX_RECENT_ERRORS) {
+                recentErrors.removeFirst();
+            }
+        } catch (RuntimeException ignored) {
+            recentErrors.clear();
+        }
+    }
+
+    private static String safeReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "-";
+        }
+        return reason.replaceAll("[^A-Za-z0-9_.:-]", "_");
     }
 }

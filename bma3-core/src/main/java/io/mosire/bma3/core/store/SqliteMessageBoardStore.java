@@ -77,6 +77,8 @@ public final class SqliteMessageBoardStore
                         """);
                 ensureColumn(statement, "chat_message", "sender_id", "TEXT");
                 ensureColumn(statement, "chat_message", "sender_name", "TEXT");
+                ensureColumn(statement, "chat_message", "sender_card", "TEXT");
+                ensureColumn(statement, "chat_message", "sender_role", "TEXT");
                 ensureColumn(statement, "chat_message", "segments_json", "TEXT");
                 ensureColumn(statement, "chat_message", "external_message_id", "TEXT");
                 statement.execute("""
@@ -117,8 +119,9 @@ public final class SqliteMessageBoardStore
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO chat_message (
                       message_key, source, account_id, direction, message_id, at, text,
-                      sender_id, sender_name, segments_json, external_message_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      sender_id, sender_name, sender_card, sender_role, segments_json,
+                      external_message_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_key) DO NOTHING
                     """)) {
                 statement.setString(1, messageKey);
@@ -130,8 +133,10 @@ public final class SqliteMessageBoardStore
                 statement.setString(7, text);
                 statement.setString(8, inbound.senderId());
                 statement.setString(9, inbound.senderName());
-                statement.setString(10, segmentsJson(inbound.segments()));
-                statement.setString(11, externalIdFor(inbound));
+                statement.setString(10, inbound.senderCard());
+                statement.setString(11, inbound.senderRole());
+                statement.setString(12, segmentsJson(inbound.segments()));
+                statement.setString(13, externalIdFor(inbound));
                 inserted = statement.executeUpdate();
             }
             if (inserted == 0) {
@@ -169,8 +174,8 @@ public final class SqliteMessageBoardStore
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT local_seq, message_key, source, account_id, direction,
-                       message_id, at, text, sender_id, sender_name, segments_json,
-                       external_message_id
+                       message_id, at, text, sender_id, sender_name, sender_card, sender_role,
+                       segments_json, external_message_id
                 FROM chat_message
                 WHERE source = ? AND local_seq > ?
                 ORDER BY local_seq ASC
@@ -250,8 +255,8 @@ public final class SqliteMessageBoardStore
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT local_seq, message_key, source, account_id, direction,
-                       message_id, at, text, sender_id, sender_name, segments_json,
-                       external_message_id
+                       message_id, at, text, sender_id, sender_name, sender_card, sender_role,
+                       segments_json, external_message_id
                 FROM chat_message
                 WHERE source = ? AND external_message_id = ?
                 LIMIT 1
@@ -309,6 +314,81 @@ public final class SqliteMessageBoardStore
     }
 
     @Override
+    public synchronized List<Message> search(String query, String sourcePrefix,
+                                             java.time.Instant from, java.time.Instant to,
+                                             long beforeSeq, int limit) {
+        if (query == null || query.isBlank()) {
+            throw new IllegalArgumentException("query 不能为空");
+        }
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("limit 必须在 1..500");
+        }
+        ensureOpen();
+        StringBuilder sql = new StringBuilder("""
+                SELECT local_seq, message_key, source, account_id, direction,
+                       message_id, at, text, sender_id, sender_name, sender_card, sender_role,
+                       segments_json, external_message_id
+                FROM chat_message
+                WHERE (text LIKE ? OR sender_name LIKE ? OR sender_card LIKE ?)
+                """);
+        List<Object> parameters = new ArrayList<>();
+        String needle = "%" + query.trim() + "%";
+        parameters.add(needle);
+        parameters.add(needle);
+        parameters.add(needle);
+        if (sourcePrefix != null && !sourcePrefix.isBlank()) {
+            sql.append(" AND source LIKE ?");
+            parameters.add(sourcePrefix.trim() + "%");
+        }
+        if (from != null) {
+            sql.append(" AND at >= ?");
+            parameters.add(from.toString());
+        }
+        if (to != null) {
+            sql.append(" AND at <= ?");
+            parameters.add(to.toString());
+        }
+        if (beforeSeq > 0) {
+            sql.append(" AND local_seq < ?");
+            parameters.add(beforeSeq);
+        }
+        sql.append(" ORDER BY local_seq DESC LIMIT ?");
+        parameters.add(limit);
+        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+            for (int index = 0; index < parameters.size(); index++) {
+                Object value = parameters.get(index);
+                if (value instanceof Long number) {
+                    statement.setLong(index + 1, number);
+                } else if (value instanceof Integer number) {
+                    statement.setInt(index + 1, number);
+                } else {
+                    statement.setString(index + 1, String.valueOf(value));
+                }
+            }
+            try (ResultSet result = statement.executeQuery()) {
+                List<Message> messages = new ArrayList<>();
+                while (result.next()) {
+                    messages.add(map(result));
+                }
+                return List.copyOf(messages);
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("搜索 SQLite 消息板失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized boolean ping() {
+        ensureOpen();
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT 1")) {
+            return result.next();
+        } catch (Exception failure) {
+            return false;
+        }
+    }
+
+    @Override
     public synchronized void close() {
         if (closed) {
             return;
@@ -324,8 +404,8 @@ public final class SqliteMessageBoardStore
     private Message findByKey(String messageKey) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT local_seq, message_key, source, account_id, direction,
-                       message_id, at, text, sender_id, sender_name, segments_json,
-                       external_message_id
+                       message_id, at, text, sender_id, sender_name, sender_card, sender_role,
+                       segments_json, external_message_id
                 FROM chat_message WHERE message_key = ?
                 """)) {
             statement.setString(1, messageKey);
@@ -346,7 +426,9 @@ public final class SqliteMessageBoardStore
                 segments,
                 Direction.valueOf(result.getString("direction")),
                 result.getString("sender_id"),
-                result.getString("sender_name"));
+                result.getString("sender_name"),
+                result.getString("sender_card"),
+                result.getString("sender_role"));
         return new Message(result.getLong("local_seq"), inbound,
                 result.getString("external_message_id"));
     }

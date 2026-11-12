@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, createInboxClient, renderPanel, SseParser } from '../lib/inbox.js'
@@ -22,7 +25,7 @@ test('renderPanel shows bounded windows, source labels and relation markers', ()
       },
     ],
   })
-  assert.match(text, /^\[INBOX_PANEL\] inbox=bma3 rev=42 unread=3 items=1\/3/)
+  assert.match(text, /^\[INBOX_PANEL\] inbox=bma3 rev=42 push=0 unread=3 items=1\/3/)
   assert.match(text, /\[QQ群 955432692\] #1 priority=300 total=128 shown=1/)
   assert.match(text, /\[@3924945183\]/)
   assert.match(text, /\[图片\]/)
@@ -65,6 +68,7 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
     inboxId: 'bma3',
     token: 'secret-token',
     fetchImpl,
+    persistState: false,
   })
   assert.deepEqual(definitions.map((definition) => definition.name).sort(), ['bma3_inbox'])
   const inbox = definitions[0]
@@ -91,9 +95,9 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
 
   const ack = JSON.parse((await inbox.execute({ action: 'ack' }, { agent: { id: 'session-1' } })).text)
   assert.equal(ack.ackedRevision, 42)
-  assert.equal(calls.length, 1)
-  assert.match(calls[0].url, /\/v1\/inboxes\/bma3\/ack$/)
-  assert.equal(calls[0].init.headers.Authorization, 'Bearer secret-token')
+  const ackCall = calls.find((call) => /\/v1\/inboxes\/bma3\/ack$/.test(call.url))
+  assert.ok(ackCall, 'ack 必须发到 /ack')
+  assert.equal(ackCall.init.headers.Authorization, 'Bearer secret-token')
   assert.doesNotMatch(JSON.stringify(client.status()), /secret-token/)
 })
 
@@ -129,6 +133,7 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     token: 'secret',
     fetchImpl,
     pumpMs: 10,
+    persistState: false,
   })
   try {
     client.start()
@@ -190,6 +195,7 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
     token: 'secret',
     fetchImpl,
     pumpMs: 10,
+    persistState: false,
   })
   const panel = (revision) => 'id: ' + revision + '\nevent: panel\ndata: ' + JSON.stringify({
     inboxId: 'bma3', revision, totalItems: 1, includeOmittedCount: true,
@@ -220,4 +226,124 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
     client.stop()
     controller.close()
   }
+})
+
+
+test('renderPanel marks a source that is still active', () => {
+  const text = renderPanel({
+    inboxId: 'bma3',
+    revision: 9,
+    pushRevision: 4,
+    totalItems: 1,
+    items: [{
+      id: 'itm-1', source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1',
+      priority: 200, totalMessages: 3, omittedMessages: 0, continued: true,
+      entries: [{ line: '[12:00] #1 A：hi' }],
+    }],
+  })
+  assert.match(text, /push=4/)
+  assert.match(text, /（消息更新活跃）/)
+})
+
+test('a persisted push revision prevents re-injection after a plugin restart', async () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-inbox-')), 'state.json')
+  const panel = {
+    inboxId: 'bma3', revision: 7, pushRevision: 5, totalItems: 1, includeOmittedCount: true,
+    items: [{
+      id: 'itm-1', source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1',
+      priority: 300, totalMessages: 1, omittedMessages: 0, continued: false,
+      entries: [{ line: '[12:00] #1 A：hi' }],
+    }],
+  }
+  const run = async (messages) => {
+    const agent = { id: 'session-1', status: 'idle', followup(message) { messages.push(message) } }
+    const ctx = { agents: { get: () => agent, list: () => [agent] } }
+    let controller
+    const body = new ReadableStream({ start(next) { controller = next } })
+    const fetchImpl = async (url) => {
+      if (url.endsWith('/events')) return { ok: true, status: 200, body }
+      if (url.endsWith('/plugin/heartbeat')) {
+        return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
+      }
+      if (url.endsWith('/ack')) {
+        return { ok: true, status: 200, json: async () => ({ ackedRevision: 7 }) }
+      }
+      throw new Error(`unexpected URL ${url}`)
+    }
+    const client = createInboxClient(ctx, {
+      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+      fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile,
+    })
+    client.start()
+    const frame = 'id: 7\nevent: panel\ndata: ' + JSON.stringify(panel) + '\n\n'
+    controller.enqueue(new TextEncoder().encode(frame))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    return { client, controller, messages }
+  }
+
+  const first = await run([])
+  assert.equal(first.messages.length, 1)
+  first.client.stop(false)
+  first.controller.close()
+
+  const second = await run([])
+  assert.equal(second.messages.length, 0, '同一 pushRevision 重启后不能再注入')
+  const saved = JSON.parse(readFileSync(stateFile, 'utf8'))
+  assert.equal(saved.injectedPushRevision, 5)
+  assert.equal(saved.lastPushRevision, 5)
+  second.client.stop(false)
+  second.controller.close()
+})
+
+test('bind persists the session and resumes it when it is not live', async () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-bind-')), 'state.json')
+  let resumed = null
+  const agent = { id: 'session-9', status: 'idle', followup() {} }
+  const ctx = {
+    agents: {
+      get: () => undefined,
+      list: () => [],
+      resume: async ({ resumeSessionId }) => {
+        resumed = resumeSessionId
+        return { agent, dispose() {} }
+      },
+    },
+    effect: (callback) => callback(),
+  }
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/events')) {
+      return { ok: true, status: 200, body: new ReadableStream({ start() {} }) }
+    }
+    if (url.endsWith('/plugin/heartbeat')) {
+      return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ ackedRevision: 1 }) }
+  }
+  const client = createInboxClient(ctx, {
+    baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+    fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile, autoStart: false,
+  })
+  client.bind('session-9')
+  const deadline = Date.now() + 2000
+  while (resumed === null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(resumed, 'session-9')
+  assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).targetSessionId, 'session-9')
+  client.stop(false)
+})
+
+test('a bound target never falls back to another idle session', () => {
+  const other = { id: 'session-other', status: 'idle' }
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-bound-')), 'state.json')
+  const client = createInboxClient(
+    { agents: { get: () => undefined, list: () => [other] } },
+    {
+      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+      persistState: false, autoStart: false, stateFile,
+    })
+  client.bind('session-missing')
+  assert.equal(client.status().agentLive, false)
+  client.stop(false)
 })

@@ -80,6 +80,12 @@ public final class SqliteInboxStore implements InboxStore {
                           value INTEGER NOT NULL
                         )
                         """);
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS inbox_state (
+                          key TEXT PRIMARY KEY,
+                          value TEXT NOT NULL
+                        )
+                        """);
             }
         } catch (Exception failure) {
             throw new IllegalStateException("打开 SQLite Inbox 失败", failure);
@@ -220,16 +226,16 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
-    public synchronized Optional<InboxItem> reopenableForSource(String source) {
+    public synchronized boolean hasUnackedFrozenForSource(String source) {
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT * FROM inbox_item
+                SELECT 1 FROM inbox_item
                 WHERE source = ? AND status = 'AVAILABLE' AND frozen_revision > 0
-                ORDER BY updated_at DESC LIMIT 1
+                LIMIT 1
                 """)) {
             statement.setString(1, source);
             try (ResultSet result = statement.executeQuery()) {
-                return result.next() ? Optional.of(mapItem(result)) : Optional.empty();
+                return result.next();
             }
         } catch (SQLException failure) {
             throw new IllegalStateException("读取 Inbox item 失败", failure);
@@ -309,6 +315,56 @@ public final class SqliteInboxStore implements InboxStore {
     @Override
     public synchronized void saveAckedRevision(long revision) {
         setMeta("acked_revision", revision);
+    }
+
+    @Override
+    public synchronized long pushRevision() {
+        return meta("push_revision");
+    }
+
+    @Override
+    public synchronized void savePushRevision(long revision) {
+        setMeta("push_revision", revision);
+    }
+
+    @Override
+    public synchronized String state(String key) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT value FROM inbox_state WHERE key = ?")) {
+            statement.setString(1, key);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? result.getString(1) : "";
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 Inbox state 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized void setState(String key, String value) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO inbox_state (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """)) {
+            statement.setString(1, key);
+            statement.setString(2, value == null ? "" : value);
+            statement.executeUpdate();
+        } catch (SQLException failure) {
+            throw new IllegalStateException("写入 Inbox state 失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized boolean ping() {
+        ensureOpen();
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT 1")) {
+            return result.next();
+        } catch (SQLException failure) {
+            return false;
+        }
     }
 
     @Override

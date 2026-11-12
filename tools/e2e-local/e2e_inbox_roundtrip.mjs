@@ -42,6 +42,8 @@ const client = createInboxClient(ctx, {
   fetchImpl,
   pumpMs: 50,
   reconnectMinMs: 200,
+  heartbeatMs: 60000,
+  persistState: false,
 })
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

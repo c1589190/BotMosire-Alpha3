@@ -1,112 +1,92 @@
-# STATUS —— 更新时间：2026-11-12 00:22 (UTC+8)
+# STATUS —— 更新时间：2026-11-12 19:10 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-0. **0.0.3-hotfix7**：**正文规则表**（D-041）`weighting.rules[]`（`prefix`/`contains` + `delta` + `ignoreCase`），
-   命中即累加、可叠加，与来源基数/属性相加后再 clamp 比阈值；命中原因进 `reasons`。
-   真机验证 5/5：群基数 0 + `/`(-300) + `@bot`(+350) + `大肥鱼`(+150) = **200**；仅前缀 -300 仍入面板；
-   `.rd` 前缀 -601 ⇒ 丢弃不落库；`@BOT` 命中 `@bot`（忽略大小写）。顺带修了 `ConfigEditor` 把结构化值写成
-   一行字符串的 bug（`set_config` 传数组/对象时必须落成 YAML 结构）。
-0a. **0.0.3-hotfix7（inbox 侧）**：**推送即冻结 + 同源续接**（D-038/D-039）。已推送条目 `frozen_revision>0`；
-   同来源再来消息时解冻旧条目、给新 entry 打 `续` 标并追加（**不新开条目**，面板同源永远一条），
-   条目因此重新 pending 会被重推；无关来源的流量不再让唤醒 ack 409（按条目校验）。
-   真 jar 验证 10/10：推 1 条 → 同源再来 1 条 → 仍 1 条/`totalMessages=2`/面板行 `…第二条 续` →
-   旧 revision ack **409**（内容确实变了）→ 当前 revision ack **200** → 清空。
-   另按 D-040：条目视图暴露 `continued`；`consolidateSources()` 构造时统一合并历史重复（手工种子 3 条同源未确认行 →
-   重启后 1 条、`totalMessages=3`、`continued=true`、接缝带 `续`）。
-0b. **0.0.3-hotfix7（ack 侧）**：唤醒自带的 ack 在群里活跃时几乎必 409。`checkRevision` 要求 `expected == 当前 panelRevision`，而每次 append/ack 都会 +1，注入到 ack 之间必有一次新消息。改为**按 itemId 的条目级校验**（只有被 ack 的条目本身在客户端看到之后又变了才冲突；无关流量不再拒）；按 indices 的路径仍保持严格相等（序号依赖当前面板，过期会 ack 错条目）。插件侧不采用"409 就退回只带 itemIds"的重试——那会吞掉没看过的新内容。
-0a. **0.0.3-hotfix6**：bma3 预设的 `tool-bash`/`tool-fs`/`tool-subagent*` 子行从来没挂上——preset 子插件从**声明它的 profile** 解析，profile 里没有 `@deepseek-ai` scope，裸包名 `ERR_MODULE_NOT_FOUND`，于是 bma3 会话从建立起就没有 bash/read_image/子 Agent。**把那些包装进 profile 也不行**：它们把 `@deepseek-ai/dsh-tools`、`dsh-llm`、`cordis` 等整个宿主运行时声明为 **peerDependencies**，从 profile 导入直接报 `Cannot find package '@deepseek-ai/dsh-tools'`（已实测）。修法：新增 `dsh-plugin/lib/host-tools.js`，在**宿主安装树**里解析这 5 个包（`createRequire(process.argv[1]) → dsh-web-app → dsh-tool-*`，pnpm store 扫描兜底，均带缓存），preset 行名改为它们入口的 `file:` URL；解析不到时回退裸包名，并由 `bma3_self_status.presetTools` 报出来。
-0a. **0.0.3-hotfix5**：修 `bma3_` 前缀把 scope-local 工具（`bma3_self_status/reload`）拉进 `tools.restrict()` 的 allow，导致 DSH 抛 "names unknown global tool"、整条工具策略失效（bash 等被状态未定义）。修法：allow 里剔除 scope-local 名字；测试桩改成严格模拟 DSH 的 restrict 校验。
-0a. **0.0.3-hotfix4**：修「multiple complete prompt sections」回归——删除 legacy `persona` 模块与其 loader 行，`self` 加同名空段遮蔽旧残留段（热重载即恢复，无需重启）。
-0a. **0.0.3-hotfix3**：修「窗口外条目被吞 + ack 范围过大」；插件 `bma3_core` 组纳入 `bma3_*`（`bma3_inbox` 终于可见）；插件 ack 改 `itemIds`。
-0a. **0.0.3-hotfix2**：发布 jar + DSH 插件 tgz；插件侧新增 `bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）。
-0b. **0.0.3-hotfix1**：人设语义修正——`systemprompt.md` 是完整 system prompt（`complete` 默认 `true`），插件不拼任何内置内容；随 `v0.0.3-hotfix1` 发布。
-1. **0.0.3 批次 1（已完成）**：优先级规则 + 三档推送时序 + `set_config` 写入口 + 消息模型（发送人/结构化段/平台 id）。
-2. **0.0.3 批次 2（已完成）**：`qq_media_view` + `fileId` + `downloads` 落盘 + 上限/超时配置（D-019）。
-3. **0.0.3 批次 3（已完成）**：`inbox_items`/`inbox_get`/`inbox_wait`、逐条 ack（序号/范围/itemId + revision 校验）、注入筛选 + 时钟重置、保留期（D-020/D-029..D-032）。
-4. **0.0.3 批次 4（已完成）**：OneBot 连接诊断 + 主动探测、MCP 401 可读响应（D-033/D-034）。
-5. **0.0.3 批次 5（未做）**：真实 LLBot/DSH 联调。见 [`../superpowers/plans/2026-11-11-0.0.3-plan.md`](../superpowers/plans/2026-11-11-0.0.3-plan.md)。
-3. **不发布**：目标版本 0.0.3；本轮**未发版、未打 tag**（D-022）。
+**0.0.4-early：watchdog + 投递模型 + 身份目录 + 富消息 + 协议内文件/历史**。
+设计：[`../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md`](../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md)（D-042..D-050）；
+计划：[`../superpowers/plans/2026-11-12-0.0.4-plan.md`](../superpowers/plans/2026-11-12-0.0.4-plan.md)；
+回归报告：[`../superpowers/reports/2026-11-12-0.0.4-e2e-report.md`](../superpowers/reports/2026-11-12-0.0.4-e2e-report.md)。
+
+已完成（代码 + 单测 + 本地真进程 e2e）：
+
+1. **Inbox 1B 投递模型**：同源可两条、推送后冻结、`continued` → 面板「（消息更新活跃）」；删除 `consolidateSources()` 与续接合并；ack 幂等；`pushRevision` 落库；`frozen_revision` 作为已推送标记。
+2. **`inbox_dismiss`**：`scope=visible|filter|ids`、`priorityBelow/priorityAtLeast/sourcePrefix/olderThanSeconds/limit`、`dryRun`、`allowImportant`；HTTP `POST /dismiss`；watchdog `autoDismiss` 维护任务。
+3. **DSH 插件**：状态文件持久化（默认 `~/.dsh/storages/bma3-inbox.json`）；`bind` 落盘；加载时 `agents.get() ?? agents.resume()` 并自动 start；`pushRevision` 去重；`/plugin/heartbeat`；服务端 `control`（restore/remind）；`mcpStartId` 变化时提醒重连 MCP。
+4. **watchdog**：新增 `bma3-watchdog-spi`（JDK-only）+ `bma3-watchdog`（依赖除 app 外全部模块）；12 探针、4 恢复动作、1 维护任务、3 个 MCP 工具、`state.json`/`events.jsonl`、固定端口 `/healthz` `/readyz` `/watchdog`、部署者 QQ 私聊报警。
+5. **调度**：同源 append 重置等待；`maxFirstPushDelaySeconds` 首次推送硬上限；open item 优先级取 max；`DeliveryPolicy` 热重载；默认 `importantDelaySeconds=3`、`normalDelaySeconds=60`；**`inbox.push.minPriority` 已废弃/忽略**——所有未被 `dropBelow` 丢弃的条目都会推送（低优先走 60s 批次），不再有“只注入不推送”的硬静音。
+6. **面板预算**：`maxCharsPerItem`（默认 1200）、`maxMessagesPerItem`/`maxItemsPerPanel` 放宽 1..50、`truncatedChars`；不设总字符上限。
+7. **身份/目录/搜索**：`sender_card`/`sender_role` 落库；群名进 source label；`qq_group_members`/`qq_group_member_info`（含头衔）；`qq_person_id/<qq>` 取代 `qq_sender/`，删除 `qq_name/`；`qq_search`。
+8. **富消息**：json/xml 卡片（有界 raw、title/desc/url/bizsrc、群邀请 groupId+sequence，ticket 不落库）；`qq_card_view`；`qq_forward_view`（`get_forward_msg` 一层展开、分页、嵌套标记）；`qq_group_request_list/decide` + `qq_group_invite_accept`。
+9. **文件/历史**：`qq_conversation_send_file`（`base64://` → 绝对路径 → `providerPath`，三态，UNKNOWN 不重试）；`qq_remote_history`（只读穿透，count 1..1000；真实 LLBot 对 1000 不稳定，自动降级 1000→300→100，retcode 1200 空页，每次尝试记日志）。
+10. **观测**：`inbox_status` 带 `pushRevision/ackConflicts/pushes/repushes/dismissed/recentErrors`，计数器跨重启持久化。
 
 ## 源码基线
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
-- 分支：`feat/bma3-plan-1`；发布：tag `v0.0.3-hotfix7`；HEAD 见 `git log -1`；工作树状态见文末命令。
-- 远端：`origin` = `https://github.com/c1589190/BotMosire-Alpha3`。
-- 版本号：`0.0.3-hotfix7`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
+- 版本号：`0.0.4-early`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 发布：**v0.0.4-early**（2026-11-12；由用户「发布0.0.4-early」授权，覆盖 D-050 的「本轮不推送」）。
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| Java 全量测试 | `./mvnw -o -q test` | **PASS**：core 7 / agentlib 5 / qqconnect 18 / inbox 24 / webconnect 4（1 skipped）/ app 26 = **84 tests, 0 fail**（2026-11-11） |
-| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：20 tests（含 complete 段唯一性、scope-local allow、宿主工具解析回退） |
-| 本地真进程端到端（假 OneBot） | `tools/e2e-local/drive*.py` | **PASS 27/27**：优先级三档时序、合并批次、逐条 ack、set_config 热重载、丢弃线、媒体下载、连接诊断 hint、read/ack 游标、引用回写平台 id |
-| 统一真环境回归（真 jar + 真插件客户端） | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> <injectPort>` | **PASS 9/9**：8 个低优先来源 → 推 6 条 → 插件按 itemIds ack 6 条 → 剩 2 条下一轮补推 → 两次 ack 合计 8 条、无刷屏 |
-| 真实 QQ / LLBot 联调 | — | `NOT_RUN`（本地只用了假 OneBot） |
-| 真实 DSH 宿主 / SSE 长连接 | — | `NOT_RUN` |
-| `packaging/smoke.sh`（jlink/jpackage + 安装 dry-run + 启动 /healthz） | `bash packaging/smoke.sh` | **PASS**（2026-11-11，app-image 启动且 /healthz=200） |
-| systemd 实际安装/开机常驻 | — | `NOT_RUN` |
+| Java 全量测试 | `./mvnw -o test` | **PASS**：core 7 / agentlib 5 / qqconnect 26 / inbox 29 / webconnect 4（1 skipped）/ watchdog 6 / app 26 = **103 tests，0 fail**（102 pass + 1 skip） |
+| DSH 插件测试 | `cd dsh-plugin && npm test` | **PASS**：24 tests |
+| 0.0.4 主 e2e | `tools/e2e-local/drive6.py` | **PASS 36/36**（watchdog/目录/卡片/1B/dismiss/文件/历史/搜索/热重载/断线重连） |
+| 重启不重推 | `tools/e2e-local/drive6b.py` | **PASS 5/5**（pushRevision/计数器持久化、冻结条目不 pending、不自动重推、新消息仍推进） |
+| 真插件客户端 roundtrip | `node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxPort> 46701` | **PASS 9/9**（窗口 6/8 → 两轮 ack 8 条、itemIds、不重复推） |
+| 热重载/防抖/面板/控制面 | `tools/e2e-local/drive6c.py` | **PASS 9/9**（4.04s 延迟、3.02s 防抖重置、truncatedChars、HTTP dismiss、heartbeat/control、minPriority=300 下低优先仍推送） |
+| 部署者报警 | `tools/e2e-local/drive6d.py` | **PASS 5/5**（断线→重连→私聊 `[BMA3 watchdog] qqAccount DOWN...`） |
+| 真实 LLBot 私聊发送 | `tools/e2e-local/llbot_send_test.py` | **PASS 6/6**：文本 `SENT`、私聊文件 `upload_private_file` `SENT via base64://`、OUT 回写 messageId、真实入站回复 |
+| 真实 LLBot 只读探测 | `LlbotProbe ws://47.100.101.156:3001/ <token> 955432692` | **PASS 8/8**：22 群、34 成员（15 title/4 card）、`get_group_member_info.title` 存在、历史 100/300 正常而 1000 超时/retcode1200→工具降级到 300、真实 `get_forward_msg` 形状 `data.messages[].content[]` 可由 `forwardId` 展开、`get_group_system_msg` 正常 |
+| jlink/jpackage smoke | `bash packaging/smoke.sh` | **PASS**（app-image 启动且 `/healthz` 200） |
+| 真实 LLBot / 真实 DSH 宿主 / 真实 QQ 卡片 / 跨机文件 | — | `NOT_RUN`（见报告 §5） |
+
+证据路径：`/tmp/bma3-e2e-004/`（app.log、data/*.db、fake.log）；报告
+[`../superpowers/reports/2026-11-12-0.0.4-e2e-report.md`](../superpowers/reports/2026-11-12-0.0.4-e2e-report.md)。
 
 ## 当前有效设计 / 维护入口
 
-- 0.0.3 设计：[`../superpowers/specs/2026-11-11-priority-rules-and-push-schedule-design.md`](../superpowers/specs/2026-11-11-priority-rules-and-push-schedule-design.md)
-- 设计裁定：D-017..D-028（[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)）；其中 D-021 明确不考虑兼容、D-022 明确本轮不发版。
-- 计划：[`../superpowers/plans/2026-11-11-0.0.3-plan.md`](../superpowers/plans/2026-11-11-0.0.3-plan.md)
-- 旧设计（仍有效的部分）：[`../superpowers/specs/2026-11-10-inbox-panel-sse-design.md`](../superpowers/specs/2026-11-10-inbox-panel-sse-design.md)（N/M 截断、SSE 生命周期、Inbox 不带 URL）
-- 维护裁定：M-002（[`MAINTENANCE_RULINGS.md`](MAINTENANCE_RULINGS.md)）
+- 0.0.4 设计：[`../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md`](../superpowers/specs/2026-11-12-0.0.4-watchdog-delivery-design.md)
+- 0.0.4 计划：[`../superpowers/plans/2026-11-12-0.0.4-plan.md`](../superpowers/plans/2026-11-12-0.0.4-plan.md)
+- 设计裁定：D-042..D-050（[`../superpowers/DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)）；其中 D-043 取代 0.0.3 的「推送即冻结 + 同源续接」、D-044 取代「后到不重置」、D-048 取代 `qq_name/` 与 `qq_sender/`。
+- 0.0.3 设计（仍有效的部分）：[`../superpowers/specs/2026-11-11-priority-rules-and-push-schedule-design.md`](../superpowers/specs/2026-11-11-priority-rules-and-push-schedule-design.md) 的分数/配置/媒体/诊断章节；§5.2 第 3 条与 §12 的续接语义已被 0.0.4 取代。
+- 维护裁定：M-002（[`MAINTENANCE_RULINGS.md`](MAINTENANCE_RULINGS.md)）。
 
-## 已实现的关键行为（0.0.3 批次 1）
+## 已实现的关键行为（0.0.4）
 
-- **优先级一处真源**：分数只在 `config/app.yaml` 的 `weighting.*`；`qq_source_weight` 表、`qq_user_note.priority`、`qq_source_weight_*` 三个工具**已删除**。
-- **两级键 + 最具体胜**：`qq_group` / `qq_group/955432692` / `qq_private/132843233`；`qq_sender/<qq>`、`qq_name/<子串>` 是**加法**加分；`maxPriority` 封顶。
-- **三档出口**：`< dropBelow(-300)` 丢弃**且不落库**；`≥ immediateThreshold(300)` 1s 推；其余 30s 批。
-- **推送时序**：`InboxService.awaitPush`；批次以最早 pending 项为锚、**不重置**；一条立即项到点带走全部 pending；已推送项不重复推；`GET /panel` 与工具仍是实时全量。
-- **消息模型**：`chat_message` 增 `sender_id`/`sender_name`/`segments_json`/`external_message_id`；`Segment` 带 `data` 白名单；出站发送成功后回写平台 id；`qq_reply_to_bot` 靠该索引判定。
-- **读取工具**：`qq_conversation_history`/`qq_conversation_read`/`qq_message_get` 均带 `sender{id,name}`/`externalMessageId`/`self`，`includeSegments=true` 返回结构化段；`read` 不再要求账号在线；旧的误导字段 `from` 已删除。
-- **媒体查看**：`qq_media_view` 只接受 `fileId`（`source+messageId+index` 编码），先 `get_msg`/`get_image` 刷新 rkey 链接再按上限下载；文本 ≤64KB 内联，其余落 `<dataDir>/downloads` 返回路径；坏 id/超限不落盘。
-- **插件侧 inbox 管理**：`bma3_inbox`（status/bind/unbind/pause/resume/start/stop/ack）一个工具搞定本会话挂载状态与修改；`status` 带 `thisSessionIsTarget` 与 token 来源（不回显 token）。
-- **Inbox 工具面**：`inbox_items`（含 M 之外的条目）、`inbox_get`、`inbox_wait`（只读、默认 20s/硬顶 60s）；`inbox_ack` 逐条 ack（`itemIds`/`indices`/`range` + `revision` 校验，冲突返回 409/`REVISION_CONFLICT`）。
-- **注入筛选与时钟**：`inbox.push.minPriority` 让条目"可见但不唤醒"；每轮 flush 后按 `max(updatedAt, lastFlushAt)` 重排重算。
-- **保留期**：`inbox.retention.maxAgeDays=30` / `maxItems=5000`，只清 ACKED。
-- **诊断**：`OneBotDiagnostics` 把 426/401/404/拒绝/DNS 映射成 hint，并在握手失败后主动探测同 host:port 的 HTTP；`qq_account_list` 输出真实 `connected` + `lastError`；MCP 401 响应体自带 `errorCode/reason/hint`。
-- **精简（D-036）**：删掉 legacy delivery 路径（`Delivery`/`due()`/`ack(deliveryId)`/`/deliveries/*`/`inbox_delivery` 表/重试参数）与三个重复工具（`qq_recent_messages`、`qq_account_login_info`、`qq_user_note_get`）；工具面 = QQ 16 + Inbox 6 + 配置 2。
-- **配置写入口**：`set_config`（点分路径 patch/unset，隔离校验 → 原子替换 → 等热重载，返回 `applied/reloaded/effective`，**无白名单**）；`get_config` 只读脱敏。
-- **bot 身份**：`qqconnect.accounts[].selfQq/selfName` 可配；缺省由 `get_login_info` 学习（失败只告警，相关属性保持关闭）。
+- **推送是持久水位**：`inbox_meta.push_revision` + `inbox_item.frozen_revision`；Java 重启不重推已冻结条目。
+- **同源可多条**：未冻结条目才合并；推送后新消息另开条目并标「（消息更新活跃）」。
+- **ack 幂等**：重复 ack 已确认条目返回 200/no-op；同源第二条不会让第一条 409。
+- **dismiss**：不读正文按过滤条件清；默认保护 `priority >= immediateThreshold`；只标 ACKED 不删除。
+- **watchdog**：QQ 断线自动重连（`AccountRegistry.forceReconnect` + reconcile 死连接替换）；Inbox HTTP/MCP 可重启；插件心跳/控制；关键组件 DOWN → `/readyz` 503；部署者 QQ 私聊报警（冷却、统一发送出口、UNKNOWN 不重发）。
+- **身份**：群名片优先显示，昵称以 `[昵称:...]` 保留；头衔来自目录缓存；群名进来源标签。
+- **卡片**：面板只显示 `[卡片] 标题`；完整字段/链接/群邀请只在 `qq_card_view` 显式返回；ticket 不落库。
+- **转发**：`qq_forward_view` 只读展开一层，分页；嵌套不递归。
+- **文件**：只走 OneBot `upload_group_file`/`upload_private_file`；不假设共享 FS、不提供 BMA3 文件服务器。
+- **历史**：`qq_remote_history` 只读穿透，不写消息板；`count` 上限 100。
 
 ## 未验证 / 风险 / blocker
 
-- **预设工具行解析（hotfix6）**：`host-tools.js` 在本机实测 5/5 解析到宿主 `.pnpm` 里的真实入口；但**在真实会话里挂载成功**仍 `NOT_RUN`（需要装上后开一个 bma3 会话看 `bma3_self_status.presetTools` 与工具表）。
-- **真实 LLBot/DSH 仍 `NOT_RUN`**：本地已用"真进程 + 真 MCP/HTTP + 假 OneBot"跑通 27 项（见 `tools/e2e-local/`），但真实 LLBot 的 `get_msg`/`get_image` 行为、以及 DSH 宿主侧的注入链路仍未验证。
-- **hotfix3 引入、hotfix4 修掉的回归**：`self` 默认改成 `complete: true` 后，与 legacy `persona` 模块注册的
-  `bma3-persona` complete 段同时生效 → DSH 报 `multiple complete prompt sections are active`，整轮失败；
-  而 legacy 模块**从不释放**自己的 section（`persona.js` 丢弃了 `systemPrompt.section()` 的 disposer），
-  所以每次重载后老会话都会复发。修法：删除 `persona` 模块与其 loader 行；`self` 额外注册同名空段
-  `bma3-persona` 遮蔽旧段（scoped 遮蔽 global），热重载即可恢复、不必重启。
-- **0.0.3-hotfix2 实测发现、hotfix3 修掉的两个真 bug**：
-  ⑤ **窗口外条目被"标记已推送"吞掉**：`flushPending()` 把整批 pending 都标成 delivered，而面板只渲染 top-M → 窗口外的条目再也不会推；
-  ⑥ **ack 范围过大**：`POST /ack {revision}` 会 ack 所有 `eventRevision ≤ revision` 的条目，包括没进窗口、从未显示的 → 低优先级消息被静默吃掉。
-  修法：flush 只标记窗口内条目；`nextDue()` 增加"窗口容量"语义（窗口满时窗口外的不算 due，等 ack 腾位）；`ackPanel(revision)` 只 ack 当前处于 delivered 状态的条目；插件 ack 改为按 `itemIds` 精确确认。
-- **e2e 发现并已修的四个真 bug**：
-  ① 同一来源连发会把批次时钟往后推（合并刷新 `updatedAt`）→ 锚定"首次欠推送时刻" `pendingSince`；
-  ② 连不上的账号从 `qq_account_list` 里消失（只列 active）→ 改为列"配置中的账号"；
-  ③ **推送被旧连接抢走**：flush 由"谁先等到"执行，慢/断开的 SSE 读者可能把这一轮推掉，在线客户端收不到 → 改为按 `pushRevision` 投递游标，任何等待者都能补收；
-  ④ **热重载卡住入站**：`reconcile()` 持注册表锁做"连接 5s + 诊断探测 2s"，入站要同一把锁读 bot 身份 → 改成并发 map，慢路径不持锁。
-- **`pushedItems` 是内存表**：重启后未 ack item 会重新进入 pending（按 `updatedAt + delay`），通常立即 flush 一次；宁重推不漏推，需真实环境观察。
-- **`self_name` 子串匹配**误命中率高（"小博"/"bot"），默认 +60 压在立即线以下。
-- **旧库迁移**：`chat_message` 新列是 additive；`qq-extras.db` 打开时 `DROP COLUMN priority` / `DROP TABLE qq_source_weight`；远端库需先备份。
-- **媒体未接 MCP ImageContent**：`qq_media_view` 目前返回本地路径（Agent 用 `read_image`）；`assetDocIds` + `ToolAssetResolver` 通道等真实宿主验证后再决定。
-- **媒体下载只有 fake CDN 证据**：真实 QQ CDN 的 302/rkey 行为 `NOT_RUN`。
-- **多消费者**：ack 仍是单面板全局游标。
+- **真实 LLBot**：只读探测 PASS + **私聊发送 PASS**（文本 `SENT`；私聊文件 `upload_private_file` `SENT via base64://`；真实入站回复已收到）。**群文件 `upload_group_file` 未真实发送**，`providerPath` 未用；`llonebot_debug` 回退无待处理邀请，`NOT_RUN`。
+- **真实 DSH 宿主**：`agents.resume` + 插件热重载/重启恢复 `NOT_RUN`。
+- **跨机文件**：若真实 LLBot 不接受 base64/绝对路径，按 D-047 由 Agent 用 bash 放到 QQ 机后传 `providerPath`；该路径未真机执行。
+- **真实 QQ 卡片样本**：群邀请卡片的 `mqqapi://` 参数名/格式只有继承仓代码与假样本证据，真实样本 `NOT_RUN`。
+- **部署者 QQ 报警**：e2e 只到假 OneBot；真实私聊 `NOT_RUN`。
+- **`qq_search` 性能**：`LIKE` 在超大消息板上可能慢；FTS5/中文分词留后续。
+- **真实 DSH 插件热重载/常驻**：`NOT_RUN`。
+- **systemd 常驻**：`NOT_RUN`。
 
 ## 下一步
 
-0. ~~`bma3_mcp_onboard`（端口探测/引导绑定）~~：**用户裁定暂不做**（2026-11-11）。
-1. 批次 5：真实 LLBot/DSH 联调（本地假 OneBot 已 PASS，真机仍 `NOT_RUN`）（`get_login_info`、平台 id 回写、推送节奏、逐条 ack、`set_config` 热重载、诊断 hint）。
-2. 真实宿主验证 MCP 图片通道，再决定媒体是否补 `assetDocIds`（D-035 暂缓）。
-3. 联调通过后再决定 0.0.3 发版与版本号 bump。
-4. 全部就绪后做一次真实 LLBot/DSH 联调，再决定 0.0.3 发版与版本号 bump。
+1. 真实 LLBot **文件上传**：需要明确的目标群/人；验证 `base64://`/绝对路径/`providerPath`（当前只做了只读探测）；
+2. 真实 DSH 宿主验证插件 `agents.resume` + heartbeat 控制；
+3. 真实卡片样本（json/xml）与真实群邀请接受（需要一条真实待处理邀请）；
+4. 真实部署者 QQ 报警（需要真实账号）；
+5. `qq_search` 视数据量再评估 FTS5；
+6. 0.0.4-early 已发布；后续真机项（群文件/真实卡片/DSH resume/部署者报警）通过后再决定下一个版本。
 
 ```bash
 git status --short --branch

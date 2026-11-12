@@ -26,6 +26,22 @@ public interface MessageBoardStore extends AutoCloseable {
     /** Reverse lookup used to answer "is the quoted message one of mine?". */
     Optional<Message> findByExternalMessageId(SourceAddress source, String externalMessageId);
 
+    /**
+     * Full-text-ish search over the board: message text, sender nickname and group card.
+     *
+     * @param query        literal substring (case-insensitive via SQLite LIKE)
+     * @param sourcePrefix optional source prefix, e.g. {@code qq_group/955432692}
+     * @param from         optional lower bound (inclusive)
+     * @param to           optional upper bound (inclusive)
+     * @param beforeSeq    only rows with {@code local_seq < beforeSeq} (0 = no bound)
+     * @param limit        1..500
+     */
+    List<Message> search(String query, String sourcePrefix, java.time.Instant from,
+                         java.time.Instant to, long beforeSeq, int limit);
+
+    /** Cheap liveness check used by the watchdog. */
+    boolean ping();
+
     @Override
     void close();
 }

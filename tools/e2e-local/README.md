@@ -7,7 +7,7 @@
 ## 前提
 
 - 本机已 `./mvnw -o -q -pl bma3-app -am package -DskipTests` 产出
-  `bma3-app/target/bma3-app-0.0.2-hotfix1.jar`；
+  `bma3-app/target/bma3-app-0.0.4-early.jar`；
 - 脚本里写死 `/tmp/bma3-e2e`（工作目录）与端口 `45701`（假 OneBot WS）、`46701`（事件注入 HTTP）、`18080`（假 CDN/HTTP 端口）。
 
 ## 跑法
@@ -25,13 +25,17 @@ nohup java -cp "/tmp/bma3-e2e:$JW:$SLF" FakeOneBot 45701 46701 \
 # 3. 配置 + 启动（端口全 0，从 stdout 读回真实端口）
 #    config/app.yaml 见下方"最小配置"；normalDelaySeconds 调成 2 便于观察
 env BMA3_MCP_TOKEN=e2e-mcp-token LLBOT_TOKEN=e2e-llbot-token \
-  java -jar bma3-app/target/bma3-app-0.0.2-hotfix1.jar --config /tmp/bma3-e2e \
+  java -jar bma3-app/target/bma3-app-0.0.4-early.jar --config /tmp/bma3-e2e \
   > /tmp/bma3-e2e/app.log 2>&1 &
 # 4. 驱动
 python3 tools/e2e-local/drive.py      # 优先级/时序/配置/丢弃/历史（14 项）
 python3 tools/e2e-local/drive3.py     # 失败账号诊断 + inbox_wait（4 项，需无 SSE 消费者）
 python3 tools/e2e-local/drive4.py     # 合并带走/at/read 游标/出站回写（6 项）
 python3 tools/e2e-local/drive5.py     # 引用 bot vs 引用他人（3 项）
+python3 tools/e2e-local/drive6.py     # 0.0.4：watchdog/目录/卡片/1B/dismiss/文件/历史/搜索/热重载/断线重连（36 项）
+python3 tools/e2e-local/drive6b.py    # 重启不重推（5 项，需先重启 jar）
+python3 tools/e2e-local/drive6c.py    # 热重载/防抖/面板预算/HTTP dismiss/插件控制面/minPriority（9 项）
+python3 tools/e2e-local/drive6d.py    # 断线重连 + 部署者 QQ 报警（5 项）
 ```
 
 ## 最小配置
@@ -75,6 +79,38 @@ flush 被旧连接抢走、`reconcile` 持锁卡住入站。
 
 - 这些脚本是**本机一次性验证**，不进 CI；`/tmp` 路径与端口是写死的。
 - 脚本用时间派生的 message id，可以反复跑；`drive.py` 开头会先 `inbox_ack` 清场。
-- 假 OneBot 只回答 `get_login_info/get_status/get_group_list/get_friend_list/get_msg/get_image/send_*`，
-  其余动作回空 `data`。
+- 假 OneBot 还回答 `get_forward_msg/get_group_member_list/get_group_member_info/`
+  `get_group_system_msg/set_group_add_request/upload_group_file/get_group_msg_history`；
+  `POST /drop` 可断开当前 WS，用来测 watchdog 重连。
 - `drive3.py` 必须在**没有 SSE 消费者**时跑：SSE 连接本身会驱动 flush，`inbox_wait` 就等不到"下一次"。
+
+
+## 真实 LLBot 只读探测
+
+`LlbotProbe.java` 连真实 LLBot，只调 `get_*`（不发消息、不接受请求、不打印正文）：
+
+```bash
+JW=~/.m2/repository/org/java-websocket/Java-WebSocket/1.6.0/Java-WebSocket-1.6.0.jar
+SLF=$(ls ~/.m2/repository/org/slf4j/slf4j-api/*/slf4j-api-*.jar | tail -1)
+javac -proc:none -cp "bma3-app/target/bma3-app-0.0.4-early.jar:$JW:$SLF" -d /tmp/probe \
+  tools/e2e-local/LlbotProbe.java
+java -cp "/tmp/probe:bma3-app/target/bma3-app-0.0.4-early.jar:$JW:$SLF" \
+  LlbotProbe ws://<llbot-host>:3001/ <token> 955432692
+```
+
+`llbot_real_probe.py` 用真 BMA3 MCP 验证 `qq_group_members/qq_group_member_info/`
+`qq_remote_history(1000→300)/qq_forward_view`；运行前把 `LLBOT_TOKEN` 设进临时 run 目录的配置。
+
+
+## 真实 LLBot 发送（会真的发消息）
+
+`llbot_send_test.py` 会向配置里的 `USER` 发 1 条文本 + 1 个文件，并等待 60s 入站回复；只在用户明确授权时跑：
+
+```bash
+# 先按 llbot_real_probe 的方式起临时 run 目录，把 LLBOT_TOKEN 设进环境
+BMA3_MCP_TOKEN=real-send-token LLBOT_TOKEN=<token> \
+  java -jar bma3-app/target/bma3-app-0.0.4-early.jar --config /tmp/bma3-llbot-live &
+BMA3_TEST_QQ=<your qq> python3 tools/e2e-local/llbot_send_test.py
+```
+
+2026-11-12 实测：私聊文本 `SENT`；私聊文件 `upload_private_file` **`SENT via base64://`**；真实入站回复收到。

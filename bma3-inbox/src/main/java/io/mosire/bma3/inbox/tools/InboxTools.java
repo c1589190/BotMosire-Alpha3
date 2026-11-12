@@ -21,7 +21,8 @@ public final class InboxTools {
     public static List<AgentTool> all(InboxService service) {
         return List.of(new InboxStatusTool(service), new InboxListTool(service),
                 new InboxItemsTool(service), new InboxGetTool(service),
-                new InboxAckTool(service), new InboxWaitTool(service));
+                new InboxAckTool(service), new InboxDismissTool(service),
+                new InboxWaitTool(service));
     }
 
     static ToolResult json(Object value) {

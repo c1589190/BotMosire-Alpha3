@@ -1,6 +1,8 @@
 # 优先级规则 / 推送时序 / 配置写入口设计（0.0.3 第一批）
 
-> **状态**：已实现（2026-11-11）· **类型**：项目设计（专题）
+> **状态**：历史（0.0.3）· **部分被取代**（2026-11-12）：0.0.4 设计 §3/§4 取代本文 §5.2 第 3 条「后到不重置」与 §12「推送即冻结 + 同源续接」；§9 的默认延迟改为 `importantDelaySeconds=3` / `normalDelaySeconds=60`。其余（分数公式、配置写入口、媒体、诊断）仍有效。
+> **取代者**：[`2026-11-12-0.0.4-watchdog-delivery-design.md`](2026-11-12-0.0.4-watchdog-delivery-design.md)
+> **类型**：项目设计（专题）
 > **需求原话**：见 [`../DESIGN_RULINGS.md`](../DESIGN_RULINGS.md) D-017..D-028（逐字）
 > **取代**：`2026-11-10-inbox-panel-sse-design.md` §8（优先级公式）、§9 之外的推送时机；不取代 D-009/D-010（N/M 截断）与 D-011（Inbox 不带 URL）
 > **本批未做**：MCP ImageContent 图片通道（D-035 明确先走 `read_image`）；真实 LLBot/DSH 联调 —— 见 [`../plans/2026-11-11-0.0.3-plan.md`](../plans/2026-11-11-0.0.3-plan.md)

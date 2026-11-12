@@ -63,8 +63,9 @@ class InboxHttpServerTest {
                 HttpResponse<String> second = post(base + "/v1/inboxes/bma3/ack", "token",
                         "{\"itemIds\":[\"" + itemId + "\"]}");
                 assertThat(second.statusCode())
-                        .as("已经 ack 过的条目再 ack 要被拒绝，而不是静默成功")
-                        .isEqualTo(400);
+                        .as("ack 幂等：重复 ack 已确认条目是成功 no-op")
+                        .isEqualTo(200);
+                assertThat(mapper.readTree(second.body()).path("remaining").asInt()).isZero();
             } finally {
                 server.close();
             }

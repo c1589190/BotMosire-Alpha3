@@ -11,7 +11,9 @@ public record AppConfig(
         Inbox inbox,
         Webconnect webconnect,
         Weighting weighting,
-        Logging logging) {
+        Logging logging,
+        Deployer deployer,
+        Watchdog watchdog) {
 
     public AppConfig {
         dataDir = dataDir == null ? Path.of("data") : dataDir;
@@ -21,24 +23,101 @@ public record AppConfig(
         webconnect = webconnect == null ? Webconnect.defaults() : webconnect;
         weighting = weighting == null ? Weighting.defaults() : weighting;
         logging = logging == null ? Logging.defaults() : logging;
+        deployer = deployer == null ? Deployer.defaults() : deployer;
+        watchdog = watchdog == null ? Watchdog.defaults() : watchdog;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
                 new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
-                Weighting.defaults(), Logging.defaults());
+                Weighting.defaults(), Logging.defaults(), Deployer.defaults(),
+                Watchdog.defaults());
     }
 
-    public record Server(String host, int port, String mcpPath, String tokenEnv) {
+    /**
+     * Watchdog knobs. Plain values so the watchdog module never depends on this config class;
+     * the app maps this record to {@code WatchdogOptions}.
+     */
+    public record Watchdog(boolean enabled, int intervalSeconds, int probeTimeoutMs,
+                           int failureThreshold, int recoveryCooldownSeconds,
+                           int alertCooldownSeconds, int pluginHeartbeatTimeoutSeconds,
+                           long diskMinFreeMb, List<String> readyzCritical) {
+
+        public Watchdog {
+            if (intervalSeconds < 1 || intervalSeconds > 3600) {
+                throw new IllegalArgumentException("watchdog.intervalSeconds 必须在 1..3600");
+            }
+            if (probeTimeoutMs < 100 || probeTimeoutMs > 60_000) {
+                throw new IllegalArgumentException("watchdog.probeTimeoutMs 必须在 100..60000");
+            }
+            if (failureThreshold < 1 || failureThreshold > 100) {
+                throw new IllegalArgumentException("watchdog.failureThreshold 必须在 1..100");
+            }
+            if (recoveryCooldownSeconds < 1 || recoveryCooldownSeconds > 86_400) {
+                throw new IllegalArgumentException(
+                        "watchdog.recoveryCooldownSeconds 必须在 1..86400");
+            }
+            if (alertCooldownSeconds < 1 || alertCooldownSeconds > 86_400) {
+                throw new IllegalArgumentException(
+                        "watchdog.alertCooldownSeconds 必须在 1..86400");
+            }
+            if (pluginHeartbeatTimeoutSeconds < 5 || pluginHeartbeatTimeoutSeconds > 3600) {
+                throw new IllegalArgumentException(
+                        "watchdog.pluginHeartbeatTimeoutSeconds 必须在 5..3600");
+            }
+            if (diskMinFreeMb < 0 || diskMinFreeMb > 1_000_000) {
+                throw new IllegalArgumentException("watchdog.diskMinFreeMb 必须在 0..1000000");
+            }
+            readyzCritical = readyzCritical == null ? List.of() : List.copyOf(readyzCritical);
+        }
+
+        public static Watchdog defaults() {
+            return new Watchdog(true, 10, 2000, 2, 30, 600, 45, 200,
+                    List.of("mcp", "inboxHttp", "qqAccount", "db"));
+        }
+    }
+
+    /**
+     * The operator to alert when the watchdog detects a component going DOWN. Editable by the
+     * Agent through {@code set_config}; the value is a QQ number, never a credential.
+     */
+    public record Deployer(String qq, boolean enabled) {
+
+        public Deployer {
+            qq = qq == null ? "" : qq.trim();
+            if (!qq.isEmpty() && !qq.matches("[0-9]{5,12}")) {
+                throw new IllegalArgumentException("deployer.qq 必须是 5..12 位数字的 QQ 号");
+            }
+        }
+
+        public static Deployer defaults() {
+            return new Deployer("", false);
+        }
+
+        public boolean configured() {
+            return enabled && !qq.isEmpty();
+        }
+    }
+
+    public record Server(String host, int port, String mcpPath, String tokenEnv,
+                         int healthPort) {
 
         public Server {
             host = host == null || host.isBlank() ? "127.0.0.1" : host;
             mcpPath = mcpPath == null || mcpPath.isBlank() ? "/mcp" : mcpPath;
             tokenEnv = tokenEnv == null ? "BMA3_MCP_TOKEN" : tokenEnv;
+            if (healthPort < 0 || healthPort > 65535) {
+                throw new IllegalArgumentException("server.healthPort 必须在 0..65535");
+            }
+        }
+
+        /** Compatibility constructor: random health port. */
+        public Server(String host, int port, String mcpPath, String tokenEnv) {
+            this(host, port, mcpPath, tokenEnv, 0);
         }
 
         public static Server defaults() {
-            return new Server("127.0.0.1", 8765, "/mcp", "BMA3_MCP_TOKEN");
+            return new Server("127.0.0.1", 8765, "/mcp", "BMA3_MCP_TOKEN", 8766);
         }
     }
 
@@ -123,13 +202,29 @@ public record AppConfig(
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Logging logging) {
         this(dataDir, server, qqconnect, inbox, Webconnect.defaults(),
-                Weighting.defaults(), logging);
+                Weighting.defaults(), logging, Deployer.defaults(), Watchdog.defaults());
     }
 
     /** 6-arg compatibility constructor for profiles created before weighting. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Logging logging) {
-        this(dataDir, server, qqconnect, inbox, webconnect, Weighting.defaults(), logging);
+        this(dataDir, server, qqconnect, inbox, webconnect, Weighting.defaults(), logging,
+                Deployer.defaults(), Watchdog.defaults());
+    }
+
+    /** 7-arg compatibility constructor for profiles created before the deployer alert. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Weighting weighting, Logging logging) {
+        this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging,
+                Deployer.defaults(), Watchdog.defaults());
+    }
+
+    /** 8-arg compatibility constructor for profiles created before the watchdog. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Weighting weighting, Logging logging,
+                     Deployer deployer) {
+        this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging, deployer,
+                Watchdog.defaults());
     }
 
     /**
@@ -255,13 +350,19 @@ public record AppConfig(
     }
 
     public record Inbox(String inboxId, int httpPort, Display display, Push push,
-                        Retention retention) {
+                        Retention retention, Dismiss dismiss) {
 
         public Inbox {
             inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
             display = display == null ? Display.defaults() : display;
             push = push == null ? Push.defaults() : push;
             retention = retention == null ? Retention.defaults() : retention;
+            dismiss = dismiss == null ? Dismiss.defaults() : dismiss;
+        }
+
+        public Inbox(String inboxId, int httpPort, Display display,
+                     Push push, Retention retention) {
+            this(inboxId, httpPort, display, push, retention, Dismiss.defaults());
         }
 
         public Inbox(String inboxId, int httpPort, Display display) {
@@ -274,20 +375,56 @@ public record AppConfig(
 
         public static Inbox defaults() {
             return new Inbox("bma3", 46500, Display.defaults(), Push.defaults(),
-                    Retention.defaults());
+                    Retention.defaults(), Dismiss.defaults());
         }
 
         /** Push filter: items below {@code minPriority} stay visible but never wake the agent. */
-        public record Push(int minPriority) {
+        public record Push(int minPriority, int maxFirstPushDelaySeconds) {
 
             public Push {
                 if (minPriority < -1000 || minPriority > 1000) {
                     throw new IllegalArgumentException("inbox.push.minPriority 必须在 -1000..1000");
                 }
+                if (maxFirstPushDelaySeconds < 0 || maxFirstPushDelaySeconds > 3600) {
+                    throw new IllegalArgumentException(
+                            "inbox.push.maxFirstPushDelaySeconds 必须在 0..3600");
+                }
+            }
+
+            /** Compatibility constructor: default hard cap. */
+            public Push(int minPriority) {
+                this(minPriority, 60);
             }
 
             public static Push defaults() {
-                return new Push(-1000);
+                return new Push(-1000, 60);
+            }
+        }
+
+        /**
+         * Automatic backlog cleanup (D-042). Disabled by default; the watchdog maintenance task
+         * calls {@code InboxService.autoDismiss()} when enabled.
+         */
+        public record Dismiss(boolean autoEnabled, int autoBelowPriority,
+                              int autoAfterSeconds, int autoMaxPerRound) {
+
+            public Dismiss {
+                if (autoBelowPriority < -1000 || autoBelowPriority > 1000) {
+                    throw new IllegalArgumentException(
+                            "inbox.dismiss.autoBelowPriority 必须在 -1000..1000");
+                }
+                if (autoAfterSeconds < 1 || autoAfterSeconds > 86_400 * 30) {
+                    throw new IllegalArgumentException(
+                            "inbox.dismiss.autoAfterSeconds 必须在 1..2592000");
+                }
+                if (autoMaxPerRound < 1 || autoMaxPerRound > 500) {
+                    throw new IllegalArgumentException(
+                            "inbox.dismiss.autoMaxPerRound 必须在 1..500");
+                }
+            }
+
+            public static Dismiss defaults() {
+                return new Dismiss(false, 0, 1800, 200);
             }
         }
 
@@ -309,19 +446,28 @@ public record AppConfig(
         }
 
         public record Display(int maxMessagesPerItem, int maxItemsPerPanel,
-                              boolean includeOmittedCount) {
+                              boolean includeOmittedCount, int maxCharsPerItem) {
 
             public Display {
-                if (maxMessagesPerItem < 4 || maxMessagesPerItem > 8) {
-                    throw new IllegalArgumentException("inbox.display.maxMessagesPerItem 必须在 4..8");
+                if (maxMessagesPerItem < 1 || maxMessagesPerItem > 50) {
+                    throw new IllegalArgumentException("inbox.display.maxMessagesPerItem 必须在 1..50");
                 }
-                if (maxItemsPerPanel < 4 || maxItemsPerPanel > 8) {
-                    throw new IllegalArgumentException("inbox.display.maxItemsPerPanel 必须在 4..8");
+                if (maxItemsPerPanel < 1 || maxItemsPerPanel > 50) {
+                    throw new IllegalArgumentException("inbox.display.maxItemsPerPanel 必须在 1..50");
+                }
+                if (maxCharsPerItem < 0 || maxCharsPerItem > 20000) {
+                    throw new IllegalArgumentException("inbox.display.maxCharsPerItem 必须在 0..20000");
                 }
             }
 
+            /** Compatibility constructor: default per-item character cap. */
+            public Display(int maxMessagesPerItem, int maxItemsPerPanel,
+                           boolean includeOmittedCount) {
+                this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, 1200);
+            }
+
             public static Display defaults() {
-                return new Display(6, 6, true);
+                return new Display(6, 6, true, 1200);
             }
         }
     }

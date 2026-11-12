@@ -5,13 +5,15 @@ public record RuntimePolicy(
         AppConfig.Inbox.Display display,
         AppConfig.Inbox.Push push,
         AppConfig.Inbox.Retention retention,
+        AppConfig.Inbox.Dismiss dismiss,
         AppConfig.QqConnect.Send send,
         AppConfig.QqConnect.Media media,
         AppConfig.Weighting weighting) {
 
     public static RuntimePolicy from(AppConfig config) {
         return new RuntimePolicy(config.inbox().display(), config.inbox().push(),
-                config.inbox().retention(), config.qqconnect().send(),
-                config.qqconnect().media(), config.weighting());
+                config.inbox().retention(), config.inbox().dismiss(),
+                config.qqconnect().send(), config.qqconnect().media(),
+                config.weighting());
     }
 }

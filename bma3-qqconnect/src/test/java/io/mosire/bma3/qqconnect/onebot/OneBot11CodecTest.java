@@ -95,4 +95,56 @@ class OneBot11CodecTest {
                 {"post_type": "meta_event", "meta_event_type": "lifecycle", "self_id": 10001}
                 """)).isEmpty();
     }
+
+    @Test
+    void capturesTheGroupCardAndRoleWithoutLosingTheNickname() {
+        OneBotEvent event = codec.decode("""
+                {
+                  "post_type": "message",
+                  "message_type": "group",
+                  "self_id": 10001,
+                  "group_id": 955432692,
+                  "user_id": 20002,
+                  "message_id": 9004,
+                  "time": 1762700003,
+                  "message": [{"type": "text", "data": {"text": "hi"}}],
+                  "sender": {"nickname": "南沐秋", "card": "群名片小王", "role": "admin"}
+                }
+                """).orElseThrow();
+        assertThat(event.senderName()).isEqualTo("南沐秋");
+        assertThat(event.senderCard()).isEqualTo("群名片小王");
+        assertThat(event.senderRole()).isEqualTo("admin");
+        assertThat(event.displayName()).isEqualTo("群名片小王");
+    }
+
+    @Test
+    void parsesAJsonCardAndNeverStoresTheInviteTicket() {
+        OneBotEvent event = codec.decode("""
+                {
+                  "post_type": "message",
+                  "message_type": "group",
+                  "self_id": 10001,
+                  "group_id": 955432692,
+                  "user_id": 20002,
+                  "message_id": 9005,
+                  "time": 1762700004,
+                  "message": [{
+                    "type": "json",
+                    "data": {"data": "{\\\"title\\\":\\\"群邀请\\\",\\\"desc\\\":\\\"来玩\\\",\\\"bizsrc\\\":\\\"qun.invite\\\",\\\"jumpUrl\\\":\\\"https://example.com/invite\\\",\\\"meta\\\":{\\\"news\\\":{\\\"title\\\":\\\"群邀请\\\",\\\"desc\\\":\\\"来玩\\\"}}, \\\"url\\\":\\\"mqqapi://group/invite_join?groupcode=123456&msgseq=789&token=SECRET\\\"}"}
+                  }],
+                  "sender": {"nickname": "Bob"}
+                }
+                """).orElseThrow();
+        var card = event.segments().stream()
+                .filter(segment -> "json".equals(segment.type())).findFirst().orElseThrow();
+        assertThat(card.text()).isEqualTo("[卡片] 群邀请");
+        assertThat(card.data("title")).isEqualTo("群邀请");
+        assertThat(card.data("desc")).isEqualTo("来玩");
+        assertThat(card.data("invite_group")).isEqualTo("123456");
+        assertThat(card.data("invite_seq")).isEqualTo("789");
+        assertThat(card.data("url")).as("普通 https 链接保留，mqqapi ticket 链接不落库")
+                .isEqualTo("https://example.com/invite");
+        assertThat(card.data("raw")).doesNotContain("SECRET");
+        assertThat(card.data("raw")).contains("[群邀请链接已移除]");
+    }
 }

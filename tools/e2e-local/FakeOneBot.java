@@ -8,13 +8,15 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Minimal OneBot 11 forward-WS endpoint: answers actions, forwards injected events from stdin. */
+/**
+ * Minimal OneBot 11 forward-WS endpoint for local e2e: answers actions, forwards injected events
+ * from a tiny HTTP port, and can drop the live socket to test watchdog reconnection.
+ */
 public final class FakeOneBot extends WebSocketServer {
 
     private static final Pattern ACTION = Pattern.compile("\"action\"\\s*:\\s*\"([^\"]+)\"");
@@ -54,10 +56,43 @@ public final class FakeOneBot extends WebSocketServer {
         switch (name) {
             case "get_login_info" -> data = "{\"user_id\":10001,\"nickname\":\"BMA3E2E\"}";
             case "get_status" -> data = "{\"online\":true,\"good\":true}";
-            case "get_group_list" -> data = "[{\"group_id\":955432692,\"group_name\":\"E2E群\"}]";
+            case "get_group_list" -> data = "[{\"group_id\":955432692,\"group_name\":\"E2E群\","
+                    + "\"member_count\":42}]";
+            case "get_group_info" -> data = "{\"group_id\":955432692,\"group_name\":\"E2E群\","
+                    + "\"member_count\":42}";
             case "get_friend_list" -> data = "[{\"user_id\":132843233,\"nickname\":\"南沐秋\"}]";
             case "get_msg" -> data = "{\"message_id\":1,\"message\":[]}";
             case "get_image" -> data = "{}";
+            case "get_group_member_list" -> data = "["
+                    + "{\"user_id\":20002,\"nickname\":\"南沐秋\",\"card\":\"群名片小王\","
+                    + "\"role\":\"admin\",\"title\":\"大肥鱼\",\"title_expire_time\":0},"
+                    + "{\"user_id\":20003,\"nickname\":\"路人\",\"card\":\"\","
+                    + "\"role\":\"member\",\"title\":\"\",\"title_expire_time\":0}]";
+            case "get_group_member_info" -> data = "{\"user_id\":20002,"
+                    + "\"nickname\":\"南沐秋\",\"card\":\"群名片小王\",\"role\":\"admin\","
+                    + "\"title\":\"大肥鱼\",\"title_expire_time\":0}";
+            case "get_group_system_msg" -> data = "{\"invited_requests\":["
+                    + "{\"request_id\":\"777\",\"group_id\":123456,\"group_name\":\"邀请群\","
+                    + "\"invitor_uin\":20002,\"invitor_nick\":\"南沐秋\","
+                    + "\"message\":\"来玩\",\"checked\":false}],\"join_requests\":[]}";
+            case "set_group_add_request" -> data = "{}";
+            case "get_forward_msg" -> data = "{\"messages\":["
+                    + "{\"sender\":{\"user_id\":20002,\"nickname\":\"A\",\"card\":\"卡A\"},"
+                    + "\"time\":1762700000,\"content\":["
+                    + "{\"type\":\"text\",\"data\":{\"text\":\"转发内容一\"}},"
+                    + "{\"type\":\"forward\",\"data\":{\"id\":\"nested\"}}]},"
+                    + "{\"sender\":{\"user_id\":20003,\"nickname\":\"B\"},"
+                    + "\"time\":1762700001,\"content\":["
+                    + "{\"type\":\"text\",\"data\":{\"text\":\"转发内容二\"}}]}]}";
+            case "upload_group_file", "upload_private_file" ->
+                    data = "{\"message_id\":" + MESSAGE_ID.incrementAndGet()
+                            + ",\"file_id\":\"file-e2e\"}";
+            case "get_group_msg_history", "get_friend_msg_history" -> data = "{\"messages\":["
+                    + "{\"message_id\":1,\"message_seq\":100,\"time\":1762700000,"
+                    + "\"sender\":{\"user_id\":20002,\"nickname\":\"南沐秋\","
+                    + "\"card\":\"群名片小王\"},"
+                    + "\"message\":[{\"type\":\"text\",\"data\":{\"text\":\"远端历史\"}}]}]}";
+            case "llonebot_debug" -> data = "{\"errorCode\":0}";
             case "send_private_msg", "send_group_msg" ->
                     data = "{\"message_id\":" + MESSAGE_ID.incrementAndGet() + "}";
             default -> data = "{}";
@@ -79,8 +114,8 @@ public final class FakeOneBot extends WebSocketServer {
     }
 
     /**
-     * Starts the WS endpoint and a tiny {@code POST /inject} HTTP port so a driver can push OneBot
-     * events without fighting over a FIFO's EOF semantics.
+     * Starts the WS endpoint and a tiny control HTTP port:
+     * {@code POST /inject} pushes a raw OneBot event; {@code POST /drop} closes the live socket.
      */
     public static void main(String[] args) throws Exception {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 0;
@@ -102,6 +137,19 @@ public final class FakeOneBot extends WebSocketServer {
             byte[] reply = ("{\"forwarded\":" + forwarded + "}").getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(forwarded ? 200 : 503, reply.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(reply);
+            }
+        });
+        inject.createContext("/drop", exchange -> {
+            WebSocket target = CLIENT.getAndSet(null);
+            boolean dropped = target != null;
+            if (target != null) {
+                target.close();
+            }
+            byte[] reply = ("{\"dropped\":" + dropped + "}").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, reply.length);
             try (OutputStream output = exchange.getResponseBody()) {
                 output.write(reply);
             }

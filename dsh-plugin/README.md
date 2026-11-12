@@ -52,11 +52,14 @@ terminal，且不挂本插件的人设 loader。`subagent_fork` 继承父 preset
   - `action=status`（默认）：绑定会话 / 当前调用会话 / `thisSessionIsTarget`、SSE 连接与运行状态、
     `lastRevision`/`injectedRevision`/`ackedRevision`/`pendingRevision`、`paused`、`lastError`，
     以及配置来源（`baseUrl`/`inboxId`/`autoStart`/`tokenSource`；token 只报来源，不回显值与路径）。
-  - `action=bind`（可带 `sessionId`，省略=当前会话）/ `unbind`：改目标会话。
+  - `action=bind`（可带 `sessionId`，省略=当前会话）/ `unbind`：改目标会话并**落盘**。
+  - `action=restore`：恢复持久化绑定（必要时 `agents.resume`）并启动 SSE。
   - `action=pause` / `resume`：暂停/恢复注入。暂停期间**照收 SSE、照更新 revision，但不注入也不 ack**
     （所以恢复后不会丢那一条）。
   - `action=start` / `stop`：开关 SSE。
   - `action=ack`：推进面板读游标。
+  - `action=status` 额外返回 `pushRevision`、`lastPushRevision`、`lastMcpStartId`、
+    `appliedControlId`、`agentLive`、`stateFile`。
 
 ## 启用
 
@@ -92,3 +95,19 @@ createRequire(process.argv[1]).resolve('@deepseek-ai/dsh-web-app')   # 宿主里
 
 解析不到时回退成裸包名（该行挂不上，但不会拖垮整个插件），并在 `bma3_self_status.presetTools`
 里逐项报告解析结果，便于一眼看出是"没解析到"还是"没挂上"。
+
+
+## 持久化与自动恢复（0.0.4）
+
+- 状态文件默认 `~/.dsh/storages/bma3-inbox.json`，可用 `config.stateFile` 覆盖；
+  只写 `targetSessionId`、`paused`、`stopped`、`injectedPushRevision`、`lastPushRevision`、
+  `lastMcpStartId`、`appliedControlId`，**不写 token**。
+- `bind` 成功后写入 `targetSessionId`；DSH 重启后模块加载时若存在绑定，会
+  `ctx.agents.get(id) ?? ctx.agents.resume({resumeSessionId:id})`，再自动 `start()` SSE。
+  `stop` 会持久化“用户手动停”，重启后不会自己起来。
+- 注入去重键是 **`panel.pushRevision`**（不是 `panel.revision`）：同一推送水位重启后不会重复注入；
+  服务端 Java 重启也不会把已冻结条目再推一遍。
+- 每 15s `POST /v1/inboxes/{id}/plugin/heartbeat` 上报 `sessionId/bound/sse/lastPushRevision/
+  lastMcpStartId/lastError/appliedControlId`；响应可带 `control`（`restore`/`remind`）。
+  插件应用后回报 `appliedControlId`，服务端清除 pending control。
+- `mcpStartId` 变化（BMA3 进程重启）时注入一次提醒，让 Agent 必要时重连 MCP。

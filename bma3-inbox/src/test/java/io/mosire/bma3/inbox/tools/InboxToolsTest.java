@@ -55,7 +55,7 @@ class InboxToolsTest {
             List<AgentTool> tools = InboxTools.all(service(store));
             assertThat(tools).extracting(AgentTool::name).containsExactly(
                     "inbox_status", "inbox_list", "inbox_items", "inbox_get",
-                    "inbox_ack", "inbox_wait");
+                    "inbox_ack", "inbox_dismiss", "inbox_wait");
         }
     }
 
