@@ -13,7 +13,8 @@ public record AppConfig(
         Weighting weighting,
         Logging logging,
         Deployer deployer,
-        Watchdog watchdog) {
+        Watchdog watchdog,
+        Xvfb xvfb) {
 
     public AppConfig {
         dataDir = dataDir == null ? Path.of("data") : dataDir;
@@ -25,13 +26,14 @@ public record AppConfig(
         logging = logging == null ? Logging.defaults() : logging;
         deployer = deployer == null ? Deployer.defaults() : deployer;
         watchdog = watchdog == null ? Watchdog.defaults() : watchdog;
+        xvfb = xvfb == null ? Xvfb.defaults() : xvfb;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
                 new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
                 Weighting.defaults(), Logging.defaults(), Deployer.defaults(),
-                Watchdog.defaults());
+                Watchdog.defaults(), Xvfb.defaults());
     }
 
     /**
@@ -202,21 +204,22 @@ public record AppConfig(
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Logging logging) {
         this(dataDir, server, qqconnect, inbox, Webconnect.defaults(),
-                Weighting.defaults(), logging, Deployer.defaults(), Watchdog.defaults());
+                Weighting.defaults(), logging, Deployer.defaults(), Watchdog.defaults(),
+                Xvfb.defaults());
     }
 
     /** 6-arg compatibility constructor for profiles created before weighting. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Logging logging) {
         this(dataDir, server, qqconnect, inbox, webconnect, Weighting.defaults(), logging,
-                Deployer.defaults(), Watchdog.defaults());
+                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults());
     }
 
     /** 7-arg compatibility constructor for profiles created before the deployer alert. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Weighting weighting, Logging logging) {
         this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging,
-                Deployer.defaults(), Watchdog.defaults());
+                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults());
     }
 
     /** 8-arg compatibility constructor for profiles created before the watchdog. */
@@ -224,7 +227,7 @@ public record AppConfig(
                      Webconnect webconnect, Weighting weighting, Logging logging,
                      Deployer deployer) {
         this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging, deployer,
-                Watchdog.defaults());
+                Watchdog.defaults(), Xvfb.defaults());
     }
 
     /**
@@ -484,6 +487,37 @@ public record AppConfig(
             return new Webconnect(false, "/snap/bin/chromium", true,
                     List.of("bilibili.com", "www.bilibili.com", "passport.bilibili.com",
                             "search.bilibili.com", "space.bilibili.com"));
+        }
+    }
+
+    /**
+     * Xvfb 工作区配置（D-055）。{@code workspaceRoot} 留空 ⇒ {@code ${cwd}/.xvfb}，
+     * 即「默认生成并提供一个当前目录下的 xvfb 工作区」。
+     */
+    public record Xvfb(boolean enabled, String workspaceRoot, int width, int height, int depth) {
+
+        public Xvfb {
+            workspaceRoot = workspaceRoot == null ? "" : workspaceRoot.trim();
+            if (width < 320 || width > 7680) {
+                throw new IllegalArgumentException("xvfb.width 必须在 320..7680");
+            }
+            if (height < 240 || height > 4320) {
+                throw new IllegalArgumentException("xvfb.height 必须在 240..4320");
+            }
+            if (depth != 16 && depth != 24 && depth != 32) {
+                throw new IllegalArgumentException("xvfb.depth 只能是 16/24/32");
+            }
+        }
+
+        public static Xvfb defaults() {
+            return new Xvfb(true, "", 1440, 900, 24);
+        }
+
+        /** 实际工作区根目录：配置为空时落在当前工作目录下的 {@code .xvfb}。 */
+        public java.nio.file.Path root() {
+            return workspaceRoot.isEmpty()
+                    ? java.nio.file.Path.of(".xvfb").toAbsolutePath().normalize()
+                    : java.nio.file.Path.of(workspaceRoot).toAbsolutePath().normalize();
         }
     }
 

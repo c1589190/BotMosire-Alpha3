@@ -15,6 +15,7 @@ data/
 logs/
 run/
 .work/
+.xvfb/
 *.db
 *.db-shm
 *.db-wal

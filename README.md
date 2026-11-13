@@ -1,6 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**版本 `0.0.4-hotfix1`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**版本 `0.0.5-early`（开发中，未发布）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+
+> 最近一次已发布版本仍是 `0.0.4-hotfix1`，下面的 Release 链接指向它。`0.0.5-early` 只在本仓库与 CI 门禁中存在，**未打 tag、未发布**。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -11,7 +13,7 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.4-hotfix1`**：Java 21 独立
 
 看到仓库后按这个顺序做，不要先改代码：
 
-1. 下载或编译 `bma3-app-0.0.4-hotfix1.jar`；
+1. 下载或编译 `bma3-app-0.0.5-early.jar`（或下载已发布的 `0.0.4-hotfix1`）；
 2. 准备运行目录、`config/app.yaml` 和 token 文件；
 3. 启动 jar，确认 MCP 和 Inbox 端口；
 4. 把 `dsh-plugin` link 进目标 DSH profile；
@@ -146,7 +148,7 @@ webconnect:
 export BMA3_MCP_TOKEN="$(cat /opt/bma3/token)"
 export LLBOT_ACCESS_TOKEN="..."          # 云端 LLBot/OneBot token
 export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium Manager
-java -jar bma3-app-0.0.4-hotfix1.jar --config /opt/bma3/run
+java -jar bma3-app-0.0.5-early.jar --config /opt/bma3/run
 ```
 
 启动日志会打印实际 MCP/health/Inbox 端口；默认配置对应：

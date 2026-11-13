@@ -43,6 +43,8 @@ import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqTools;
 import io.mosire.bma3.webconnect.BrowserOptions;
 import io.mosire.bma3.webconnect.BrowserService;
+import io.mosire.bma3.xvfb.XvfbService;
+import io.mosire.bma3.xvfb.XvfbTools;
 import io.mosire.bma3.watchdog.JsonWatchdogStore;
 import io.mosire.bma3.watchdog.WatchdogEngine;
 import io.mosire.bma3.watchdog.probe.Probes;
@@ -83,6 +85,7 @@ public final class Bma3App implements AutoCloseable {
     private final AccountRegistry accounts;
     private final Bma3McpServer mcp;
     private final BrowserService browser;
+    private final XvfbService xvfb;
     private final QqExtrasStore qqExtras;
     private final ConfigWatcher watcher;
     private final WatchdogEngine watchdog;
@@ -92,7 +95,7 @@ public final class Bma3App implements AutoCloseable {
                     SqliteInboxStore inboxStore, InboxService inboxService,
                     HealthServer health, InboxHttpServer inboxHttp,
                     AccountRegistry accounts, Bma3McpServer mcp,
-                    BrowserService browser, QqExtrasStore qqExtras,
+                    BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
                     ConfigWatcher watcher, WatchdogEngine watchdog,
                     QqDirectoryStore directory) {
         this.config = config;
@@ -104,6 +107,7 @@ public final class Bma3App implements AutoCloseable {
         this.accounts = accounts;
         this.mcp = mcp;
         this.browser = browser;
+        this.xvfb = xvfb;
         this.qqExtras = qqExtras;
         this.watcher = watcher;
         this.watchdog = watchdog;
@@ -205,6 +209,7 @@ public final class Bma3App implements AutoCloseable {
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
+        XvfbService xvfb = null;
         WatchdogEngine watchdog = null;
         try {
             inboxHttp.start();
@@ -238,8 +243,13 @@ public final class Bma3App implements AutoCloseable {
                         Duration.ofSeconds(30)));
                 tools.addAll(browser.tools());
             }
+            if (config.xvfb().enabled()) {
+                xvfb = new XvfbService(config.xvfb().root(),
+                        config.dataDir().resolve("downloads"));
+                tools.addAll(XvfbTools.all(xvfb));
+            }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.4-hotfix1", tools)
+                    config.server().mcpPath(), mcpToken, "bma3", "0.0.5-early", tools)
                     .authHint(config.server().tokenEnv());
             mcp.start();
 
@@ -260,6 +270,13 @@ public final class Bma3App implements AutoCloseable {
                                     .pluginHeartbeatTimeoutSeconds())))
                     .addProbe(Probes.webconnect(config.webconnect().enabled(),
                             config.webconnect().binary()))
+                    .addProbe(Probes.named("xvfb", () -> {
+                        var caps = io.mosire.bma3.xvfb.PlatformProbe.probe();
+                        if (!caps.supported()) {
+                            return ProbeResult.degraded("xvfb", caps.reason(), caps.hint());
+                        }
+                        return ProbeResult.up("xvfb", caps.xvfb());
+                    }))
                     .addProbe(Probes.named("config", () -> {
                         if (activeWatcher.lastReloadError().isBlank()) {
                             return ProbeResult.up("config", "reload ok",
@@ -288,7 +305,7 @@ public final class Bma3App implements AutoCloseable {
             watchdogRef.set(watchdog);
 
             return new Bma3App(config, board, inboxStore, inboxService, health,
-                    inboxHttp, accounts, mcp, browser, qqExtras, watcher, watchdog,
+                    inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
                     directory);
         } catch (RuntimeException failure) {
             if (watchdog != null) {
@@ -299,6 +316,9 @@ public final class Bma3App implements AutoCloseable {
             }
             if (browser != null) {
                 browser.close();
+            }
+            if (xvfb != null) {
+                xvfb.close();
             }
             if (watcher != null) {
                 watcher.close();
@@ -514,6 +534,9 @@ public final class Bma3App implements AutoCloseable {
         }
         if (browser != null) {
             browser.close();
+        }
+        if (xvfb != null) {
+            xvfb.close();
         }
         if (qqExtras != null) {
             qqExtras.close();

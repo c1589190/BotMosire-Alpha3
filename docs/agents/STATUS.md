@@ -2,6 +2,27 @@
 
 ## 当前目标 / 进行中范围
 
+**最近调查（2026-11-13，未改产品代码）**：Computer Use 服务技术路线调查 —— 应远端建议（轻量桌面 + Chromium/Playwright + 独立容器）核查 Linux 侧现成技术，给出 5 条候选路线与建议。
+结论摘要：L1 浏览器 / L2 桌面 / L3 人机接力应分层；本机实测 headless Chromium 886 MB/9 进程、Xvfb 61.9 MB、CDP+AX 树+点击均可用。
+**用户方向（D-053/D-054）：Linux 侧直接上「全桌面 Computer Use」，浏览器不单独成线，由 Agent 在桌面内自行操作；不设策略闸门；取消 L3 人机接力（Agent 即全权力用户）；webconnect 保留并纳入 watchdog 探针。** 报告原建议（L1 优先、L2 留接口、noVNC 接力）据此部分作废。
+报告：[`../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md`](../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md)（§1–§5 事实仍有效；§6/§8 已被 D-053/D-054 取代）。**未开工，需先出 spec。**
+
+**bma3-xvfb（2026-11-13 新增模块，已本机真机验证）**：全桌面 Computer Use 的 Xvfb 功能封装包。
+- 模块 `bma3-xvfb`（依赖 agentlib）：`PlatformProbe`（平台检测 + 缺件安装提示）、`WorkspaceStore`（`${cwd}/.xvfb/ws-xxxx/` 工作区与 meta.json）、`XvfbService`（起 display/WM、launch、screenshot 根窗口、windows、exec、xdotool 输入）、`XvfbTools`（12 个 `xvfb_*` 工具）。
+- 装配：`AppConfig.Xvfb`（默认 `enabled=true`、`workspaceRoot=""`⇒`${cwd}/.xvfb`、1440×900×24）+ `ConfigLoader`/`ConfigView` + `Bma3App` 工具注册与关闭回收 + watchdog `xvfb` 探针（D-054「豪华套餐」）。
+- 设计：[`../superpowers/specs/2026-11-13-bma3-xvfb-design.md`](../superpowers/specs/2026-11-13-bma3-xvfb-design.md)。方向：D-053 / D-054 / D-055。
+- **真机验证 PASS**（本机 Ubuntu 24.04 / Chromium 156）：
+  - JUnit IT：`xvfb_status.supported=true`（screenshot=ffmpeg、clipboard=/usr/bin/xclip）；开 `:90` 工作区 → 起 Chromium → `xvfb_windows` 解析 3 个窗口 → `xvfb_screenshot` 1440×900 / 27,133 B（截图含浏览器标签栏与中文）→ `xvfb_exec` rc=0 `DISPLAY=:90` → 剪贴板往返 `剪贴板往返` rc=0 → `close{keep:false}` 后目录与进程均消失。
+  - 真 MCP 端到端（`java -jar` + Bearer）：`tools/list` **50 个工具**（`xvfb_*` 12 个齐全）→ `xvfb_status` → `workspace_open`(1024×768) → `xvfb_launch` → `xvfb_windows`(3) → `xvfb_screenshot`(21,329 B) → `workspace_close`；工作区根为 `${cwd}/.xvfb`。
+  - **输入链路 PASS**（2026-11-13，`xdotool 3.20160805.1` + `xclip 0.13` 装好后）：`xvfb_act` 点击 → 页面 `document.title=CLICK_OK`；`xvfb_type`（clipboard 模式）打「中文测试」→ `title=TEXT:中文测试`；`xvfb_key Escape` → `title=KEY_OK`。证据截图 `bma3-xvfb/target/xvfb-verify/keep-last.png`：标签页标题 `KEY_OK`、textarea 里是「中文测试」。
+  - **窗口管理器 PASS**（2026-11-13，`openbox 3.6.1` 装好后）：`xvfb_status.windowManager=/usr/bin/openbox`；`xvfb_workspace_open` 回报 `wmPid=122000`（真起来了）；窗口列表里能看到 Openbox 的 1×1 辅助窗口；截图里出现 **openbox 标题栏**（`KEY_OK - Chromium` + 最小化/最大化/关闭按钮），Chromium 窗口几何从 `+10+10` 变成 `+1+20`（标题栏占 20px）。截图后端此时自动选中 `scrot`（`import`→`scrot`→`ffmpeg` 顺序）。
+  - **标准截屏三取景 PASS**（2026-11-13）：全屏 1440×900 / 窗口 `0x400002` 1050×875（几何 `10,20,1050,875`）/ 区域 `0,0,320,200`；三者都额外产出 `<dataDir>/downloads/` 同名副本（`download` 字段），后端自动选 `scrot`。
+  - 命令：`BMA3_XVFB_VERIFY=1 ./mvnw -o -pl bma3-xvfb -am test -Dtest=XvfbRealMachineIT -Dsurefire.failIfNoSpecifiedTests=false`（`BMA3_XVFB_VERIFY_KEEP=1` 保留现场与截图）。
+- 门禁：`./mvnw -o test` **122 tests / 0 fail / 1 skip / BUILD SUCCESS**（xvfb 16、app +3）。
+- 未做：AT-SPI 树（`xvfb_tree` 返回 `ATSPI_UNSUPPORTED`）、容器化会话、空闲 TTL、Windows 后端。
+- 本机已装 `xdotool` / `xclip` / `openbox` / `scrot`，Computer Use 全链路无 blocker。
+- 已知噪音（非缺陷）：有 WM 时 `xvfb_windows` 会带出 Openbox 自己的 1×1 辅助窗口；`xvfb_windows` 返回的是**真实窗口树**，不过滤，由 Agent 自行按尺寸/标题筛。
+
 **0.0.4-hotfix1（当前发布）**：修复「重装插件后 bash/read_image 消失」。
 根因：`host-tools.js` 把解析失败的 `undefined` 也缓存；`bma3_self_status.lockedTools` 只看 global 视图；
 `bma3_self_reload` 不会重挂 preset 子行。修复：不缓存 miss + `invalidateHostToolCache()` + 新增

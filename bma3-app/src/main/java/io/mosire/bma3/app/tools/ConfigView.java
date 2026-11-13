@@ -87,6 +87,13 @@ final class ConfigView {
         webconnect.put("headless", config.webconnect().headless());
         webconnect.set("allowedHosts", JSON.valueToTree(config.webconnect().allowedHosts()));
 
+        ObjectNode xvfb = root.putObject("xvfb");
+        xvfb.put("enabled", config.xvfb().enabled());
+        xvfb.put("workspaceRoot", config.xvfb().workspaceRoot());
+        xvfb.put("width", config.xvfb().width());
+        xvfb.put("height", config.xvfb().height());
+        xvfb.put("depth", config.xvfb().depth());
+
         ObjectNode deployer = root.putObject("deployer");
         deployer.put("qq", config.deployer().qq());
         deployer.put("enabled", config.deployer().enabled());

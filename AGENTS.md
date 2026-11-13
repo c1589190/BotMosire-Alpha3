@@ -21,7 +21,8 @@
 - 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
 - 当前门禁：`./mvnw -q test` PASS（19 suites / 50 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（14 tests）；`packaging/smoke.sh` 本轮 `NOT_RUN`。
 - 已实现：DSH 插件侧 BMA3 preset / 工作区人设 loader / 默认工具组 / `minimal` 子 Agent（`dsh-plugin/lib/self.js`）；真实 DSH preset 激活与远端联调仍 `NOT_RUN`。
-- 未开始：B 站登录/私信/视频工具、Linux 桌面控制、真实 LLBot/DSH/systemd 联调。
+- 已开始：Linux 全桌面 Computer Use —— `bma3-xvfb`（Xvfb 工作区封装 + 平台检测，12 个 `xvfb_*` 工具，2026-11-13 本机真机验证通过；见 `docs/superpowers/specs/2026-11-13-bma3-xvfb-design.md`）。
+- 未开始：B 站登录/私信/视频工具、真实 LLBot/DSH/systemd 联调。
 - **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**
 
 ## 2. 继承关系
@@ -85,6 +86,7 @@ BotMosire-Alpha3/
 ├── bma3-qqconnect/      # OneBot 11 正向 WS、账号 registry、QQ AgentTools
 ├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
 ├── bma3-webconnect/     # Selenium + 系统 Chromium 浏览器 AgentTools
+├── bma3-xvfb/           # Xvfb 工作区（虚拟桌面）+ 平台检测 + 12 个 xvfb_* 工具
 ├── bma3-app/            # 组合根：config/logging/MCP/health/Main
 ├── dsh-plugin/          # @mosire/bma3-dsh，四个模块（inbox/preset/self/persona-legacy）
 ├── packaging/           # jlink/jpackage + 用户级 installer

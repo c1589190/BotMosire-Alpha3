@@ -127,6 +127,7 @@ public final class ConfigLoader {
         JsonNode logging = node.path("logging");
         JsonNode watchdog = node.path("watchdog");
         JsonNode deployer = node.path("deployer");
+        JsonNode xvfb = node.path("xvfb");
         List<String> readyzCritical = new ArrayList<>();
         for (JsonNode critical : watchdog.path("readyzCritical")) {
             readyzCritical.add(critical.asText());
@@ -192,7 +193,13 @@ public final class ConfigLoader {
                         watchdog.path("diskMinFreeMb").asLong(200),
                         readyzCritical.isEmpty()
                                 ? AppConfig.Watchdog.defaults().readyzCritical()
-                                : readyzCritical));
+                                : readyzCritical),
+                new AppConfig.Xvfb(
+                        xvfb.path("enabled").asBoolean(true),
+                        text(xvfb, "workspaceRoot", ""),
+                        integer(xvfb, "width", 1440),
+                        integer(xvfb, "height", 900),
+                        integer(xvfb, "depth", 24)));
     }
 
     private static String interpolate(String raw, Map<String, String> env) {
