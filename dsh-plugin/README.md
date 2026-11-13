@@ -97,8 +97,11 @@ SSE:      open
 - 命令结果由 UI 直接渲染，**不进模型上下文**（不会变成一条用户消息丢给 Agent）。
 - `status` 只报 token **来源**，绝不回显值。
 - 未绑定时会多一行提醒：新面板会注入到第一个 idle 会话，要彻底停下用 `/inbox detach`。
-- **`commands` 服务缺失时不注册**（只 warn），不影响 `preset`/`self` 模块 ——
-  包级 `inject` 是三个模块共享的，把 `commands` 加进去会连带 gate 掉那两个模块。
+- 用 `ctx.inject(['commands'], child => …)` 做**可选依赖**：等服务就绪再注册，父模块不被 gate。
+  不把 `commands` 写进包级 `inject` —— 那会连带 gate 掉共享同一 `inject` 的 `preset`/`self`。
+- ⚠ **不要写 `ctx.commands ?? ctx.get('commands')`**：Cordis 对未注入的属性是 **throw** 而非
+  `undefined`，空值合并根本救不了，异常会逃出 `apply()` 把整个 inbox 模块带下去
+  （0.0.5-hotfix1 的真实故障）。注册全程 try/catch，任何失败只 warn。
 - 注册走 `ctx.effect(...)`，插件重载不留重复定义。
 
 ## 启用

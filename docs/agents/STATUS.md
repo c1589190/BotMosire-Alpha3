@@ -49,6 +49,22 @@
   真 `parseCommand('/inbox status')` → `{name:"inbox", rawInput:" status"}`；真 handler 渲染出 status 文本；`disposer()` 注销后 `find` 返回 undefined。
 - **未验**：真实 DSH Web 宿主进程内敲 `/inbox` 的**实际 UI 渲染**（宿主需重启/重载；本会话就挂在那个宿主上，不能自杀式重启）；`NOT_RUN`。
 
+**0.0.5-hotfix1 上线即炸 → 0.0.5-hotfix2 修复（2026-11-13，远程实测报错）**
+远程宿主报 `Error: cannot get property "commands" without inject`（`lib/inbox.js:705` `registerInboxCommand` → `apply`）。
+- **根因**：Cordis 的 context proxy 对未 `inject` 的属性**抛异常**而不是返回 `undefined`，所以 `ctx.commands ?? ctx.get('commands')` 的兜底永远走不到；异常逃出 `apply()`，**整个 inbox 模块（含 `bma3_inbox` 工具与 SSE）都没挂上**。
+- **修复**：改用 `ctx.inject(['commands'], child => child.effect(() => child.commands.register(def)))` 可选依赖；注册全程 try/catch，任何异常只 warn、绝不让 `apply()` 失败。
+- **测试为什么没抓到**：原 stub 里 `ctx.commands` 缺省返回 `undefined`，与真实 Cordis 语义不符 —— **桩错了，测试就是在验证幻觉**。已把 stub 改为"未注入属性访问抛异常"，并新增 2 条回归（Cordis 式抛异常的 ctx / `ctx.inject` 自身抛异常）。真 registry 脚本也改成在**没 inject `commands` 的 plugin fiber 里**注册，直接复现原错误。
+- 门禁：`dsh-plugin npm test` **44 pass**；真 registry **8/8**；Java 145 tests / 0 fail / 1 skip；packaging smoke PASS。
+- 版本统一 `0.0.5-hotfix2`。**未发布、未提交**（等授权）。
+
+**同批修掉的第二个回归（更早存在，破坏力更大）：插件重载会把 inbox 永久停掉**
+- `persist()` 落盘的是**引擎变量** `stopped`，不是用户意图 `state.stopped`。拆插件时 `stop(false)` 只改引擎、不改意图，却把 `true` 落盘 → 下次加载 `createState` 当成「用户点了 stop」→ `apply()` 的 `restore()`/`start()` 两个分支都被 `!initial.stopped` 挡住 → **不恢复绑定、不启 SSE**，且看起来像用户自己的选择。
+- 后果：任何插件卸载/热重载（换版本、改文件）都会静默停摆，**重启 DSH 也救不回来**——远程报告的「重启后 autoStart 会自动恢复」因此不成立。
+- 修复：`persist()` 改为 `stopped: state.stopped`。回归测试 `unloading the plugin must not persist the user-stop intent`（拆掉后仍 `false` / 重载自启 / **显式 stop 过则不自启**）。
+- **运维后果**：被旧版写坏的状态文件在升级后仍被尊重为「用户意图」，升级后必须手改一次 `"stopped": false` 或敲 `/inbox start`。
+- 另核实：`bma3_self_reload` 确实只做 config/prompt/toolPolicy/repairHostTools，**不碰 Cordis 插件行**，救不了死掉的 inbox 行（报告该项准确）。
+- 门禁：`dsh-plugin npm test` **45 pass**；真 registry **8/8**；Java 145 tests / 0 fail / 1 skip；packaging smoke PASS。
+
 **远程 0.0.4-early 使用报告已定位**（9 条 P1/P2/P3）：[`../superpowers/reports/2026-11-13-remote-usage-report-triage.md`](../superpowers/reports/2026-11-13-remote-usage-report-triage.md)。结论：2 条已实现（历史降级、面板省略提示）、3 条真缺口（`qq_group_info` 诊断、发送 retcode、`qq_delete_msg`）、其余为已知限制或文案。**未修复、未复现（NOT_RUN）**。
 
 **bma3-xvfb（2026-11-13 新增模块，已本机真机验证）**：全桌面 Computer Use 的 Xvfb 功能封装包。

@@ -295,6 +295,69 @@ test('a persisted push revision prevents re-injection after a plugin restart', a
   second.controller.close()
 })
 
+/**
+ * Regression: shipping a new plugin version (or any hot reload) tore the row down, and the
+ * teardown's `stop(false)` wrote the ENGINE flag `stopped: true` into the state file. On the
+ * next load `createState` reads that as "the user stopped it", and `apply()` skips both
+ * `restore()` and `start()` — so a reload silently disabled the inbox forever.
+ *
+ * Intent vs engine: `state.stopped` is the persisted USER INTENT; the closure `stopped` is the
+ * runtime engine. Only the intent may be persisted.
+ */
+test('unloading the plugin must not persist the user-stop intent', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bma3-reload-'))
+  const stateFile = join(dir, 'state.json')
+  const agent = { id: 'session-1', status: 'idle', followup() {} }
+  const controllers = []
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/events')) {
+      let controller
+      const body = new ReadableStream({ start(next) { controller = next } })
+      controllers.push(controller)
+      return { ok: true, status: 200, body }
+    }
+    if (url.endsWith('/plugin/heartbeat')) {
+      return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
+    }
+    throw new Error(`unexpected URL ${url}`)
+  }
+  const config = {
+    baseUrl: 'http://127.0.0.1:18777', inboxId: 'bma3', token: 'secret',
+    fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile,
+  }
+  const makeCtx = () => {
+    const disposers = []
+    return {
+      agents: { get: () => agent, list: () => [agent] },
+      effect: (callback) => { const disposer = callback(); disposers.push(disposer); return disposer },
+      dispose: () => { for (const disposer of disposers.splice(0)) disposer?.() },
+    }
+  }
+
+  const firstCtx = makeCtx()
+  const first = apply(firstCtx, config)
+  assert.equal(first.status().running, true)
+  firstCtx.dispose()
+  const afterUnload = JSON.parse(readFileSync(stateFile, 'utf8'))
+  assert.equal(afterUnload.stopped, false, '拆掉插件不等于用户点了 stop')
+
+  const secondCtx = makeCtx()
+  const second = apply(secondCtx, config)
+  assert.equal(second.status().running, true, '重新加载后必须自己起来')
+
+  // An explicit stop IS user intent and must survive a reload.
+  second.stop()
+  secondCtx.dispose()
+  const afterStop = JSON.parse(readFileSync(stateFile, 'utf8'))
+  assert.equal(afterStop.stopped, true)
+
+  const thirdCtx = makeCtx()
+  const third = apply(thirdCtx, config)
+  assert.equal(third.status().running, false, '用户显式 stop 过，重载后不该自己起来')
+  thirdCtx.dispose()
+  for (const controller of controllers) { try { controller.close() } catch { /* already closed */ } }
+})
+
 test('bind persists the session and resumes it when it is not live', async () => {
   const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-bind-')), 'state.json')
   let resumed = null

@@ -97,17 +97,27 @@ const client = {
   resume: () => client.status(), start: () => {}, stop: () => {}, ack: async () => {},
 }
 
-let disposer
-try {
-  disposer = registerInboxCommand(ctx, client)
-  check('definition passes the real normalizeDefinition', typeof disposer === 'function')
-} catch (error) {
-  check('definition passes the real normalizeDefinition', false, `${error?.message ?? error}`)
-  process.exit(1)
-}
+// Run the registration from inside a plugin fiber that does NOT inject `commands`, which is
+// exactly the shape of the real host and the reason 0.0.5-hotfix1 threw
+// "cannot get property "commands" without inject" and took the whole module down.
+let registerError = null
+const probeFiber = ctx.plugin({
+  name: 'bma3-inbox-probe',
+  inject: [],
+  apply(fiberCtx) {
+    try {
+      registerInboxCommand(fiberCtx, client)
+    } catch (error) {
+      registerError = error
+    }
+  },
+})
+await new Promise((resolve) => setTimeout(resolve, 600))
+check('registering from a fiber without `commands` in inject does not throw',
+  registerError === null, registerError ? String(registerError.message) : '')
 
 const agent = { id: 'sess-abc123456' }
-const definition = ctx.commands.find(agent, 'inbox')
+const definition = ctx.commands?.find(agent, 'inbox')
 check('commands.find(agent, "inbox") resolves it', Boolean(definition))
 check('commands.list() exposes it', ctx.commands.list(agent).map((row) => row.name).includes('inbox'),
   ctx.commands.list(agent).map((row) => row.name).join(','))
@@ -124,8 +134,15 @@ check('handler renders a status block', rendered.kind === 'success'
 check('status text does not leak the token value', !/Bearer/.test(rendered.text)
   && /env:BMA3_INBOX_TOKEN/.test(rendered.text))
 
-disposer()
-check('disposer unregisters the command', ctx.commands.find(agent, 'inbox') === undefined)
+// Disposing the owning plugin fiber must take the command with it (no duplicate on reload).
+if (typeof probeFiber?.dispose === 'function') {
+  await probeFiber.dispose()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  check('disposing the plugin fiber unregisters the command',
+    ctx.commands.find(agent, 'inbox') === undefined)
+} else {
+  check('disposing the plugin fiber unregisters the command', false, `plugin() returned ${typeof probeFiber}`)
+}
 
 const passed = results.filter(Boolean).length
 console.log(`\n${passed}/${results.length} checks passed`)

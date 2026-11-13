@@ -14,32 +14,45 @@ import { apply, registerInboxCommand, renderInboxStatus } from '../lib/inbox.js'
  * straight to the UI and never enters the model context.
  */
 
-/** Minimal host stub: records command definitions and lets a test fire handlers. */
+/**
+ * Minimal host stub with Cordis semantics that matter here:
+ *   - `ctx.commands` is THROWN on when not injected (that is the real proxy's behaviour)
+ *   - the optional-dependency pattern is `ctx.inject(deps, callback)`, which runs the callback
+ *     in a child fiber only once the services exist
+ */
 function makeCtx({ withCommands = true } = {}) {
   const definitions = []
-  const disposed = []
+  const childDisposers = []
+  const injected = []
+  const registry = {
+    register: (definition) => {
+      definitions.push(definition)
+      return () => {
+        const index = definitions.indexOf(definition)
+        if (index >= 0) definitions.splice(index, 1)
+      }
+    },
+  }
   const ctx = {
     tools: { register: () => () => {} },
     agents: { get: () => undefined, list: () => [] },
-    effect: (callback) => {
-      const disposer = callback()
-      disposed.push(disposer)
-      return disposer
-    },
+    effect: (callback) => callback(),
     logger: () => ({ warn: () => {}, info: () => {} }),
-  }
-  if (withCommands) {
-    ctx.commands = {
-      register: (definition) => {
-        definitions.push(definition)
-        return () => {
-          const index = definitions.indexOf(definition)
-          if (index >= 0) definitions.splice(index, 1)
+    inject: (deps, callback) => {
+      injected.push(deps)
+      if (withCommands) {
+        const child = {
+          commands: registry,
+          effect: (cb) => { const disposer = cb(); childDisposers.push(disposer); return disposer },
         }
-      },
-    }
+        callback(child)
+      }
+      return {
+        dispose: () => { for (const disposer of childDisposers.splice(0)) disposer?.() },
+      }
+    },
   }
-  return { ctx, definitions, disposed }
+  return { ctx, definitions, injected }
 }
 
 /** The command needs a client; a stub keeps these tests about grammar and wording. */
@@ -81,9 +94,10 @@ function invocation(rawInput, sessionId = 'sess-7f3a2b1c-9999') {
 }
 
 async function run(verb, opts = {}) {
-  const { ctx, definitions } = makeCtx(opts)
+  const { ctx, definitions, injected } = makeCtx(opts)
   const { client, calls } = makeClient(opts)
   registerInboxCommand(ctx, client)
+  assert.deepEqual(injected[0], ['commands'], 'commands is an optional dependency')
   assert.equal(definitions.length, 1, 'one command definition registered')
   const definition = definitions[0]
   const result = await definition.handler(invocation(verb, opts.session))
@@ -192,21 +206,39 @@ test('the command name does not collide with a DSH builtin', async () => {
 
 test('a host without a commands service still mounts the inbox tool', () => {
   const { ctx, definitions } = makeCtx({ withCommands: false })
-  const { client } = makeClient()
   assert.doesNotThrow(() => apply(ctx, { persistState: false, autoStart: false }))
   assert.equal(definitions.length, 0)
-  assert.equal(ctx.commands, undefined)
+})
+
+/**
+ * Regression for the 0.0.5-hotfix1 failure reported from a real host:
+ *   Error: cannot get property "commands" without inject
+ * The old code read `ctx.commands` first; Cordis throws instead of returning undefined, so the
+ * throw escaped `apply()` and took the WHOLE inbox module down (no bma3_inbox tool at all).
+ */
+test('a Cordis-style ctx that throws on undeclared services still mounts the module', () => {
+  const { ctx, definitions } = makeCtx()
+  Object.defineProperty(ctx, 'commands', {
+    get() { throw new Error('cannot get property "commands" without inject') },
+  })
+  assert.doesNotThrow(() => apply(ctx, { persistState: false, autoStart: false }))
+  assert.equal(definitions.length, 1, '/inbox still registers through ctx.inject')
+})
+
+test('a throwing ctx.inject cannot take the module down', () => {
+  const { ctx } = makeCtx()
+  ctx.inject = () => { throw new Error('boom') }
+  assert.doesNotThrow(() => apply(ctx, { persistState: false, autoStart: false }))
 })
 
 // ---- A9 ----
 
 test('the command definition is disposable so reloads do not stack', () => {
-  const { ctx, definitions, disposed } = makeCtx()
+  const { ctx, definitions } = makeCtx()
   const { client } = makeClient()
-  registerInboxCommand(ctx, client)
+  const fork = registerInboxCommand(ctx, client)
   assert.equal(definitions.length, 1)
-  assert.equal(disposed.length, 1)
-  disposed[0]()
+  fork.dispose()
   assert.equal(definitions.length, 0)
 })
 

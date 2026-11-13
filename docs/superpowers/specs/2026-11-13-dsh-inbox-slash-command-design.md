@@ -55,6 +55,7 @@ SSE:      open
 | `bind` 且既无参数、调用方也不是会话 | `kind: 'error'`，提示 `usage: /inbox bind <sessionId>` |
 | 未知子命令 | `kind: 'error'`，列出可用子命令 |
 | `commands` 服务缺失 | 不注册，`warn` 一行，**不影响其它模块** |
+| 注册过程抛异常 | 吞掉并 `warn`，**不得**让 `apply()` 失败（I5 的强制要求） |
 
 ## 3. 不变量
 
@@ -63,7 +64,13 @@ SSE:      open
 - **I3 不泄漏密钥**：`status` 只报 token **来源**（`env:BMA3_INBOX_TOKEN` / `config`），绝不回显值。
 - **I4 注册可回收**：经 `ctx.effect(() => commands.register(...))` 注册，插件重载不留重复定义。
 - **I5 缺失 `commands` 不阻断**：包级 `inject` 是三个模块共享的，把 `commands` 加进去会连带 gate 掉 `preset`/`self`。
-  因此**不改 `inject`**，改为运行时探测 `ctx.commands ?? ctx.get('commands')`，没有就跳过并 warn。
+  因此**不改包级 `inject`**，改用 Cordis 的**可选依赖**写法：
+  ```js
+  ctx.inject(['commands'], (child) => {
+    child.effect(() => child.commands.register(definition))
+  })
+  ```
+  子 fiber 等服务就绪后注册，父模块不被 gate；服务缺失则永不注册（只 warn）。
 - **I6 与 MCP 工具语义一致**：同名 action 走同一个 `client` 方法，不另写一套状态机。
 - **I7 `unbind` 不隐式停 SSE**（保持既有语义）；要彻底停下必须显式 `detach` 或 `stop`。
 
@@ -82,3 +89,86 @@ SSE:      open
 | A9 | `ctx.effect` 的 disposer 被调用后，命令定义从注册表移除（重载不留重复） |
 | A10 | `status` 文本**不含** token 值，只含 `tokenSource` |
 | A11 | 未绑定时 `status` 文本追加「第一个 idle 会话」提醒 |
+
+## 5. 回归记录（0.0.5-hotfix1 → 0.0.5-hotfix2）
+
+**0.0.5-hotfix1 上线即炸**，远程宿主报：
+
+```
+bma3-inbox (@mosire/bma3-dsh): Error: cannot get property "commands" without inject
+    at registerInboxCommand (…/lib/inbox.js:705:23)
+    at apply (…/lib/inbox.js:852:3)
+```
+
+三处错误，逐条记下来：
+
+1. **`ctx.commands` 未声明 inject 时是 `throw`，不是 `undefined`。**
+   Cordis 的 context proxy 在属性既不是自有属性、也没被 `internal/get` waterfall 解析出来时
+   **直接抛 `cannot get property "X" without inject`**。所以 `ctx.commands ?? ctx.get('commands')`
+   这种"空值合并兜底"**永远走不到右边**——异常在取值那一步就抛了。
+   本机用真 Cordis 实测三种取法：
+
+   | 写法 | 结果 |
+   |---|---|
+   | `ctx.commands` | **THROW** |
+   | `ctx.get('commands')` | 正常返回服务 |
+   | `ctx.reflect.get('commands')` | 正常返回服务 |
+
+2. **异常逃出 `apply()`，整个 inbox 模块都没挂上** —— 不是"少一条命令"，而是 `bma3_inbox` 工具
+   和 SSE 推送一起消失。命令面是**附加能力**，它的任何失败都不该影响主模块。
+
+3. **单测没抓到，因为 stub 的语义是错的**：原 stub 里 `ctx.commands` 不存在时返回 `undefined`，
+   而真实 Cordis 抛异常。**桩的语义错了，测试就是在验证幻觉。**
+
+修复（0.0.5-hotfix2）：
+
+- 改用 `ctx.inject(['commands'], child => …)` 可选依赖，父模块不被 gate。
+- 注册调用整体 try/catch，**任何异常都只 warn，绝不让 `apply()` 失败**。
+- 单测 stub 改成 Cordis 语义（未注入的属性访问抛异常），并新增两条回归：
+  - `a Cordis-style ctx that throws on undeclared services still mounts the module`
+  - `a throwing ctx.inject cannot take the module down`
+- 真 registry 检查脚本改成**在没 inject `commands` 的 plugin fiber 里**注册 ——
+  与真实宿主结构一致，直接复现原错误。
+
+## 6. 第二个回归：插件重载会把 inbox 永久停掉
+
+修 hotfix1 时又挖出一个更早就存在、破坏力更大的 bug——它让"重启就好了"这个前提**不成立**。
+
+`persist()` 里写的是：
+
+```js
+const snapshot = { …, stopped, … }   // ← closure 里的引擎变量
+```
+
+而拆卸插件时 `apply()` 的清理是 `ctx.effect(() => () => client.stop(false))`，
+`stop(false)` 只把引擎变量置 `true`、**不动 `state.stopped`**，然后 `persist()` 把 `true` 落盘。
+
+下一次加载：
+
+```js
+stopped: Boolean(persisted.stopped)          // createState → 当成"用户点了 stop"
+if (initial.targetSessionId && !initial.stopped) restore(...)
+else if (config.autoStart !== false && !initial.stopped) start()
+```
+
+两个分支都被 `!initial.stopped` 挡住 ⇒ **不恢复绑定、不启 SSE**，而且看起来像用户自己的选择。
+
+**结论**：任何一次插件卸载/热重载（换版本、改文件、行重排）都会让 inbox 静默停摆，
+重启 DSH 也救不回来——必须手动把状态文件改回 `stopped:false`，或（新版本）敲 `/inbox start`。
+
+**修复**：`persist()` 只落盘**用户意图**，不落引擎状态。
+
+```js
+stopped: state.stopped,
+```
+
+不变式补一条：
+
+- **I8 意图与引擎分离**：`state.stopped` 是持久化的用户意图；闭包 `stopped` 是运行时引擎。
+  只有意图可以落盘。拆卸 → `stop(false)` → 引擎停、意图不变。
+
+回归测试 `unloading the plugin must not persist the user-stop intent` 覆盖三件事：
+拆掉插件后文件仍是 `stopped:false`；重新加载会自己起来；**用户显式 `stop()` 过则重载后不自启**。
+
+> 运维后果：被旧版本写坏的状态文件（`stopped:true`）在升级后仍会被尊重为"用户意图"，
+> 升级后**必须**改一次文件或敲 `/inbox start`。

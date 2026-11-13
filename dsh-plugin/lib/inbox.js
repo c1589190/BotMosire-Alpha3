@@ -183,7 +183,10 @@ export function createInboxClient(ctx, config = {}) {
       version: STATE_VERSION,
       targetSessionId: state.targetSessionId,
       paused: state.paused,
-      stopped,
+      // Persist the USER INTENT, never the runtime engine flag: teardown calls stop(false),
+      // which flips the closure `stopped` but must not look like "the user pressed stop" on the
+      // next load — that silently disabled the inbox after every plugin reload.
+      stopped: state.stopped,
       injectedPushRevision: state.injectedPushRevision,
       lastPushRevision: state.lastPushRevision,
       ackedRevision: state.ackedRevision,
@@ -702,11 +705,6 @@ export function renderInboxStatus(status, callingSession = null) {
  * would gate those modules on hosts that have no command surface at all (spec I5).
  */
 export function registerInboxCommand(ctx, client) {
-  const commands = ctx?.commands ?? ctx?.get?.('commands')
-  if (!commands?.register) {
-    ctx?.logger?.('bma3-dsh')?.warn?.('/inbox command skipped: commands service unavailable')
-    return null
-  }
   const definition = {
     name: 'inbox',
     description: '查看或修改 BMA3 inbox 挂载（绑定会话 / SSE / 暂停 / 游标）',
@@ -777,7 +775,23 @@ export function registerInboxCommand(ctx, client) {
       }
     },
   }
-  return ctx.effect(() => commands.register(definition))
+  // `ctx.commands` THROWS when `commands` is not in inject ("cannot get property ... without
+  // inject"), and `?? ctx.get(...)` cannot rescue a throw. The optional-dependency pattern is
+  // `ctx.inject`: a child fiber that waits for the service and never gates the parent module —
+  // declaring `commands` in the package-level `inject` would gate preset/self too (spec I5).
+  if (typeof ctx?.inject !== 'function') {
+    ctx?.logger?.('bma3-dsh')?.warn?.('/inbox command skipped: ctx.inject unavailable')
+    return null
+  }
+  try {
+    return ctx.inject(['commands'], (child) => {
+      child.effect(() => child.commands.register(definition))
+    })
+  } catch (error) {
+    // A broken command surface must never take down the inbox module (spec I5).
+    ctx?.logger?.('bma3-dsh')?.warn?.(`/inbox command skipped: ${error?.message ?? error}`)
+    return null
+  }
 }
 
 export function apply(ctx, config = {}) {
