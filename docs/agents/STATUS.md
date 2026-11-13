@@ -97,8 +97,14 @@
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
 - 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
-- 版本号：`0.0.5-early`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）。
-- 发布：**v0.0.5-early**（2026-11-13，用户「可以正式发布0.0.5-early版本了」授权）。
+- 版本号：`0.0.5-hotfix1`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）。
+- 发布：**v0.0.5-hotfix1**（2026-11-13，用户「发布为0.0.5-hotfix1」授权）。
+  - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.5-hotfix1>（Pre-release）
+  - tag `v0.0.5-hotfix1` → commit `9e74a90`
+  - 内容：DSH 插件新增 `/inbox` 斜杠命令（D-057），其余与 `0.0.5-early` 相同
+  - assets：`bma3-app-0.0.5-hotfix1.jar`（sha256 `0e260088…`）、`mosire-bma3-dsh-0.0.5-hotfix1.tgz`（sha256 `377674da…`）、`SHA256SUMS`
+  - 回下载校验 PASS：`sha256sum -c` OK；jar `--version` = `0.0.5-hotfix1`；tgz `package.json` = `0.0.5-hotfix1` 且 `lib/inbox.js` 含 `registerInboxCommand`
+- 上一版：**v0.0.5-early**（2026-11-13，commit `53e9d86`，用户「可以正式发布0.0.5-early版本了」授权）。
   - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.5-early>（Pre-release）
   - tag `v0.0.5-early` → commit `53e9d86`
   - assets：`bma3-app-0.0.5-early.jar`（sha256 `28a59d52…`）、`mosire-bma3-dsh-0.0.5-early.tgz`（sha256 `67589baf…`）、`SHA256SUMS`
@@ -110,6 +116,17 @@
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
+
+**0.0.5-hotfix1 发布门禁（2026-11-13，commit `9e74a90`）**
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| DSH 插件 | `dsh-plugin && npm test` | **PASS**：42 tests（+`/inbox` 命令 14 条） |
+| 真 registry | `node tools/e2e-local/dsh-inbox-command-check.mjs` | **PASS 8/8**（真 `dsh-commands` + 真 Cordis Context） |
+| Java 全量 | `./mvnw -o test` | **PASS**：145 tests / 0 fail / 1 skip |
+| 打包 smoke | `bash packaging/smoke.sh` | **PASS** |
+| 资产回下载 | `gh release download v0.0.5-hotfix1` + `sha256sum -c` | **PASS** |
+| 真实 DSH 宿主里敲 `/inbox` 的 UI 渲染 | — | `NOT_RUN`（宿主需重启，开发会话就挂在上面） |
 
 **0.0.5-early 发布门禁（2026-11-13，commit `53e9d86`）**
 
