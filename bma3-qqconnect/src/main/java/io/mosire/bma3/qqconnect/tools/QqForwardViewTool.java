@@ -21,6 +21,12 @@ import java.util.concurrent.TimeUnit;
  */
 public final class QqForwardViewTool implements AgentTool {
 
+    /** 一次调用里最多再展开几条嵌套转发（防止一条转发里塞了 50 层把 provider 打爆）。 */
+    private static final int MAX_NESTED_FETCHES = 10;
+
+    /** 每条嵌套转发最多回多少条消息。 */
+    private static final int MAX_NESTED_MESSAGES = 50;
+
     private final QqToolContext context;
 
     public QqForwardViewTool(QqToolContext context) {
@@ -36,7 +42,8 @@ public final class QqForwardViewTool implements AgentTool {
     public String description() {
         return "展开一条合并转发（get_forward_msg，展开一层）：fileId 来自消息板读取工具，"
                 + "或直接传 forwardId（例如 qq_remote_history 的 segments[].data.id）。"
-                + "返回发送者/时间/文本/摘要，offset/limit 分页，nested 只标 [嵌套合并转发]。"
+                + "返回发送者/时间/文本/摘要，offset/limit 分页。depth=2 时把嵌套的那层也展开到 nested 里"
+                + "（默认 depth=1，只标 [嵌套合并转发]）。"
                 + "includeSegments=true 才返回结构化段。只读，不写消息板。";
     }
 
@@ -50,7 +57,9 @@ public final class QqForwardViewTool implements AgentTool {
                         "description", "直接传 forwardId 时用于选择账号；单账号可省略"),
                 "offset", Map.of("type", "integer", "minimum", 0),
                 "limit", Map.of("type", "integer", "minimum", 1, "maximum", 200),
-                "includeSegments", Map.of("type", "boolean")));
+                "includeSegments", Map.of("type", "boolean"),
+                "depth", Map.of("type", "integer", "minimum", 1, "maximum", 2,
+                        "description", "展开层数：1=只展开这一层（默认），2=嵌套转发也展开一层")));
     }
 
     @Override
@@ -64,6 +73,7 @@ public final class QqForwardViewTool implements AgentTool {
                     QqToolSupport.integer(toolContext, "limit", 50)));
             boolean includeSegments = Boolean.TRUE.equals(
                     toolContext.arguments().get("includeSegments"));
+            int depth = Math.max(1, Math.min(2, QqToolSupport.integer(toolContext, "depth", 1)));
             if (forwardId.isBlank()) {
                 if (fileId.isBlank()) {
                     throw new IllegalArgumentException("fileId 与 forwardId 至少提供一个");
@@ -106,6 +116,7 @@ public final class QqForwardViewTool implements AgentTool {
             root.put("offset", offset);
             var rows = root.putArray("messages");
             int shown = 0;
+            int nestedFetched = 0;
             for (int index = offset; index < total && shown < limit; index++, shown++) {
                 JsonNode node = messages.get(index);
                 var row = rows.addObject();
@@ -134,6 +145,19 @@ public final class QqForwardViewTool implements AgentTool {
                     text.append(piece);
                 }
                 row.put("text", text.toString());
+                if (depth > 1) {
+                    for (Segment item : segments) {
+                        if (!"forward".equals(item.type()) || nestedFetched >= MAX_NESTED_FETCHES) {
+                            continue;
+                        }
+                        String nestedId = item.data("id");
+                        if (nestedId == null || nestedId.isBlank()) {
+                            continue;
+                        }
+                        nestedFetched++;
+                        row.set("nested", expandNested(client, nestedId));
+                    }
+                }
                 if (includeSegments) {
                     var array = row.putArray("segments");
                     for (Segment item : segments) {
@@ -149,13 +173,70 @@ public final class QqForwardViewTool implements AgentTool {
             root.put("shown", shown);
             root.put("truncated", next < total);
             root.put("nextOffset", next < total ? next : 0);
-            root.put("nestedExpanded", false);
+            root.put("nestedExpanded", depth > 1);
             return ToolResult.ok(root.toString());
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);
         } catch (RuntimeException failure) {
             return ToolResult.error("FORWARD_VIEW_FAILED",
                     failure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 展开一层嵌套转发。失败不抛：嵌套是加分项，不能因为它挂了就毁掉外层结果。
+     */
+    private com.fasterxml.jackson.databind.node.ObjectNode expandNested(
+            OneBot11Client client, String forwardId) {
+        var out = QqToolSupport.object();
+        out.put("forwardId", forwardId);
+        try {
+            JsonNode response = client.sendAction("get_forward_msg", Map.of("id", forwardId))
+                    .orTimeout(10, TimeUnit.SECONDS)
+                    .join();
+            if (response.path("retcode").asInt(-1) != 0) {
+                out.put("error", "RETCODE_" + response.path("retcode").asInt(-1));
+                return out;
+            }
+            JsonNode messages = response.path("data").path("messages");
+            if (!messages.isArray()) {
+                messages = response.path("data").path("message");
+            }
+            if (!messages.isArray()) {
+                out.put("error", "INVALID_FORWARD_RESPONSE");
+                return out;
+            }
+            out.put("total", messages.size());
+            var rows = out.putArray("messages");
+            int shown = 0;
+            for (JsonNode node : messages) {
+                if (shown >= MAX_NESTED_MESSAGES) {
+                    break;
+                }
+                var row = rows.addObject();
+                row.put("sender", node.path("sender").path("nickname").asText(""));
+                row.put("senderId", node.path("sender").path("user_id").asText(""));
+                long epoch = node.path("time").asLong(0L);
+                row.put("at", epoch > 0 ? Instant.ofEpochSecond(epoch).toString() : "");
+                JsonNode content = node.path("content");
+                if (!content.isArray()) {
+                    content = node.path("message");
+                }
+                StringBuilder text = new StringBuilder();
+                for (Segment item : OneBot11Codec.parseSegments(content)) {
+                    String piece = "forward".equals(item.type())
+                            ? "[更深一层的合并转发]" : item.text();
+                    if (piece != null && !piece.isBlank()) {
+                        text.append(text.length() > 0 ? " " : "").append(piece);
+                    }
+                }
+                row.put("text", text.toString());
+                shown++;
+            }
+            return out;
+        } catch (RuntimeException failure) {
+            out.put("error", failure.getClass().getSimpleName());
+            return out;
         }
     }
 

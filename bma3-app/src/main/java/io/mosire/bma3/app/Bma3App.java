@@ -364,7 +364,9 @@ public final class Bma3App implements AutoCloseable {
         SourceAddress source = event.source(accountEvent.accountId());
         SourceView view = sourceLabels.view(source);
         String sourceKey = sourceKeyer.keyFor(source);
-        String senderId = Long.toString(event.userId());
+        // P3-8：没有 user_id 的合成事件（撤回/系统消息等）不要写成 "0" —— 那会被当成一个真实 QQ 号
+        // 参与画像与检索。空字符串表示"未知发送者"，下游按未知处理。
+        String senderId = event.userId() > 0 ? Long.toString(event.userId()) : "";
         boolean replyToBot = isReplyToBot(board, source, event.replyToMessageId());
         PriorityAttributes attributes = QqSignalExtractor.attributes(event,
                 selfName(accounts, current.get(), accountEvent.accountId()), replyToBot);

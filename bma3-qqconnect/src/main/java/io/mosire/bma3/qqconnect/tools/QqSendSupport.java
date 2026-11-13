@@ -19,6 +19,15 @@ final class QqSendSupport {
 
     static String sendText(QqToolContext context, SourceAddress source, String text,
                            String replyToMessageId, String actionName) {
+        return sendText(context, source, text, replyToMessageId, actionName, Map.of());
+    }
+
+    /**
+     * 同上，外加 payload 附加字段（目前只有群临时会话要往 {@code send_private_msg} 里塞 {@code group_id}）。
+     */
+    static String sendText(QqToolContext context, SourceAddress source, String text,
+                           String replyToMessageId, String actionName,
+                           Map<String, Object> extras) {
         QqSendPolicy policy = context.policy();
         List<String> chunks = chunks(text, policy);
         OneBot11Client client = QqToolSupport.client(context, source);
@@ -43,22 +52,38 @@ final class QqSendSupport {
             if ("qq_group".equals(source.platform())) {
                 params = Map.of("group_id", Long.parseLong(source.segments().get(1)),
                         "message", message);
-            } else {
+            } else if (extras.isEmpty()) {
                 params = Map.of("user_id", Long.parseLong(source.segments().get(1)),
                         "message", message);
+            } else {
+                // 群临时会话：user_id + group_id 一起给
+                Map<String, Object> withExtras = new java.util.LinkedHashMap<>();
+                withExtras.put("user_id", Long.parseLong(source.segments().get(1)));
+                withExtras.put("message", message);
+                withExtras.putAll(extras);
+                params = withExtras;
             }
             String state;
             String messageId = "";
+            int retcode = -1;
+            String providerStatus = "";
+            String providerMessage = "";
             try {
                 var response = client.sendAction(actionName, params)
                         .orTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
                         .join();
-                boolean ok = "ok".equals(response.path("status").asText())
-                        && response.path("retcode").asInt(-1) == 0;
+                retcode = response.path("retcode").asInt(-1);
+                providerStatus = response.path("status").asText("");
+                providerMessage = response.path("message").asText("");
+                boolean ok = "ok".equals(providerStatus) && retcode == 0;
                 state = ok ? "SENT" : "FAILED_BEFORE_SEND";
                 messageId = response.path("data").path("message_id").asText("");
             } catch (RuntimeException failure) {
+                // 超时/断线：可能已经发出去了，所以只能是 UNKNOWN，且绝不自动重发
                 state = "UNKNOWN";
+                providerMessage = failure.getCause() == null
+                        ? failure.getClass().getSimpleName()
+                        : failure.getCause().getClass().getSimpleName();
             }
             if (!messageId.isBlank()) {
                 context.board().attachExternalMessageId(stored.message().localSeq(), messageId);
@@ -66,9 +91,14 @@ final class QqSendSupport {
             if (states.length() > 1) {
                 states.append(',');
             }
-            states.append("{\"localSeq\":").append(stored.message().localSeq())
-                    .append(",\"state\":\"").append(state).append("\"")
-                    .append(",\"messageId\":\"").append(messageId).append("\"}");
+            var entry = QqToolSupport.object();
+            entry.put("localSeq", stored.message().localSeq());
+            entry.put("state", state);
+            entry.put("messageId", messageId);
+            entry.put("retcode", retcode);
+            entry.put("providerStatus", providerStatus);
+            entry.put("providerMessage", providerMessage == null ? "" : providerMessage);
+            states.append(entry.toString());
             if (!"SENT".equals(state)) {
                 break;
             }

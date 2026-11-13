@@ -59,7 +59,9 @@ public final class QqRemoteHistoryTool implements AgentTool {
                 "count", Map.of("type", "integer", "minimum", 1, "maximum", MAX_COUNT),
                 "reverseOrder", Map.of("type", "boolean",
                         "description", "默认 true=向过去翻页"),
-                "includeSegments", Map.of("type", "boolean")),
+                "includeSegments", Map.of("type", "boolean"),
+                "timeoutMs", Map.of("type", "integer", "minimum", 2000, "maximum", 120000,
+                        "description", "单次尝试超时，默认 20000")),
                 "required", List.of("chatType", "targetId"));
     }
 
@@ -125,6 +127,9 @@ public final class QqRemoteHistoryTool implements AgentTool {
         String lastError = "";
         int lastRetcode = -1;
         List<Integer> attempted = new ArrayList<>();
+        List<Map<String, Object>> details = new ArrayList<>();
+        long timeoutMs = Math.max(2_000L, Math.min(120_000L,
+                QqToolSupport.integer(toolContext, "timeoutMs", 20_000)));
         for (int attemptCount : attempts) {
             attempted.add(attemptCount);
             long started = System.nanoTime();
@@ -132,15 +137,16 @@ public final class QqRemoteHistoryTool implements AgentTool {
             params.put("count", attemptCount);
             try {
                 JsonNode response = client.sendAction(action, params)
-                        .orTimeout(20, TimeUnit.SECONDS)
+                        .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                         .join();
                 int retcode = response.path("retcode").asInt(-1);
                 lastRetcode = retcode;
                 JsonNode data = response.path("data");
                 JsonNode array = data.path("messages");
                 int size = array.isArray() ? array.size() : -1;
-                log(action, attemptCount, retcode, started, size,
-                        retcode == 1200 ? "retcode1200" : "ok");
+                String outcome = retcode == 1200 ? "retcode1200" : "ok";
+                log(action, attemptCount, retcode, started, size, outcome);
+                details.add(attemptDetail(attemptCount, outcome, retcode, started, size));
                 if (retcode == 1200) {
                     if (attemptCount > SAFE_COUNT) {
                         // Real LLBot returned retcode 1200 (empty) for count=1000 while count=300
@@ -149,7 +155,7 @@ public final class QqRemoteHistoryTool implements AgentTool {
                         lastError = "RETCODE_1200";
                         continue;
                     }
-                    return empty(targetId, chatType, requested, attemptCount, attempted);
+                    return empty(targetId, chatType, requested, attemptCount, attempted, details);
                 }
                 if (!array.isArray()) {
                     lastError = "INVALID_HISTORY_RESPONSE";
@@ -162,21 +168,61 @@ public final class QqRemoteHistoryTool implements AgentTool {
                     continue;
                 }
                 return page(array, chatType, targetId, requested, attemptCount,
-                        includeSegments, attempted);
+                        includeSegments, attempted, details);
             } catch (RuntimeException failure) {
-                lastError = failure.getClass().getSimpleName();
-                log(action, attemptCount, -1, started, -1, "failed:" + lastError);
+                // 超时和普通失败要分开：一个说明"页太大/网络慢"，一个说明"provider 出错"
+                boolean timeout = ((Throwable) failure) instanceof java.util.concurrent.TimeoutException
+                        || failure.getCause() instanceof java.util.concurrent.TimeoutException;
+                lastError = timeout ? "TIMEOUT" : failure.getClass().getSimpleName();
+                log(action, attemptCount, -1, started, -1,
+                        timeout ? "TIMEOUT" : "failed:" + lastError);
+                details.add(attemptDetail(attemptCount, lastError, -1, started, -1));
             }
         }
-        return ToolResult.error("HISTORY_FAILED",
-                "requested=" + requested + " attempted=" + attempted
-                        + " lastRetcode=" + lastRetcode
-                        + (lastError.isBlank() ? "" : " lastError=" + lastError));
+        var failure = QqToolSupport.object();
+        failure.put("requested", requested);
+        var attemptedArray = failure.putArray("attempted");
+        attempted.forEach(attemptedArray::add);
+        failure.put("lastRetcode", lastRetcode);
+        failure.put("lastError", lastError);
+        var detailArray = failure.putArray("attempts");
+        for (Map<String, Object> detail : details) {
+            detailArray.add(QqToolSupport.JSON.valueToTree(detail));
+        }
+        boolean allTimedOut = !details.isEmpty() && details.stream()
+                .allMatch(detail -> "TIMEOUT".equals(detail.get("outcome")));
+        failure.put("hint", "全部降级尝试都失败。TIMEOUT 表示该页大小下 provider 不响应"
+                + (allTimedOut
+                        ? "；★ 连 count=100 都超时 ⇒ 这台 provider 很可能根本没实现/禁用了 "
+                          + "get_group_msg_history，再降页也没用：改用 qq_conversation_history 读本地消息板，"
+                          + "或用 bash 直接连 QQ 机查。"
+                        : "（通常页太大或网络慢）")
+                + " retcode1200 表示 provider 认为这页为空。可以用 qq_group_info 确认机器人还在群里。");
+        return ToolResult.error("HISTORY_FAILED", failure.toString());
+    }
+
+    private static void putDetails(com.fasterxml.jackson.databind.node.ObjectNode root,
+                                   List<Map<String, Object>> details) {
+        var array = root.putArray("attemptDetails");
+        for (Map<String, Object> detail : details) {
+            array.add(QqToolSupport.JSON.valueToTree(detail));
+        }
+    }
+
+    private static Map<String, Object> attemptDetail(int count, String outcome, int retcode,
+                                                     long startedNanos, int messages) {
+        var row = new LinkedHashMap<String, Object>();
+        row.put("count", count);
+        row.put("outcome", outcome);
+        row.put("retcode", retcode);
+        row.put("elapsedMs", (System.nanoTime() - startedNanos) / 1_000_000L);
+        row.put("messages", messages);
+        return row;
     }
 
     private static ToolResult page(JsonNode array, String chatType, String targetId,
                                    int requested, int fetched, boolean includeSegments,
-                                   List<Integer> attempted) {
+                                   List<Integer> attempted, List<Map<String, Object>> details) {
         var root = QqToolSupport.object();
         root.put("chatType", chatType);
         root.put("targetId", targetId);
@@ -185,6 +231,7 @@ public final class QqRemoteHistoryTool implements AgentTool {
         root.put("degradedFrom", fetched < requested ? requested : 0);
         var attemptArray = root.putArray("attempts");
         attempted.forEach(attemptArray::add);
+        putDetails(root, details);
         var rows = root.putArray("messages");
         String nextCursor = "";
         int messagesRead = 0;
@@ -242,7 +289,8 @@ public final class QqRemoteHistoryTool implements AgentTool {
     }
 
     private static ToolResult empty(String targetId, String chatType, int requested,
-                                    int fetched, List<Integer> attempted) {
+                                    int fetched, List<Integer> attempted,
+                                    List<Map<String, Object>> details) {
         var root = QqToolSupport.object();
         root.put("chatType", chatType);
         root.put("targetId", targetId);
@@ -251,12 +299,14 @@ public final class QqRemoteHistoryTool implements AgentTool {
         root.put("degradedFrom", fetched < requested ? requested : 0);
         var attemptArray = root.putArray("attempts");
         attempted.forEach(attemptArray::add);
+        putDetails(root, details);
         var rows = root.putArray("messages");
         root.put("count", 0);
         root.put("nextCursor", "");
         root.put("hasMore", false);
         root.put("truncated", false);
-        root.put("hint", "provider 返回 retcode 1200：没有更多历史或该页为空");
+        root.put("hint", "provider 返回空页：可能真的没有更多历史，也可能机器人不在该群/被禁言/权限不足。"
+                + "用 qq_group_info 确认机器人是否在群里、群是否可读；确认后再换 cursor 或更小 count 重试。");
         return ToolResult.ok(root.toString());
     }
 

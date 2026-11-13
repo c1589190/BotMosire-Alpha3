@@ -39,10 +39,68 @@ public final class QqContactListTool implements AgentTool {
     @Override
     public ToolResult execute(ToolContext toolContext) {
         ToolResult result = QqAccountActionTool.execute(context, toolContext, action, Map.of());
-        if (result.success() && "get_group_list".equals(action) && context.directory() != null) {
+        // ★ 这里必须看 **provider 的** status/retcode，不能看 ToolResult.success()：
+        //   QqAccountActionTool 只要拿到响应就返回 ok，provider 失败也照样是 ok。
+        boolean providerOk = providerOk(result);
+        if (providerOk && "get_group_list".equals(action) && context.directory() != null) {
             rememberGroups(toolContext, result);
         }
+        if (!providerOk && "get_group_list".equals(action)) {
+            // P2-7：实时拉取失败时退回本地目录缓存 —— 缓存里的群至少能让 Agent 不至于"一个群都看不见"，
+            // 但必须如实标注 source=cache，不能装作是实时结果。
+            return cachedGroups(toolContext, result);
+        }
         return result;
+    }
+
+    /** 解析 {@code {"response":{"status":..,"retcode":..}}}，判定 provider 是否真的成功。 */
+    private static boolean providerOk(ToolResult result) {
+        if (!result.success() || result.message() == null || result.message().isBlank()) {
+            return false;
+        }
+        try {
+            var response = QqToolSupport.JSON.readTree(result.message()).path("response");
+            return "ok".equals(response.path("status").asText())
+                    && response.path("retcode").asInt(-1) == 0;
+        } catch (RuntimeException | java.io.IOException failure) {
+            return false;
+        }
+    }
+
+    private ToolResult cachedGroups(ToolContext toolContext, ToolResult liveFailure) {
+        if (context.directory() == null) {
+            return liveFailure;
+        }
+        try {
+            String accountId = QqToolSupport.accountId(context, toolContext);
+            var groups = context.directory().groups(accountId, 500);
+            if (groups.isEmpty()) {
+                return liveFailure;
+            }
+            var root = QqToolSupport.object();
+            root.put("source", "cache");
+            root.put("liveError", liveFailure.code());
+            try {
+                var response = QqToolSupport.JSON.readTree(liveFailure.message()).path("response");
+                root.put("liveRetcode", response.path("retcode").asInt(-1));
+            } catch (RuntimeException | java.io.IOException ignored) {
+                // 解析不了就不带，别让回退本身失败
+            }
+            root.put("hint", "实时 get_group_list 失败，以下是本地目录缓存（可能滞后）；"
+                    + "要确认单个群用 qq_group_info");
+            var array = root.putArray("groups");
+            for (var group : groups) {
+                var row = array.addObject();
+                row.put("group_id", group.groupId());
+                row.put("group_name", group.name());
+                row.put("member_count", group.memberCount());
+                row.put("updated_at", group.updatedAt() == null ? "" : group.updatedAt().toString());
+            }
+            root.put("count", groups.size());
+            return ToolResult.ok(root.toString());
+        } catch (RuntimeException failure) {
+            return liveFailure;
+        }
     }
 
     /**

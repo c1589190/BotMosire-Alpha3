@@ -79,7 +79,7 @@ export function renderPanel(panel) {
     }
   }
   if (includeOmitted && Number(panel?.omittedItems) > 0) {
-    lines.push(`…（另有 ${panel.omittedItems} 个来源未显示）`)
+    lines.push(`…（另有 ${panel.omittedItems} 条未显示；需要时用 inbox_list 拉全部）`)
   }
   return lines.join('\n')
 }

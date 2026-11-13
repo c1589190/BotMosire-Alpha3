@@ -51,6 +51,15 @@ class QqRemoteHistoryToolTest {
             assertThat(body.path("degradedFrom").asInt()).isEqualTo(1000);
             assertThat(body.path("count").asInt()).isEqualTo(1);
             assertThat(body.path("attempts")).hasSize(2);
+            // P1-1：每一次尝试都要能看出"用什么 count、什么结果、多久、几条"
+            JsonNode attempted = body.path("attemptDetails");
+            assertThat(attempted).hasSize(2);
+            assertThat(attempted.get(0).path("count").asInt()).isEqualTo(1000);
+            assertThat(attempted.get(0).path("outcome").asText()).isNotBlank();
+            assertThat(attempted.get(1).path("count").asInt()).isEqualTo(300);
+            assertThat(attempted.get(1).path("outcome").asText()).isEqualTo("ok");
+            assertThat(attempted.get(1).path("messages").asInt()).isEqualTo(1);
+            assertThat(attempted.get(1).path("elapsedMs").asLong()).isGreaterThanOrEqualTo(0);
         }
     }
 
@@ -96,6 +105,32 @@ class QqRemoteHistoryToolTest {
         }
     }
 
+    @Test
+    void aTimeoutIsClassifiedAsTimeoutNotAsAGenericFailure() throws Exception {
+        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot3.db"));
+             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras3.db"))) {
+            FakeClient client = new FakeClient();
+            client.timeoutAbove = 0;   // 所有 count 都抛 TimeoutException
+            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
+            registry.reconcile(List.of(new AccountConfig(
+                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
+            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
+
+            ToolResult result = new QqRemoteHistoryTool(context).execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 1000)));
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.code()).isEqualTo("HISTORY_FAILED");
+            JsonNode body = mapper.readTree(result.message());
+            assertThat(body.path("lastError").asText()).isEqualTo("TIMEOUT");
+            assertThat(body.path("attempts")).hasSize(3);
+            for (JsonNode attempt : body.path("attempts")) {
+                assertThat(attempt.path("outcome").asText()).isEqualTo("TIMEOUT");
+            }
+            assertThat(body.path("hint").asText()).contains("TIMEOUT");
+        }
+    }
+
     private static ToolContext call(Map<String, Object> arguments) {
         return new ToolContext(AccessToken.DEFAULT,
                 AgentPermissionSet.unrestricted(AccessToken.DEFAULT),
@@ -107,6 +142,8 @@ class QqRemoteHistoryToolTest {
         private final List<Integer> counts = new ArrayList<>();
         private int emptyAt = -1;
         private int retcode1200At = -1;
+        /** >=0 时：count 大于它的请求都抛 TimeoutException（模拟 provider 不响）。 */
+        private int timeoutAbove = -1;
 
         private FakeClient() {
             super(URI.create("ws://127.0.0.1:1"), "", event -> { });
@@ -126,6 +163,10 @@ class QqRemoteHistoryToolTest {
                     ? number.intValue() : 0;
             if ("get_group_msg_history".equals(action)) {
                 counts.add(count);
+            }
+            if (timeoutAbove >= 0 && count > timeoutAbove) {
+                return CompletableFuture.failedFuture(
+                        new java.util.concurrent.TimeoutException("provider 不响"));
             }
             if (count == emptyAt) {
                 return Completed.json(mapper, "{\"status\":\"ok\",\"retcode\":0,"

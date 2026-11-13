@@ -30,7 +30,7 @@ test('renderPanel shows bounded windows, source labels and relation markers', ()
   assert.match(text, /\[@3924945183\]/)
   assert.match(text, /\[图片\]/)
   assert.match(text, /省略 122 条/)
-  assert.match(text, /另有 1 个来源未显示/)
+  assert.match(text, /另有 1 条未显示/)
   assert.doesNotMatch(text, /history|完整内容在服务端|请调用 inbox_list/)
 })
 
