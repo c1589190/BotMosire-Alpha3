@@ -246,7 +246,7 @@ agentconfig.json    # 默认工具组；不含 lock 字段
 - 读写：`qq_conversation_read/ack/send/send_image/send_file`、`qq_reply`、`qq_private_send`
 - 媒体/富消息：`qq_media_view`、`qq_card_view`（json/xml 卡片、群邀请 groupId+sequence）、`qq_forward_view`（合并转发一层展开、分页）
 - 群关系：`qq_group_list`、`qq_group_members`（群名片/角色/头衔）、`qq_group_member_info`、`qq_group_request_list/decide`、`qq_group_invite_accept`
-- 平台历史：`qq_remote_history`（只读穿透，count 1..1000；真实 LLBot 对 1000 不稳定，自动降级 1000→300→100 并记录 attempts）
+- 平台历史：`qq_remote_history`（只读穿透，**游标分页**：count 1..100 默认 30，`nextCursor`/`prevCursor` 翻页；provider 内部每 30 条一个 RPC，大页会打死协议管道 —— 见 [D-056](docs/superpowers/specs/2026-11-13-remote-history-paging-design.md)）
 - 用户备注：`qq_user_note_list/upsert`（只存别名/标签/备注，不存分数）
 - 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；`qq_person_id/<qq>` 是稳定的人维度加分键）
 - 目录：`qq_group_list`、`qq_friend_list`

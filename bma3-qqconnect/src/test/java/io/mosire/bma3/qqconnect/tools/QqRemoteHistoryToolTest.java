@@ -17,13 +17,21 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Real-LLBot-driven rule: a 1000-message page degrades to 300, then 100. */
+/**
+ * 契约见 {@code docs/superpowers/specs/2026-11-13-remote-history-paging-design.md}。
+ *
+ * <p>核心变化：单次调用只发一次 provider 请求（A8），游标由 min/max seq 推出（A5），
+ * 不再有 1000→300→100 的降级阶梯。</p>
+ */
 class QqRemoteHistoryToolTest {
 
     @TempDir
@@ -31,104 +39,277 @@ class QqRemoteHistoryToolTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
-    @Test
-    void aFailedLargePageDegradesTo300() throws Exception {
-        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot.db"));
-             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras.db"))) {
-            FakeClient client = new FakeClient();
-            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
-            registry.reconcile(List.of(new AccountConfig(
-                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
-            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
-
-            ToolResult result = new QqRemoteHistoryTool(context).execute(call(Map.of(
-                    "chatType", "GROUP", "targetId", "955432692", "count", 1000)));
-            assertThat(result.success()).as(result.message()).isTrue();
-            JsonNode body = mapper.readTree(result.message());
-            assertThat(client.counts).containsExactly(1000, 300);
-            assertThat(body.path("requestedCount").asInt()).isEqualTo(1000);
-            assertThat(body.path("fetchedCount").asInt()).isEqualTo(300);
-            assertThat(body.path("degradedFrom").asInt()).isEqualTo(1000);
-            assertThat(body.path("count").asInt()).isEqualTo(1);
-            assertThat(body.path("attempts")).hasSize(2);
-            // P1-1：每一次尝试都要能看出"用什么 count、什么结果、多久、几条"
-            JsonNode attempted = body.path("attemptDetails");
-            assertThat(attempted).hasSize(2);
-            assertThat(attempted.get(0).path("count").asInt()).isEqualTo(1000);
-            assertThat(attempted.get(0).path("outcome").asText()).isNotBlank();
-            assertThat(attempted.get(1).path("count").asInt()).isEqualTo(300);
-            assertThat(attempted.get(1).path("outcome").asText()).isEqualTo("ok");
-            assertThat(attempted.get(1).path("messages").asInt()).isEqualTo(1);
-            assertThat(attempted.get(1).path("elapsedMs").asLong()).isGreaterThanOrEqualTo(0);
-        }
-    }
+    // ---- A1 / A2 ----
 
     @Test
-    void anEmptyLargePageAlsoDegrades() throws Exception {
-        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot2.db"));
-             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras2.db"))) {
-            FakeClient client = new FakeClient();
-            client.emptyAt = 1000;
-            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
-            registry.reconcile(List.of(new AccountConfig(
-                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
-            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
-
-            ToolResult result = new QqRemoteHistoryTool(context).execute(call(Map.of(
-                    "chatType", "GROUP", "targetId", "955432692", "count", 1000)));
-            assertThat(result.success()).isTrue();
-            JsonNode body = mapper.readTree(result.message());
-            assertThat(client.counts).containsExactly(1000, 300);
-            assertThat(body.path("degradedFrom").asInt()).isEqualTo(1000);
-            assertThat(body.path("count").asInt()).isEqualTo(1);
-        }
-    }
-
-    @Test
-    void aLargePageRetcode1200AlsoDegrades() throws Exception {
-        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot3.db"));
-             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras3.db"))) {
-            FakeClient client = new FakeClient();
-            client.retcode1200At = 1000;
-            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
-            registry.reconcile(List.of(new AccountConfig(
-                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
-            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
-
-            ToolResult result = new QqRemoteHistoryTool(context).execute(call(Map.of(
-                    "chatType", "GROUP", "targetId", "955432692", "count", 1000)));
-            assertThat(result.success()).isTrue();
-            JsonNode body = mapper.readTree(result.message());
-            assertThat(client.counts).containsExactly(1000, 300);
-            assertThat(body.path("degradedFrom").asInt()).isEqualTo(1000);
-            assertThat(body.path("count").asInt()).isEqualTo(1);
-        }
-    }
-
-    @Test
-    void aTimeoutIsClassifiedAsTimeoutNotAsAGenericFailure() throws Exception {
-        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot3.db"));
-             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras3.db"))) {
-            FakeClient client = new FakeClient();
-            client.timeoutAbove = 0;   // 所有 count 都抛 TimeoutException
-            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
-            registry.reconcile(List.of(new AccountConfig(
-                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
-            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
-
-            ToolResult result = new QqRemoteHistoryTool(context).execute(call(Map.of(
+    void countAboveMaximumIsRejectedBeforeAnyRequest() throws Exception {
+        try (Harness harness = new Harness()) {
+            ToolResult result = harness.tool().execute(call(Map.of(
                     "chatType", "GROUP", "targetId", "955432692", "count", 1000)));
 
             assertThat(result.success()).isFalse();
-            assertThat(result.code()).isEqualTo("HISTORY_FAILED");
-            JsonNode body = mapper.readTree(result.message());
-            assertThat(body.path("lastError").asText()).isEqualTo("TIMEOUT");
-            assertThat(body.path("attempts")).hasSize(3);
-            for (JsonNode attempt : body.path("attempts")) {
-                assertThat(attempt.path("outcome").asText()).isEqualTo("TIMEOUT");
-            }
-            assertThat(body.path("hint").asText()).contains("TIMEOUT");
+            assertThat(result.code()).isEqualTo("INVALID_ARGUMENT");
+            // A1：拒绝必须发生在发请求之前 —— provider 一个字节都没收到
+            assertThat(harness.client.requests).isEmpty();
         }
+    }
+
+    @Test
+    void countDefaultsToThirtyWhichIsExactlyOneProviderRpc() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(1000, 30));
+            ToolResult result = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692")));
+
+            assertThat(result.success()).as(result.message()).isTrue();
+            assertThat(harness.client.requests).hasSize(1);
+            assertThat(harness.client.requests.get(0).get("count")).isEqualTo(30);
+            assertThat(harness.client.requests.get(0)).doesNotContainKey("message_seq");
+        }
+    }
+
+    // ---- A3 / A4 ----
+
+    @Test
+    void cursorIsForwardedAsMessageSeq() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(900, 30));
+            harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "cursor", "999")));
+
+            assertThat(harness.client.requests.get(0).get("message_seq")).isEqualTo("999");
+        }
+    }
+
+    @Test
+    void sendsCamelCaseReverseOrderAndNoNapCatParameters() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(1000, 5));
+            harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "reverseOrder", true)));
+
+            Map<String, Object> sent = harness.client.requests.get(0);
+            assertThat(sent).containsEntry("reverseOrder", true);
+            // 这三个是 NapCat 的参数，LLBot 的 schema 不认识，发了会被静默丢弃
+            assertThat(sent).doesNotContainKeys("reverse_order", "parse_mult_msg", "disable_get_url");
+        }
+    }
+
+    // ---- A5 / A6 ----
+
+    @Test
+    void cursorsComeFromOldestAndNewestSeq() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(1000, 30));
+            ToolResult result = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 30)));
+
+            JsonNode body = mapper.readTree(result.message());
+            assertThat(body.path("count").asInt()).isEqualTo(30);
+            assertThat(body.path("hasMore").asBoolean()).isTrue();
+            // provider 语义是"取到 seq N 为止向过去数 count 条"，所以下一页从 最旧-1 开始
+            assertThat(body.path("nextCursor").asText()).isEqualTo("999");
+            // 往更新方向翻页要传"下一页窗口的末尾"，即 newest + count = 1029 + 30
+            assertThat(body.path("prevCursor").asText()).isEqualTo("1059");
+        }
+    }
+
+    @Test
+    void shortPageMeansNoMoreBackwards() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(5, 3));
+            JsonNode body = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 30))).message());
+
+            assertThat(body.path("count").asInt()).isEqualTo(3);
+            assertThat(body.path("hasMore").asBoolean()).isFalse();
+            assertThat(body.path("nextCursor").asText()).isEqualTo("4");
+        }
+    }
+
+    @Test
+    void reachingSeqOneStopsBackwardsPaging() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(1, 3));
+            JsonNode body = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692"))).message());
+
+            assertThat(body.path("nextCursor").asText()).isEmpty();
+        }
+    }
+
+    // ---- A7 ----
+
+    @Test
+    void retcode1200IsAnEmptyPageNotAnError() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondRaw("{\"status\":\"failed\",\"retcode\":1200,\"data\":{}}");
+            ToolResult result = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692")));
+
+            assertThat(result.success()).isTrue();
+            JsonNode body = mapper.readTree(result.message());
+            assertThat(body.path("count").asInt()).isZero();
+            assertThat(body.path("hasMore").asBoolean()).isFalse();
+            assertThat(body.path("nextCursor").asText()).isEmpty();
+        }
+    }
+
+    // ---- A8 ----
+
+    @Test
+    void timeoutIsNotRetriedWithSmallerPage() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.failWith(new TimeoutException("provider 不响"));
+            ToolResult result = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 100)));
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.code()).isEqualTo("HISTORY_TIMEOUT");
+            // 关键：只发了一次，没有 1000→300→100 那种降级
+            assertThat(harness.client.requests).hasSize(1);
+            JsonNode body = mapper.readTree(result.message());
+            assertThat(body.path("outcome").asText()).isEqualTo("TIMEOUT");
+            assertThat(body.path("attempt").path("count").asInt()).isEqualTo(100);
+        }
+    }
+
+    // ---- A9 / A10 ----
+
+    @Test
+    void threeConsecutiveTimeoutsOpenTheCircuitAndTheFourthSendsNothing() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.failWith(new TimeoutException("provider 不响"));
+            for (int i = 0; i < 3; i++) {
+                ToolResult failed = harness.tool().execute(call(Map.of(
+                        "chatType", "GROUP", "targetId", "955432692")));
+                assertThat(failed.code()).isEqualTo("HISTORY_TIMEOUT");
+            }
+            assertThat(harness.client.requests).hasSize(3);
+
+            ToolResult blocked = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692")));
+
+            assertThat(blocked.success()).isFalse();
+            assertThat(blocked.code()).isEqualTo("HISTORY_CIRCUIT_OPEN");
+            assertThat(harness.client.requests).as("熔断期间不得发出请求").hasSize(3);
+            JsonNode body = mapper.readTree(blocked.message());
+            assertThat(body.path("retryAfterMs").asLong()).isPositive();
+        }
+    }
+
+    @Test
+    void circuitReopensAfterCooldownAndSuccessResetsTheStreak() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.failWith(new TimeoutException("provider 不响"));
+            for (int i = 0; i < 3; i++) {
+                harness.tool().execute(call(Map.of("chatType", "GROUP", "targetId", "955432692")));
+            }
+            assertThat(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692"))).code())
+                    .isEqualTo("HISTORY_CIRCUIT_OPEN");
+
+            harness.clock.addAndGet(QqRemoteHistoryTool.CIRCUIT_COOLDOWN_MS + 1);
+            harness.client.respondWith(seqRange(1000, 2));
+            ToolResult recovered = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692")));
+            assertThat(recovered.success()).as(recovered.message()).isTrue();
+
+            // 成功后连续计数清零：再超时 1 次不应立刻熔断
+            harness.client.failWith(new TimeoutException("又超时了"));
+            assertThat(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692"))).code())
+                    .isEqualTo("HISTORY_TIMEOUT");
+        }
+    }
+
+    // ---- A11 ----
+
+    @Test
+    void secondConcurrentCallForSameAccountIsBusy() throws Exception {
+        try (Harness harness = new Harness()) {
+            CompletableFuture<JsonNode> pending = new CompletableFuture<>();
+            harness.client.hold(pending);
+
+            Thread first = new Thread(() -> harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692"))));
+            first.start();
+            awaitRequests(harness.client, 1);
+
+            ToolResult second = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 30)));
+
+            assertThat(second.success()).isFalse();
+            assertThat(second.code()).isEqualTo("HISTORY_BUSY");
+            assertThat(harness.client.requests).as("被拒的那次不应发出请求").hasSize(1);
+
+            pending.complete(mapper.readTree(okBody(seqRange(1000, 2))));
+            first.join();
+        }
+    }
+
+    // ---- A12 ----
+
+    @Test
+    void reverseOrderOnlyChangesDisplayOrderNotCursors() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.respondWith(seqRange(1000, 10));
+            JsonNode forward = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 10,
+                    "reverseOrder", false))).message());
+
+            Harness reversed = new Harness();
+            try (reversed) {
+                reversed.client.respondWith(seqRange(1000, 10));
+                JsonNode backward = mapper.readTree(reversed.tool().execute(call(Map.of(
+                        "chatType", "GROUP", "targetId", "955432692", "count", 10,
+                        "reverseOrder", true))).message());
+
+                assertThat(backward.path("nextCursor").asText())
+                        .isEqualTo(forward.path("nextCursor").asText());
+                assertThat(backward.path("prevCursor").asText())
+                        .isEqualTo(forward.path("prevCursor").asText());
+            }
+        }
+    }
+
+    // ---- helpers ----
+
+    private static void awaitRequests(FakeClient client, int expected) throws InterruptedException {
+        for (int i = 0; i < 200 && client.requests.size() < expected; i++) {
+            Thread.sleep(10);
+        }
+        assertThat(client.requests).hasSize(expected);
+    }
+
+    /** {seq: s, seq: s+1, ...} as provider message objects (ascending == provider default order). */
+    private static List<Map<String, Object>> seqRange(long start, int size) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            long seq = start + i;
+            Map<String, Object> sender = new LinkedHashMap<>();
+            sender.put("user_id", 100 + i);
+            sender.put("nickname", "u" + i);
+            Map<String, Object> text = new LinkedHashMap<>();
+            text.put("type", "text");
+            text.put("data", Map.of("text", "msg-" + seq));
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("message_id", seq);
+            message.put("message_seq", seq);
+            message.put("time", 1_790_000_000L + seq);
+            message.put("sender", sender);
+            message.put("message", List.of(text));
+            messages.add(message);
+        }
+        return messages;
+    }
+
+    private String okBody(List<Map<String, Object>> messages) throws Exception {
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("status", "ok");
+        root.put("retcode", 0);
+        root.put("data", Map.of("messages", messages));
+        return mapper.writeValueAsString(root);
     }
 
     private static ToolContext call(Map<String, Object> arguments) {
@@ -137,16 +318,71 @@ class QqRemoteHistoryToolTest {
                 Map.of(), arguments, AgentIdentity.external());
     }
 
+    /** One account + one tool instance + a scriptable fake provider. */
+    private final class Harness implements AutoCloseable {
+
+        private final SqliteMessageBoardStore board;
+        private final QqExtrasStore extras;
+        private final FakeClient client = new FakeClient();
+        private final AtomicLong clock = new AtomicLong(1_000_000L);
+        private final QqRemoteHistoryTool tool;
+
+        private Harness() {
+            try {
+                board = new SqliteMessageBoardStore(tempDir.resolve("bot-" + System.nanoTime() + ".db"));
+                extras = new QqExtrasStore(tempDir.resolve("extras-" + System.nanoTime() + ".db"));
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+            AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
+            registry.reconcile(List.of(new AccountConfig(
+                    "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
+            QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
+            tool = new QqRemoteHistoryTool(context, clock::get);
+        }
+
+        private QqRemoteHistoryTool tool() {
+            return tool;
+        }
+
+        @Override
+        public void close() {
+            board.close();
+            extras.close();
+        }
+    }
+
     private final class FakeClient extends OneBot11Client {
 
-        private final List<Integer> counts = new ArrayList<>();
-        private int emptyAt = -1;
-        private int retcode1200At = -1;
-        /** >=0 时：count 大于它的请求都抛 TimeoutException（模拟 provider 不响）。 */
-        private int timeoutAbove = -1;
+        /** History calls only (params), so assertions ignore the registry handshake. */
+        private final List<Map<String, Object>> requests = new ArrayList<>();
+        private final List<String> actions = new ArrayList<>();
+        private List<Map<String, Object>> messages = List.of();
+        private String rawBody;
+        private Exception failure;
+        private CompletableFuture<JsonNode> held;
 
         private FakeClient() {
             super(URI.create("ws://127.0.0.1:1"), "", event -> { });
+        }
+
+        private void respondWith(List<Map<String, Object>> page) {
+            this.messages = page;
+            this.rawBody = null;
+            this.failure = null;
+        }
+
+        private void respondRaw(String body) {
+            this.rawBody = body;
+            this.failure = null;
+        }
+
+        private void failWith(Exception error) {
+            this.failure = error;
+        }
+
+        private void hold(CompletableFuture<JsonNode> future) {
+            this.held = future;
         }
 
         @Override
@@ -159,30 +395,27 @@ class QqRemoteHistoryToolTest {
 
         @Override
         public CompletableFuture<JsonNode> sendAction(String action, Map<String, Object> params) {
-            int count = params.get("count") instanceof Number number
-                    ? number.intValue() : 0;
-            if ("get_group_msg_history".equals(action)) {
-                counts.add(count);
+            actions.add(action);
+            // Only the history action is scripted; the registry handshake (get_login_info and
+            // friends) must keep succeeding so the tool can actually reach sendAction.
+            if (!action.endsWith("_msg_history")) {
+                return Completed.json(mapper, "{\"status\":\"ok\",\"retcode\":0,\"data\":{}}");
             }
-            if (timeoutAbove >= 0 && count > timeoutAbove) {
-                return CompletableFuture.failedFuture(
-                        new java.util.concurrent.TimeoutException("provider 不响"));
+            requests.add(new LinkedHashMap<>(params));
+            if (held != null) {
+                return held;
             }
-            if (count == emptyAt) {
-                return Completed.json(mapper, "{\"status\":\"ok\",\"retcode\":0,"
-                        + "\"data\":{\"messages\":[]}}");
+            if (failure != null) {
+                return CompletableFuture.failedFuture(failure);
             }
-            if (count == retcode1200At) {
-                return Completed.json(mapper, "{\"status\":\"failed\",\"retcode\":1200,"
-                        + "\"data\":{}}");
+            if (rawBody != null) {
+                return Completed.json(mapper, rawBody);
             }
-            if (count > 300) {
-                return CompletableFuture.failedFuture(new IllegalStateException("timeout"));
+            try {
+                return Completed.json(mapper, okBody(messages));
+            } catch (Exception broken) {
+                return CompletableFuture.failedFuture(broken);
             }
-            return Completed.json(mapper, "{\"status\":\"ok\",\"retcode\":0,\"data\":{"
-                    + "\"messages\":[{\"message_id\":1,\"message_seq\":100,"
-                    + "\"sender\":{\"user_id\":1,\"nickname\":\"x\"},"
-                    + "\"message\":[{\"type\":\"text\",\"data\":{\"text\":\"hi\"}}]}]}}");
         }
 
         @Override

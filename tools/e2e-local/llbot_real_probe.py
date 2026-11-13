@@ -44,19 +44,37 @@ if with_title:
           bool(info.get('title')) and bool(info.get('role')),
           f"titlePresent={bool(info.get('title'))} role={info.get('role')}")
 
+# Cursor paging (D-056): one small page per call. count<=30 is exactly one provider RPC --
+# count=1000 makes LLBot fan out to 34 SsoGetGroupMsg calls and wedges its CMD-PIPE
+# (see reports/2026-11-13-llbot-host-freeze-investigation.md).
 started = time.time()
 history = client.call('qq_remote_history', {
     'accountId': ACCOUNT, 'chatType': 'GROUP', 'targetId': GROUP,
-    'count': 1000, 'includeSegments': True,
+    'count': 30, 'includeSegments': True,
 })
 elapsed = time.time() - started
-check('real LLBot: count=1000 degrades instead of hanging forever',
-      history.get('degradedFrom') == 1000
-      and history.get('fetchedCount') in (300, 100)
-      and history.get('count', 0) > 0,
-      f"elapsed={elapsed:.1f}s requested={history.get('requestedCount')} "
-      f"fetched={history.get('fetchedCount')} count={history.get('count')} "
-      f"attempts={history.get('attempts')}")
+check('real LLBot: one 30-message page returns fast',
+      history.get('count', 0) > 0
+      and history.get('fetchedCount') == history.get('count')
+      and 'HISTORY_' not in str(history.get('errorCode') or ''),
+      f"elapsed={elapsed:.2f}s requested={history.get('requestedCount')} "
+      f"fetched={history.get('fetchedCount')} nextCursor={history.get('nextCursor')}")
+
+next_cursor = history.get('nextCursor') or ''
+check('real LLBot: page carries a nextCursor', bool(next_cursor), next_cursor)
+
+if next_cursor:
+    page2 = client.call('qq_remote_history', {
+        'accountId': ACCOUNT, 'chatType': 'GROUP', 'targetId': GROUP,
+        'count': 30, 'cursor': next_cursor,
+    })
+    first_seqs = {str(m.get('messageSeq')) for m in history.get('messages', [])}
+    second_seqs = {str(m.get('messageSeq')) for m in page2.get('messages', [])}
+    overlap = first_seqs & second_seqs
+    check('real LLBot: cursor paging does not overlap',
+          bool(second_seqs) and not overlap,
+          f'page1={len(first_seqs)} page2={len(second_seqs)} overlap={len(overlap)} '
+          f'cursor={next_cursor}')
 
 forward_ids = []
 for message in history.get('messages', []):

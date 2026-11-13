@@ -99,7 +99,7 @@ java -cp "/tmp/probe:bma3-app/target/bma3-app-0.0.4-hotfix1.jar:$JW:$SLF" \
 ```
 
 `llbot_real_probe.py` 用真 BMA3 MCP 验证 `qq_group_members/qq_group_member_info/`
-`qq_remote_history(1000→300)/qq_forward_view`；运行前把 `LLBOT_TOKEN` 设进临时 run 目录的配置。
+`qq_remote_history(游标分页 30/页)/qq_forward_view`；运行前把 `LLBOT_TOKEN` 设进临时 run 目录的配置。
 
 
 ## 真实 LLBot 发送（会真的发消息）
