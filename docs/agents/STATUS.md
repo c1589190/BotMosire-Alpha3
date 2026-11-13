@@ -7,6 +7,9 @@
 **用户方向（D-053/D-054）：Linux 侧直接上「全桌面 Computer Use」，浏览器不单独成线，由 Agent 在桌面内自行操作；不设策略闸门；取消 L3 人机接力（Agent 即全权力用户）；webconnect 保留并纳入 watchdog 探针。** 报告原建议（L1 优先、L2 留接口、noVNC 接力）据此部分作废。
 报告：[`../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md`](../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md)（§1–§5 事实仍有效；§6/§8 已被 D-053/D-054 取代）。**未开工，需先出 spec。**
 
+**0.0.5-early（当前开发版本，未发布/未打 tag）**：`fb2f05a`，已推送 `feat/bma3-plan-1`。内容 = 新增 `bma3-xvfb`（全桌面 Computer Use 底座）。上一已发布版本仍是 `v0.0.4-hotfix1`。
+**远程 0.0.4-early 使用报告已定位**（9 条 P1/P2/P3）：[`../superpowers/reports/2026-11-13-remote-usage-report-triage.md`](../superpowers/reports/2026-11-13-remote-usage-report-triage.md)。结论：2 条已实现（历史降级、面板省略提示）、3 条真缺口（`qq_group_info` 诊断、发送 retcode、`qq_delete_msg`）、其余为已知限制或文案。**未修复、未复现（NOT_RUN）**。
+
 **bma3-xvfb（2026-11-13 新增模块，已本机真机验证）**：全桌面 Computer Use 的 Xvfb 功能封装包。
 - 模块 `bma3-xvfb`（依赖 agentlib）：`PlatformProbe`（平台检测 + 缺件安装提示）、`WorkspaceStore`（`${cwd}/.xvfb/ws-xxxx/` 工作区与 meta.json）、`XvfbService`（起 display/WM、launch、screenshot 根窗口、windows、exec、xdotool 输入）、`XvfbTools`（12 个 `xvfb_*` 工具）。
 - 装配：`AppConfig.Xvfb`（默认 `enabled=true`、`workspaceRoot=""`⇒`${cwd}/.xvfb`、1440×900×24）+ `ConfigLoader`/`ConfigView` + `Bma3App` 工具注册与关闭回收 + watchdog `xvfb` 探针（D-054「豪华套餐」）。
@@ -53,7 +56,7 @@
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
 - 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
-- 版本号：`0.0.4-hotfix1`（pom / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging 一致）。
+- 版本号：`0.0.5-early`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）；**未打 tag、未发布**。
 - 发布：**v0.0.4-hotfix1**（2026-11-12，用户「发布0.0.4-hotfix1」授权），上一版 `v0.0.4-early`（commit `fc99132`）保留。
   - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-hotfix1>（Pre-release）
   - tag `v0.0.4-hotfix1` → commit `f450608`
