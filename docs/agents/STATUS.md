@@ -83,14 +83,32 @@
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
 - 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
-- 版本号：`0.0.5-early`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）；**未打 tag、未发布**。
-- 发布：**v0.0.4-hotfix1**（2026-11-12，用户「发布0.0.4-hotfix1」授权），上一版 `v0.0.4-early`（commit `fc99132`）保留。
+- 版本号：`0.0.5-early`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）。
+- 发布：**v0.0.5-early**（2026-11-13，用户「可以正式发布0.0.5-early版本了」授权）。
+  - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.5-early>（Pre-release）
+  - tag `v0.0.5-early` → commit `53e9d86`
+  - assets：`bma3-app-0.0.5-early.jar`（sha256 `28a59d52…`）、`mosire-bma3-dsh-0.0.5-early.tgz`（sha256 `67589baf…`）、`SHA256SUMS`
+  - 回下载校验 PASS：`sha256sum -c` OK；jar `--version` = `0.0.5-early`；tgz `package.json` version = `0.0.5-early`，`lib/` 含 4 个模块
+- 上一版：**v0.0.4-hotfix1**（2026-11-12，commit `f450608`）保留；再上一版 `v0.0.4-early`（commit `fc99132`）。
   - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.4-hotfix1>（Pre-release）
   - tag `v0.0.4-hotfix1` → commit `f450608`
   - assets：`bma3-app-0.0.4-hotfix1.jar`（sha256 `96463fb5…`）、`mosire-bma3-dsh-0.0.4-hotfix1.tgz`（sha256 `8eeddeb3…`）、`SHA256SUMS`
 - 继承参考：`/home/cna/DevMosire-iiBot`（只读）。
 
 ## 最近门禁
+
+**0.0.5-early 发布门禁（2026-11-13，commit `53e9d86`）**
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| Java 全量 | `./mvnw -o test` | **PASS**：core 7 / agentlib 5 / qqconnect 49 / inbox 29 / webconnect 4（1 skip）/ xvfb 16 / watchdog 6 / app 29 = **145 tests，0 fail**（144 pass + 1 skip） |
+| DSH 插件 | `dsh-plugin && npm test` | **PASS**：28 tests |
+| 打包 smoke | `bash packaging/smoke.sh` | **PASS**：app-image 启动且 `/healthz` 200，install.sh `--dry-run` 输出 `systemctl --user` |
+| 真机 LLBot 历史分页 | `tools/e2e-local/history_paging_probe.py` | **PASS 8/8**：`count=30` 0.64s/30 条、翻页零重叠且严格连续、`prevCursor` 精确回页、`count=100` 1.08s/100 条、`count=1000` 被 schema 拦截 |
+| 发布资产回下载 | `gh release download v0.0.5-early` + `sha256sum -c` | **PASS** |
+| `qq_delete_msg` / `qq_private_send`（含群临时会话）真实语义 | — | `NOT_RUN` |
+| 长图切段真实经 QQ 发出 | — | `NOT_RUN` |
+| DSH 插件真实宿主安装 / watchdog 真实报警 | — | `NOT_RUN` |
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
