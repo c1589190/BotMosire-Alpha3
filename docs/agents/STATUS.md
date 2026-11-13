@@ -8,6 +8,23 @@
 报告：[`../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md`](../superpowers/reports/2026-11-13-computer-use-linux-routes-survey.md)（§1–§5 事实仍有效；§6/§8 已被 D-053/D-054 取代）。**未开工，需先出 spec。**
 
 **0.0.5-early（当前开发版本，未发布/未打 tag）**：`fb2f05a`，已推送 `feat/bma3-plan-1`。内容 = 新增 `bma3-xvfb`（全桌面 Computer Use 底座）。上一已发布版本仍是 `v0.0.4-hotfix1`。
+**长图自动切段（2026-11-13，未提交）**：`LongImageSplitter`（qqconnect）+ `qq_media_view` 接线。
+- 1080×18000 实测切成 9 段、每段 ≤2048 高、相邻重叠 64px、一律写 PNG（避免二次有损）；产物落在 `policy.dir()`（=`<dataDir>/downloads`），可直接被 QQ 发送工具取用。
+- 拒绝路径齐全：像素数 >4000 万（OOM 风险）/ 段数 >16 / ImageIO 解不了的格式，都返回明确 reason 而不是装成功。
+- 工具返回新增 `width/height/split/parts[{index,total,path,bytes,width,height,y0,y1}]`；参数 `split=auto|never`、`maxPartHeight`（默认 2048）。
+- 测试：`LongImageSplitterTest` 7 条（不切/切段覆盖全高/相邻重叠/落盘位置/段数上限/非图片/probe 只读头）。真图肉眼验证过第 5 段：文字清晰。
+
+**远程报告修复批次（2026-11-13，未提交）**：9 条里 7 条已改、2 条部分改（P1-3 主动加好友依赖 provider；P3-8 老数据不可恢复）。
+新增工具 `qq_group_info` / `qq_delete_msg`；`qq_remote_history` 带 `attemptDetails` + `TIMEOUT` 分类 + `timeoutMs`；发送结果带 retcode；
+`qq_private_send` 支持群临时会话；`qq_forward_view` 支持 `depth=2`；`qq_group_list` 失败回退缓存；`senderId="0"` 修正；面板省略提示改人话。
+门禁：`./mvnw -o test` **136 tests / 0 fail / 1 skip**；`dsh-plugin npm test` **28 pass**。
+**实际调用测试 PASS**（2026-11-13，真进程 + 真 MCP + 扩展过的 FakeOneBot + 假 CDN，12 项）：group_info 正常/不在群、delete_msg 成功/被拒/参数非法、history 1200 降级与 **TIMEOUT** 分类（`attemptDetails` 可见）、群临时会话（假服务日志 `tempSession=true`）、forward depth=1/2、group_list 失败回退缓存、1080×18000 长图切 9 段。
+**测试中又抓到一个真 bug**：群列表缓存回退最初判的是 `ToolResult.success()`，而 provider 失败时它仍是 ok → 回退从不触发；改为解析 `response.status/retcode` 后才对。
+**真实 LLBot 实测（2026-11-13，token 由用户提供）**：连上 `3924945183(肥鱼弗洛洛)`；`qq_group_list` 返回 **22 个真实群**（报告说缺的 `150112205`/`938269591`/`719028297` 都在）；`qq_group_info` ×4 全 `ok=true`（含「历史 0 条」的 `719028297`）⇒ **P1-2 不是不在群**。
+**⚠ 本条已被 2026-11-13 二次实测推翻**：当时 `qq_remote_history` 对 3 个群 × count 1000/300/100 全部 TIMEOUT，据此写的「这台 LLBot 根本没实现 `get_group_msg_history`」**是错的**。读容器内 `llbot.js` 源码 + 重启后实测：该 action 内部**固定 30 条一窗、5 路并发**，`count=1000` 会瞬间发出 34 个 `SsoGetGroupMsg` 打死 QQ 客户端的 CMD-PIPE，**连无关 OIDB 命令一起超时**；`count ≤ 300` 全部秒回（10/30/60/100/300 → 0.47/0.64/0.73/1.37/3.58 s）。根因是 bma3 传了过大的 `count`。详见 [`../superpowers/reports/2026-11-13-llbot-host-freeze-investigation.md`](../superpowers/reports/2026-11-13-llbot-host-freeze-investigation.md)。
+**另**：`qq_remote_history` 发的 `reverse_order`（snake）**不是 LLBot 参数**（它认 `reverseOrder`），`parse_mult_msg`/`disable_get_url` 属 NapCat，三项一直无效。**修复进行中**：[`../superpowers/specs/2026-11-13-remote-history-paging-design.md`](../superpowers/specs/2026-11-13-remote-history-paging-design.md)。
+**未验**：`qq_delete_msg` / `qq_private_send`（含群临时会话）的真实平台语义 —— 当时 LLBot 停止接受 WS 连接的原因**已查明不是「单连接」**（该结论同样被推翻），而是下述整机冻结：17:21:06 后 ECS 内存耗尽 livelock 约 16 分钟，TCP 能连是内核 SYN 队列还活着、WS 握手超时是用户态已不调度。已修：swap 6G、`swappiness` 0→10、两容器加内存上限。
+
 **远程 0.0.4-early 使用报告已定位**（9 条 P1/P2/P3）：[`../superpowers/reports/2026-11-13-remote-usage-report-triage.md`](../superpowers/reports/2026-11-13-remote-usage-report-triage.md)。结论：2 条已实现（历史降级、面板省略提示）、3 条真缺口（`qq_group_info` 诊断、发送 retcode、`qq_delete_msg`）、其余为已知限制或文案。**未修复、未复现（NOT_RUN）**。
 
 **bma3-xvfb（2026-11-13 新增模块，已本机真机验证）**：全桌面 Computer Use 的 Xvfb 功能封装包。
