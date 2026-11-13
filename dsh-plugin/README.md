@@ -61,6 +61,46 @@ terminal，且不挂本插件的人设 loader。`subagent_fork` 继承父 preset
   - `action=status` 额外返回 `pushRevision`、`lastPushRevision`、`lastMcpStartId`、
     `appliedControlId`、`agentLive`、`stateFile`。
 
+## 斜杠命令 `/inbox`
+
+工具有个自举问题：被推送唤醒的往往就是**目标会话本身**，让它"帮我调一下 `bma3_inbox status`"很别扭，
+解绑时更是死锁。所以另开一条**人直接能用**的命令面（D-057）：
+
+```
+/inbox [status|bind [sessionId]|unbind|detach|restore|pause|resume|start|stop|ack]
+```
+
+| 子命令 | 作用 |
+|---|---|
+| `status`（默认） | 绑定会话 / SSE / 游标 / 暂停 / MCP / 状态文件 / 配置来源 |
+| `bind [id]` | 绑到指定会话；省略 id 则绑到**当前会话**（bind 会 restore + 必要时 resume） |
+| `unbind` | **只清绑定与落盘，不停 SSE**（与工具语义一致） |
+| `detach` | 解绑 **+** 停止 SSE —— 彻底脱手用这个 |
+| `restore` | 恢复持久化绑定并 resume |
+| `pause` / `resume` | 暂停/恢复注入（SSE 保持） |
+| `start` / `stop` | 开关 SSE（保留绑定） |
+| `ack` | 推进读游标 |
+
+```
+> /inbox status
+Inbox bma3 · 运行中
+绑定:     7f3a2b1c…（本会话）
+SSE:      open
+游标:     push=42 ack=42 待注入=0
+注入:     未暂停 · MCP 已连接
+状态文件: ~/.dsh/storages/bma3-inbox.json
+配置:     http://127.0.0.1:46500 · token 来源 env:BMA3_INBOX_TOKEN
+```
+
+**几点约定**
+
+- 命令结果由 UI 直接渲染，**不进模型上下文**（不会变成一条用户消息丢给 Agent）。
+- `status` 只报 token **来源**，绝不回显值。
+- 未绑定时会多一行提醒：新面板会注入到第一个 idle 会话，要彻底停下用 `/inbox detach`。
+- **`commands` 服务缺失时不注册**（只 warn），不影响 `preset`/`self` 模块 ——
+  包级 `inject` 是三个模块共享的，把 `commands` 加进去会连带 gate 掉那两个模块。
+- 注册走 `ctx.effect(...)`，插件重载不留重复定义。
+
 ## 启用
 
 DSH profile 里启用 `bma3-preset` loader row，选择 **BMA3** preset。旧的全局

@@ -654,6 +654,132 @@ const INBOX_SCHEMA = {
   additionalProperties: false,
 }
 
+const COMMAND_VERBS = Object.freeze([
+  'status', 'bind', 'unbind', 'detach', 'restore', 'pause', 'resume', 'start', 'stop', 'ack',
+])
+
+const COMMAND_USAGE = '/inbox [' + COMMAND_VERBS.join('|') + ']'
+
+/** Short session label: enough to tell two sessions apart, never the whole uuid. */
+function shortSession(id) {
+  const text = String(id ?? '')
+  if (!text) return ''
+  return text.length <= 10 ? text : text.slice(0, 8) + '…'
+}
+
+/**
+ * Human-readable mount status. Deliberately excludes the token value: only the *source*
+ * (`env:NAME` / `config`) is reported (red line 2).
+ */
+export function renderInboxStatus(status, callingSession = null) {
+  const lines = []
+  const running = status.running && !status.stopped
+  lines.push(`Inbox ${status.inboxId ?? status.config?.inboxId ?? 'bma3'} · ${running ? '运行中' : '已停止'}`)
+  const target = status.targetSessionId ? String(status.targetSessionId) : ''
+  if (target) {
+    const mine = callingSession && target === callingSession ? '（本会话）' : ''
+    lines.push(`绑定:     ${shortSession(target)}${mine}`)
+  } else {
+    lines.push('绑定:     未绑定')
+  }
+  lines.push(`SSE:      ${status.connection ?? 'closed'}${status.stopped ? '（用户已 stop）' : ''}`)
+  lines.push(`游标:     push=${status.injectedPushRevision ?? status.lastPushRevision ?? 0}`
+    + ` ack=${status.ackedRevision ?? 0}`
+    + ` 待注入=${status.pendingRevision ?? 0}`)
+  lines.push(`注入:     ${status.paused ? '已暂停' : '未暂停'} · MCP ${status.lastMcpStartId ? '已连接' : '未连接'}`)
+  if (status.stateFile) lines.push(`状态文件: ${status.stateFile}`)
+  lines.push(`配置:     ${status.config?.baseUrl ?? '-'} · token 来源 ${status.config?.tokenSource ?? 'unknown'}`)
+  if (status.lastError) lines.push(`最近错误: ${status.lastError}`)
+  if (!target) {
+    lines.push('⚠ 未绑定状态下，新面板会注入到第一个 idle 会话；要彻底停下用 /inbox detach')
+  }
+  return lines.join('\n')
+}
+
+/**
+ * `/inbox` slash command. Registered only when the host exposes a `commands` service; the
+ * package-level `inject` is shared by the preset/self modules, so declaring `commands` there
+ * would gate those modules on hosts that have no command surface at all (spec I5).
+ */
+export function registerInboxCommand(ctx, client) {
+  const commands = ctx?.commands ?? ctx?.get?.('commands')
+  if (!commands?.register) {
+    ctx?.logger?.('bma3-dsh')?.warn?.('/inbox command skipped: commands service unavailable')
+    return null
+  }
+  const definition = {
+    name: 'inbox',
+    description: '查看或修改 BMA3 inbox 挂载（绑定会话 / SSE / 暂停 / 游标）',
+    input: { hint: `[${COMMAND_VERBS.join('|')}]` },
+    handler: async (invocation) => {
+      const raw = String(invocation?.rawInput ?? '').trim()
+      const parts = raw.length > 0 ? raw.split(/\s+/u) : []
+      const verb = (parts[0] ?? 'status').toLowerCase()
+      const argument = parts.slice(1).join(' ').trim()
+      const callingSession = invocation?.agent?.id ? String(invocation.agent.id) : null
+      try {
+        switch (verb) {
+          case 'status':
+            return { kind: 'success', text: renderInboxStatus(client.status(), callingSession) }
+          case 'bind': {
+            const target = argument || callingSession
+            if (!target) {
+              return {
+                kind: 'error',
+                text: 'usage: /inbox bind <sessionId>\n'
+                  + '（在会话输入框里直接 /inbox bind 会绑到当前会话；无参且无会话上下文时必须显式给 id）',
+              }
+            }
+            client.bind(target)
+            return {
+              kind: 'success',
+              text: `已绑定到 ${shortSession(target)}\n${renderInboxStatus(client.status(), callingSession)}`,
+            }
+          }
+          case 'unbind':
+            client.unbind()
+            return {
+              kind: 'success',
+              text: '已解绑。\n'
+                + '⚠ SSE 仍在运行：未绑定状态下新面板会注入到第一个 idle 会话。\n'
+                + '要彻底脱手用 /inbox detach（解绑+停止），只停轮询用 /inbox stop。',
+            }
+          case 'detach':
+            client.unbind()
+            client.stop()
+            return { kind: 'success', text: '已解绑并停止 SSE。要重新接入：/inbox bind' }
+          case 'restore':
+            await client.restore(argument || client.status().targetSessionId)
+            return { kind: 'success', text: `已恢复绑定\n${renderInboxStatus(client.status(), callingSession)}` }
+          case 'pause':
+            client.pause()
+            return { kind: 'success', text: '已暂停推送注入（SSE 保持连接，面板继续累积）。' }
+          case 'resume':
+            client.resume()
+            return { kind: 'success', text: '已恢复推送注入。' }
+          case 'start':
+            client.start()
+            return { kind: 'success', text: 'SSE 已启动。' }
+          case 'stop':
+            client.stop()
+            return { kind: 'success', text: 'SSE 已停止（绑定保留）。' }
+          case 'ack':
+            await client.ack()
+            return { kind: 'success', text: `读游标已推进到 push=${client.status().ackedRevision ?? 0}` }
+          default:
+            return {
+              kind: 'error',
+              text: `未知子命令: ${verb}\nusage: ${COMMAND_USAGE}`,
+            }
+        }
+      } catch (error) {
+        return { kind: 'error', text: `/inbox ${verb} 失败: ${error?.message ?? error}` }
+      }
+    },
+  }
+  return ctx.effect(() => commands.register(definition))
+}
+
 export function apply(ctx, config = {}) {
   const client = createInboxClient(ctx, config)
   const tools = ctx?.tools ?? ctx?.get?.('tools')
@@ -721,6 +847,9 @@ export function apply(ctx, config = {}) {
       },
     })
   }
+
+  // Slash-command surface: /inbox status|bind|unbind|detach|... (D-057).
+  registerInboxCommand(ctx, client)
 
   // A persisted binding wins over autoStart: "bound once, bound forever" (D-045).
   const initial = client.status()

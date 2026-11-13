@@ -35,6 +35,20 @@
 - `QqRemoteHistoryToolTest` 4 → **13** 条（覆盖 A1–A12）。
 **未验**：`qq_delete_msg` / `qq_private_send`（含群临时会话）的真实平台语义 —— 当时 LLBot 停止接受 WS 连接的原因**已查明不是「单连接」**（该结论同样被推翻），而是下述整机冻结：17:21:06 后 ECS 内存耗尽 livelock 约 16 分钟，TCP 能连是内核 SYN 队列还活着、WS 握手超时是用户态已不调度。已修：swap 6G、`swappiness` 0→10、两容器加内存上限。
 
+**D-057 DSH 插件 `/inbox` 斜杠命令（2026-11-13 已实现）**：spec [`../superpowers/specs/2026-11-13-dsh-inbox-slash-command-design.md`](../superpowers/specs/2026-11-13-dsh-inbox-slash-command-design.md)。
+- `/inbox [status|bind [sessionId]|unbind|detach|restore|pause|resume|start|stop|ack]`；无参数 = `status`。
+- 动机：被推送唤醒的往往就是目标会话本身，让 Agent「帮我调 `bma3_inbox` 解绑」是自举死锁；命令面归人。
+- 结果由 UI 直接渲染（`CommandResult.text`），**不进模型上下文**；`status` 只报 token 来源，不回显值。
+- `unbind` 与工具语义一致（**只清绑定、不停 SSE**）；`detach` = 解绑 + 停 SSE，才是彻底脱手。
+- **未改包级 `inject`**：`commands` 是共享的，加进去会连带 gate 掉 `preset`/`self`；改为运行时探测 `ctx.commands ?? ctx.get('commands')`，缺失则 warn 跳过。
+- 已核对宿主 runtime 校验：`name` 需匹配 `/^[a-z][a-z0-9_-]*$/`、`description`/`handler`/`input.hint` 必有值、`definitionId` 可省 —— 单测里镜像了这套规则防回归。
+- 命名不撞 DSH 内置（goal/plan/feedback/compact/permission/export）。
+- `dsh-plugin npm test`：**28 → 42 pass**（新增 `test/inbox-command.test.mjs` 14 条，覆盖 A1–A11 + runtime 契约）。
+- **真 registry 验证 PASS 8/8**（`tools/e2e-local/dsh-inbox-command-check.mjs`）：用**宿主自己的** `@deepseek-ai/dsh-commands` + 真 Cordis `Context` 装载命令服务，然后
+  `registerInboxCommand` 通过真 `normalizeDefinition`；`commands.find(agent,'inbox')` 能解析；`commands.list()` 含 `inbox`；
+  真 `parseCommand('/inbox status')` → `{name:"inbox", rawInput:" status"}`；真 handler 渲染出 status 文本；`disposer()` 注销后 `find` 返回 undefined。
+- **未验**：真实 DSH Web 宿主进程内敲 `/inbox` 的**实际 UI 渲染**（宿主需重启/重载；本会话就挂在那个宿主上，不能自杀式重启）；`NOT_RUN`。
+
 **远程 0.0.4-early 使用报告已定位**（9 条 P1/P2/P3）：[`../superpowers/reports/2026-11-13-remote-usage-report-triage.md`](../superpowers/reports/2026-11-13-remote-usage-report-triage.md)。结论：2 条已实现（历史降级、面板省略提示）、3 条真缺口（`qq_group_info` 诊断、发送 retcode、`qq_delete_msg`）、其余为已知限制或文案。**未修复、未复现（NOT_RUN）**。
 
 **bma3-xvfb（2026-11-13 新增模块，已本机真机验证）**：全桌面 Computer Use 的 Xvfb 功能封装包。
