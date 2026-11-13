@@ -113,8 +113,14 @@
 
 - 仓库：`/home/cna/BotMosire-Alpha3`。
 - 分支：`feat/bma3-plan-1`；HEAD 见 `git log -1`。
-- 版本号：`0.0.5-hotfix1`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）。
-- 发布：**v0.0.5-hotfix1**（2026-11-13，用户「发布为0.0.5-hotfix1」授权）。
+- 版本号：`0.0.5-hotfix2`（pom ×10 / `Main.VERSION` / MCP serverVersion / dsh-plugin package.json / packaging/smoke.sh 一致）。
+- 发布：**v0.0.5-hotfix2**（2026-11-13，用户「发0.0.5-hotfix2」授权）。
+  - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.5-hotfix2>（Pre-release）
+  - tag `v0.0.5-hotfix2` → commit `d5cc369`
+  - 内容：修 hotfix1 的 `ctx.commands` 抛异常（整个 inbox 模块没挂上）+ 更早存在的「重载即自停」持久化 bug
+  - assets：`bma3-app-0.0.5-hotfix2.jar`（sha256 `7abd8433…`）、`mosire-bma3-dsh-0.0.5-hotfix2.tgz`（sha256 `49f03d79…`）、`SHA256SUMS`
+  - 回下载校验 PASS：`sha256sum -c` OK；jar/tgz 版本均 `0.0.5-hotfix2`；包内 `ctx.inject(['commands']` 存在、旧写法 `ctx?.commands` **0 处**
+- 上一版：**v0.0.5-hotfix1**（2026-11-13，commit `9e74a90`，用户「发布为0.0.5-hotfix1」授权）——**有致命回归，勿用**。
   - Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.5-hotfix1>（Pre-release）
   - tag `v0.0.5-hotfix1` → commit `9e74a90`
   - 内容：DSH 插件新增 `/inbox` 斜杠命令（D-057），其余与 `0.0.5-early` 相同
@@ -133,7 +139,18 @@
 
 ## 最近门禁
 
-**0.0.5-hotfix1 发布门禁（2026-11-13，commit `9e74a90`）**
+**0.0.5-hotfix2 发布门禁（2026-11-13，commit `d5cc369`）**
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| DSH 插件 | `dsh-plugin && npm test` | **PASS**：45 tests |
+| 真 registry | `node tools/e2e-local/dsh-inbox-command-check.mjs` | **PASS 8/8**（含「在没 inject commands 的 fiber 里注册」） |
+| Java 全量 | `./mvnw -o test` | **PASS**：145 tests / 0 fail / 1 skip |
+| 打包 smoke | `bash packaging/smoke.sh` | **PASS** |
+| 资产回下载 | `gh release download v0.0.5-hotfix2` + `sha256sum -c` | **PASS** |
+| 真实 DSH 宿主里敲 `/inbox` 的 UI 渲染 | — | `NOT_RUN` |
+
+**0.0.5-hotfix1 发布门禁（2026-11-13，commit `9e74a90`）——该版有致命回归，仅存档**
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
