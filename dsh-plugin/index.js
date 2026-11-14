@@ -24,6 +24,9 @@ export const MODULES = Object.freeze(['inbox', 'preset'])
  * - `inbox` injects the BMA3 inbox into DSH sessions (wake, revision push, `/inbox` command).
  * - `preset` registers the `bma3` agent preset, which injects the user's own system prompt.
  *
+ * `lib/media.js` (`bma3_ocr` / `bma3_asr`) is mounted as a *preset row*, not as a profile row, so the
+ * paid DeepSeek tools only exist inside BMA3 sessions.
+ *
  * Everything else was removed on 2026-11-14 (D-066): the tool-face layering, the `bma3_*` self
  * tools, the MCP bridge and the host-tool repair. The jar's MCP server is reachable over plain
  * HTTP with a bearer token, and the Agent configures and connects it through DSH's own

@@ -12,6 +12,7 @@ test('manifest exposes the bundle modules and required services', async () => {
   assert.ok(pkg.exports['./inbox'])
   assert.ok(pkg.exports['./preset'])
   assert.ok(pkg.exports['./persona'])
+  assert.ok(pkg.exports['./media'], 'OCR/ASR 工具模块要可单独加载')
   // 回归：耦合层删除后不得再导出 self（工具面/桥接/修复都在那一层，D-066）
   assert.equal(pkg.exports['./self'], undefined)
   assert.deepEqual([...MODULES], ['inbox', 'preset'])

@@ -62,6 +62,11 @@ function toolRows(ctx) {
       },
     },
     {
+      // DeepSeek 官方 OCR / ASR（D-068）。挂在这里而不是 profile 层：付费接口只在 BMA3 会话里出现。
+      id: 'media',
+      name: new URL('./media.js', import.meta.url).href,
+    },
+    {
       // The door for "Agent 想挂啥挂啥": install/enable/disable plugin rows at runtime.
       id: 'tool-plugin-manager',
       name: hostToolRowName('@deepseek-ai/dsh-plugin-manager/tools'),

@@ -5,7 +5,7 @@ BMA3 的 DSH 薄插件。**只做两件事**：
 | 模块 | 作用 |
 |---|---|
 | `inbox` | 把 BMA3 Inbox 注入 DSH 会话：SSE 唤醒、revision 推送、`/inbox` 斜杠命令 |
-| `preset` | 注册 `bma3` 预设：注入你的系统提示词 + 挂一层薄工具面 |
+| `preset` | 注册 `bma3` 预设：注入你的系统提示词 + 挂一层薄工具面（含 OCR/ASR 两个媒体工具） |
 
 **没有白名单，没有 `restrict`，没有策略层** —— 预设挂什么，会话就看到什么（D-067）。
 0.0.5 的 `defaultTools` 组别白名单已删除：它依赖别的插件先把工具名注册进全局层，而且
@@ -53,6 +53,21 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 | 连 MCP server（含 bma3 jar） | `mcp_connector_configure` → 工具落**全局层**，名字 `mcp__<server>__*` |
 | 加/减本地插件行 | `tool-plugin-manager`（预设已挂） |
 | 按会话临时收窄 | `mcp_connector_session_tools`（内部就是 `agent.ctx.tools.restrict({deny})`） |
+
+## 媒体：OCR / ASR（DeepSeek 官方接口）
+
+预设里挂了一行 `media`（`lib/media.js`），只给 BMA3 会话两个工具：
+
+| 工具 | 端点 | 说明 |
+|---|---|---|
+| `bma3_ocr` | `POST https://api.deepseek.com/v1/tools/ocr` | PDF/DOC/DOCX/PPT/PPTX/PNG/JPEG/WebP/GIF/BMP/TIFF，按页返回文本；`purpose` 默认 `text_recognition` |
+| `bma3_asr` | `POST https://api.deepseek.com/v1/tools/asr` | 音频转写；先用 ffmpeg 转 16 kHz 单声道 16 位 PCM WAV，最长 120 秒 / 8 MiB |
+
+- key 从 DSH `credentials` 的 `DEEPSEEK_API_KEY` 取（缺省退回同名环境变量），缺了就返回结构化错误、**不发起请求、不回显密钥**。
+- 语音文件本身由 jar 下载：`qq_media_view` 对 `record` 段调用即落到 downloads（`.amr`/`.mp3`/`.ogg`/`.wav`/`.silk`），再把返回的 `path` 交给 `bma3_asr`。
+- 计费随 DeepSeek 官方：OCR 1.5 元/1000 页、ASR 0.78 元/小时（限时 5 折）。
+- 出境边界：**只有 Agent 显式调这两个工具时，被指定的那一个文件才发往 `api.deepseek.com`**；插件不批量、不缓存。
+- TTS 不做（D-068）。
 
 ## Inbox
 

@@ -3,13 +3,14 @@
   "version": "0.0.6",
   "private": true,
   "type": "module",
-  "description": "BMA3 thin DSH bundle: Inbox wake injection, the BMA3 persona preset and its thin tool face.",
+  "description": "BMA3 thin DSH bundle: Inbox wake injection, the BMA3 persona preset, thin tool face and DeepSeek OCR/ASR tools.",
   "exports": {
     ".": "./index.js",
     "./inbox": "./lib/inbox.js",
     "./preset": "./lib/preset.js",
     "./persona": "./lib/persona.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./media": "./lib/media.js"
   },
   "files": [
     "index.js",

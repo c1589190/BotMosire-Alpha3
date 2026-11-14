@@ -15,6 +15,7 @@ test('preset mounts the thin face: persona + terminal + image + subagents + plug
     'tool-fs',
     'tool-subagent-control',
     'tool-subagent',
+    'media',
     'tool-plugin-manager',
   ])
   assert.match(definition.plugins[0].name, /persona\.js$/, '行名必须是独立入口文件而不是包名')
