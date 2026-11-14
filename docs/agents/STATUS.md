@@ -307,3 +307,17 @@ git status --short --branch
 - **验收判据 ①（jar 支持 DSH 官方 mcp-client）PASS —— 真机实测**：`mcp_connector_configure(name=bma3, url=http://127.0.0.1:18765/mcp, transport=streamable-http, authMode=bearer, bearerToken=$MCP_TOKEN)` → 返回「已配置并连接」；`mcp_connector_status` 显示 `manual/bearer/streamable-http · 已连接 · 始终注入 · 全局`，诊断 `ok`；40 个工具以 `mcp__bma3__*` 注册进会话；真实调用 `mcp__bma3__inbox_status` → `{"available":0,"pendingPush":0,"panelRevision":0,…}`。验证后已 `mcp_connector_disconnect` 断开（连的是 `build/e2e` 测试 jar，不留常驻）。
 - **门禁**：`dsh-plugin npm test` **41 pass**（preset 定义 7 行断言 + plugin-manager seam 开关 + `ctx.inject` 等待回归仍保留）。
 - **`NOT_RUN`**：薄面 6 行在真实 BMA3 会话里的实际可见工具数（需要一次真实会话，宿主须加载本次代码）。
+
+## 媒体能力第一批：OCR + ASR（2026-11-14，D-068）
+
+- **插件新增预设行 `lib/media.js`**，注册两个工具（只在 BMA3 会话出现，不进 profile 全局层）：
+  - `bma3_ocr(filePath, purpose?)` → `POST https://api.deepseek.com/v1/tools/ocr`；`purpose` 取 `text_recognition`（默认）/`rich_layout_recognition`；按页合并文本，返回 `pageCount`/`pages[].finishReason`/`usage`。
+  - `bma3_asr(filePath)` → 先用 ffmpeg 转 16 kHz 单声道 16 位 PCM WAV（mp3/amr/ogg/opus/wav 都能进），再 `POST https://api.deepseek.com/v1/tools/asr`；`>120 s` 或 `>8 MiB` 直接拒。
+  - 两个工具都从 DSH `credentials` 取 `DEEPSEEK_API_KEY`（缺省退回同名环境变量）；缺 key 时返回结构化错误、不发起请求、不回显密钥。
+- **jar 侧只需补扩展名**：`record` 语音原本就在 `QqMediaSupport.MEDIA_TYPES` 里、`qq_media_view` 已经下载到 downloads（用户判断正确），但 `extension()` 没有音频分支，语音一律落成 `.bin`。已补 `audio/*` → mp3/amr/wav/ogg/silk/m4a，新增用例 `aVoiceMessageIsWrittenWithAnAudioExtension`。
+- **TTS 不做**（用户裁定）。
+- **门禁**：`dsh-plugin npm test` **56 pass**（新增 `media.test.mjs` 11 条）；`./mvnw -o -q -pl bma3-qqconnect -am test` **51 tests / 0 failures**。
+- **真机验收（真实 Key、真实计费）**：
+  - ASR：2 秒 16 kHz 单声道 WAV（440 Hz 正弦）→ `HTTP 200`，`{"request_id":"05bf1e22-…","text":"","duration_ms":2000}` —— 鉴权、multipart、格式判定、时长回显全通（纯音无语音，text 为空属预期）。
+  - OCR：640×200 PNG（渲染 `BMA3 OCR SMOKE 2026`）→ `HTTP 200`，`page_count=1`，`text="BMA3 OCR SMOKE 2026\n\n00000000"` —— 识别链路通；中文行变 `00000000` 是 PIL 默认字体画不出 CJK（图片本身没有字形），不是接口问题。
+- **未验**：`rich_layout_recognition`（会带 `<\|ref\|>`/`<\|box\|>` 标记与坐标）；真实 QQ 语音样本的实际编码（SILK 需第三方解码器，本机 ffmpeg 6.1 只有 amr/opus/mp3）；LLBot 是否已把语音转 mp3 —— 需一条真实语音消息 `NOT_RUN`。
