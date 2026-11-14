@@ -321,3 +321,12 @@ git status --short --branch
   - ASR：2 秒 16 kHz 单声道 WAV（440 Hz 正弦）→ `HTTP 200`，`{"request_id":"05bf1e22-…","text":"","duration_ms":2000}` —— 鉴权、multipart、格式判定、时长回显全通（纯音无语音，text 为空属预期）。
   - OCR：640×200 PNG（渲染 `BMA3 OCR SMOKE 2026`）→ `HTTP 200`，`page_count=1`，`text="BMA3 OCR SMOKE 2026\n\n00000000"` —— 识别链路通；中文行变 `00000000` 是 PIL 默认字体画不出 CJK（图片本身没有字形），不是接口问题。
 - **未验**：`rich_layout_recognition`（会带 `<\|ref\|>`/`<\|box\|>` 标记与坐标）；真实 QQ 语音样本的实际编码（SILK 需第三方解码器，本机 ffmpeg 6.1 只有 amr/opus/mp3）；LLBot 是否已把语音转 mp3 —— 需一条真实语音消息 `NOT_RUN`。
+
+## 0.0.6 发布（2026-11-14）
+
+- **tag** `v0.0.6` → `8c5da07`；GitHub **Pre-release** 已发布：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.6>（按仓库惯例先 Pre-release）。
+- **资产**：`botmosire-a3-linux-x86_64.tar.gz`（88,742,446 字节），sha256 `df46c51a6b9987d632d4d231e028fc6be49cb244935c33473916346b2f5ec9ec`。
+- **门禁**：Java **172 tests / 0 failures / 1 skipped**；`dsh-plugin npm test` **56 pass**；`packaging/smoke.sh` **PASS**（app-image 启动 + `/healthz` 200）。
+- **破坏性**：token 载体从环境变量 `server.tokenEnv` 改为配置目录的 `.bma3env`（`MCP_TOKEN` / `INBOX_TOKEN` 分离）⇒ **jar 与插件必须成对升级**，否则一侧拿不到 token → 401。插件侧同时删除 `bma3_status`/`bma3_connect`/`bma3_tools`/`bma3_self_*`，`agentconfig.json` 与 `<cwd>/systemprompt.md` 失效，inbox 只认 `envFile`。
+- **发布内容**：jar = token 自举 + 单实例锁 + `security.auth` + 心跳/探针字段 + 媒体按魔数定扩展名；插件 = 删工具面耦合层（D-066/D-067）+ 人设预设 + `bma3_ocr`/`bma3_asr`（D-068）；连接方式改为 DSH 原生 `@deepseek-ai/dsh-mcp-client`（README 有可直接粘贴的 profile 行）。
+- **未验（随版本带走）**：真实 QQ 语音的识别质量（1.34 s AMR-NB 样本返回空文本，8k/16k 直传 API 皆空）；`rich_layout_recognition` 的标记/坐标格式；`--no-auth` 下的 watchdog 只观测行为只在 fake 上验过。
