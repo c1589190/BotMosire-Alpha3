@@ -125,6 +125,43 @@ class ConfigLoaderTest {
                 .hasMessageContaining("port");
     }
 
+
+    @Test
+    void defaultsToTokenAuthWithNoEnvFileOverride() {
+        AppConfig config = ConfigLoader.load(tempDir);
+
+        assertThat(config.security().auth()).isEqualTo(AppConfig.Security.AUTH_TOKEN);
+        assertThat(config.security().requiresToken()).isTrue();
+        assertThat(config.security().envFile()).isEmpty();
+    }
+
+    @Test
+    void readsExplicitNoAuthMode() throws Exception {
+        writeConfig("""
+                security:
+                  auth: none
+                  envFile: /srv/bma3/.bma3env
+                """);
+
+        AppConfig config = ConfigLoader.load(tempDir);
+
+        assertThat(config.security().auth()).isEqualTo(AppConfig.Security.AUTH_NONE);
+        assertThat(config.security().requiresToken()).isFalse();
+        assertThat(config.security().envFile()).isEqualTo("/srv/bma3/.bma3env");
+    }
+
+    @Test
+    void rejectsUnknownAuthMode() throws Exception {
+        writeConfig("""
+                security:
+                  auth: maybe
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(tempDir))
+                .isInstanceOf(io.mosire.bma3.core.config.ConfigException.class)
+                .hasMessageContaining("security.auth");
+    }
+
     private void writeConfig(String yaml) throws Exception {
         Path configDir = tempDir.resolve("config");
         Files.createDirectories(configDir);

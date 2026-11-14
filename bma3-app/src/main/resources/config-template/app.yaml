@@ -1,10 +1,18 @@
 dataDir: ./data
 
+# 启动安全模式（D-062/D-064）。
+# auth: token（默认）= 需要 Bearer；token 由 jar 生成到 <config 目录>/.bma3env（0600，幂等）。
+# auth: none         = 跳过 Bearer 校验（仅回环；等价于命令行 --no-auth）。
+# envFile            = 覆盖 .bma3env 的路径；留空即 <config 目录>/.bma3env。
+security:
+  auth: token
+  envFile: ""
+
 server:
   host: 127.0.0.1
   port: 8765
   mcpPath: /mcp
-  tokenEnv: BMA3_MCP_TOKEN
+  tokenEnv: BMA3_MCP_TOKEN   # 已废弃：token 现由 .bma3env 的 MCP_TOKEN 提供（D-063）
   healthPort: 8766        # /healthz /readyz /watchdog；0=随机
 
 qqconnect:

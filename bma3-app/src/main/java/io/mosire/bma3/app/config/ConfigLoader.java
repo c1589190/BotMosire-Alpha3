@@ -128,6 +128,7 @@ public final class ConfigLoader {
         JsonNode watchdog = node.path("watchdog");
         JsonNode deployer = node.path("deployer");
         JsonNode xvfb = node.path("xvfb");
+        JsonNode security = node.path("security");
         List<String> readyzCritical = new ArrayList<>();
         for (JsonNode critical : watchdog.path("readyzCritical")) {
             readyzCritical.add(critical.asText());
@@ -199,7 +200,10 @@ public final class ConfigLoader {
                         text(xvfb, "workspaceRoot", ""),
                         integer(xvfb, "width", 1440),
                         integer(xvfb, "height", 900),
-                        integer(xvfb, "depth", 24)));
+                        integer(xvfb, "depth", 24)),
+                new AppConfig.Security(
+                        text(security, "auth", AppConfig.Security.AUTH_TOKEN),
+                        text(security, "envFile", "")));
     }
 
     private static String interpolate(String raw, Map<String, String> env) {

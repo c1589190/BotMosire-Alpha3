@@ -244,6 +244,12 @@ public final class Probes {
             facts.put("sse", heartbeat.sse());
             facts.put("ageSeconds", Long.toString(ageSeconds));
             facts.put("bound", Boolean.toString(heartbeat.bound()));
+            facts.put("tokenSource", heartbeat.tokenSource());
+            facts.put("tokenOk", Boolean.toString(heartbeat.tokenOk()));
+            if (!heartbeat.tokenOk()) {
+                return ProbeResult.degraded("dshPlugin", "TOKEN_MISMATCH",
+                        "插件上报 token 校验失败（来源 " + heartbeat.tokenSource() + "）", facts);
+            }
             if (ageSeconds > Math.max(5, heartbeatTimeout.toSeconds())) {
                 return ProbeResult.degraded("dshPlugin", "HEARTBEAT_STALE",
                         "心跳超过 " + heartbeatTimeout.toSeconds() + "s", facts);

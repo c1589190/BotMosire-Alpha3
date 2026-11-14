@@ -16,6 +16,8 @@ public record PluginHeartbeat(
         String lastMcpStartId,
         String lastError,
         String appliedControlId,
+        String tokenSource,
+        boolean tokenOk,
         Instant at) {
 
     public PluginHeartbeat {
@@ -24,7 +26,16 @@ public record PluginHeartbeat(
         lastMcpStartId = lastMcpStartId == null ? "" : lastMcpStartId;
         lastError = lastError == null ? "" : lastError;
         appliedControlId = appliedControlId == null ? "" : appliedControlId;
+        tokenSource = tokenSource == null || tokenSource.isBlank() ? "unknown" : tokenSource.trim();
         at = at == null ? Instant.now() : at;
+    }
+
+    /** Compatibility constructor: heartbeats sent before tokenSource/tokenOk existed. */
+    public PluginHeartbeat(String sessionId, boolean bound, String sse, long lastPushRevision,
+                           String lastMcpStartId, String lastError, String appliedControlId,
+                           Instant at) {
+        this(sessionId, bound, sse, lastPushRevision, lastMcpStartId, lastError, appliedControlId,
+                "unknown", true, at);
     }
 
     public boolean healthy() {

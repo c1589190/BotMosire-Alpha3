@@ -14,7 +14,8 @@ public record AppConfig(
         Logging logging,
         Deployer deployer,
         Watchdog watchdog,
-        Xvfb xvfb) {
+        Xvfb xvfb,
+        Security security) {
 
     public AppConfig {
         dataDir = dataDir == null ? Path.of("data") : dataDir;
@@ -27,13 +28,14 @@ public record AppConfig(
         deployer = deployer == null ? Deployer.defaults() : deployer;
         watchdog = watchdog == null ? Watchdog.defaults() : watchdog;
         xvfb = xvfb == null ? Xvfb.defaults() : xvfb;
+        security = security == null ? Security.defaults() : security;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
                 new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
                 Weighting.defaults(), Logging.defaults(), Deployer.defaults(),
-                Watchdog.defaults(), Xvfb.defaults());
+                Watchdog.defaults(), Xvfb.defaults(), Security.defaults());
     }
 
     /**
@@ -200,26 +202,65 @@ public record AppConfig(
         }
     }
 
+    /** Same configuration with a different security mode (used by {@code --no-auth}). */
+    public AppConfig withSecurity(Security replacement) {
+        return new AppConfig(dataDir, server, qqconnect, inbox, webconnect, weighting, logging,
+                deployer, watchdog, xvfb, replacement);
+    }
+
+    /**
+     * Startup security mode plus where the token bootstrap file lives.
+     *
+     * <p>{@code auth=token} (default) requires {@code MCP_TOKEN}/{@code INBOX_TOKEN} in the env file;
+     * {@code auth=none} skips Bearer checks entirely and is only reachable by explicit request
+     * (D-064). Loopback binding stays mandatory either way.</p>
+     */
+    public record Security(String auth, String envFile) {
+
+        public static final String AUTH_TOKEN = "token";
+        public static final String AUTH_NONE = "none";
+
+        public Security {
+            String normalized = auth == null || auth.isBlank() ? AUTH_TOKEN : auth.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!AUTH_TOKEN.equals(normalized) && !AUTH_NONE.equals(normalized)) {
+                throw new IllegalArgumentException("security.auth 只支持 token 或 none");
+            }
+            auth = normalized;
+            envFile = envFile == null ? "" : envFile.trim();
+        }
+
+        public static Security defaults() {
+            return new Security(AUTH_TOKEN, "");
+        }
+
+        /** Whether Bearer tokens are mandatory for this process. */
+        public boolean requiresToken() {
+            return AUTH_TOKEN.equals(auth);
+        }
+    }
+
     /** 5-arg compatibility constructor for tests/profiles created before webconnect. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Logging logging) {
         this(dataDir, server, qqconnect, inbox, Webconnect.defaults(),
                 Weighting.defaults(), logging, Deployer.defaults(), Watchdog.defaults(),
-                Xvfb.defaults());
+                Xvfb.defaults(), Security.defaults());
     }
 
     /** 6-arg compatibility constructor for profiles created before weighting. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Logging logging) {
         this(dataDir, server, qqconnect, inbox, webconnect, Weighting.defaults(), logging,
-                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults());
+                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults(),
+                Security.defaults());
     }
 
     /** 7-arg compatibility constructor for profiles created before the deployer alert. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Weighting weighting, Logging logging) {
         this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging,
-                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults());
+                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults(),
+                Security.defaults());
     }
 
     /** 8-arg compatibility constructor for profiles created before the watchdog. */
@@ -227,7 +268,7 @@ public record AppConfig(
                      Webconnect webconnect, Weighting weighting, Logging logging,
                      Deployer deployer) {
         this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging, deployer,
-                Watchdog.defaults(), Xvfb.defaults());
+                Watchdog.defaults(), Xvfb.defaults(), Security.defaults());
     }
 
     /**

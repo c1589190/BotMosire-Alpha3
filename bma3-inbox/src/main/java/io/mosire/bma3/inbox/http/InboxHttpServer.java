@@ -45,7 +45,7 @@ public final class InboxHttpServer implements AutoCloseable {
         this.host = host;
         this.requestedPort = port;
         this.inboxId = inboxId;
-        this.token = token;
+        this.token = token == null ? "" : token.trim();
         this.service = service;
     }
 
@@ -279,6 +279,8 @@ public final class InboxHttpServer implements AutoCloseable {
                 node.path("lastMcpStartId").asText(""),
                 node.path("lastError").asText(""),
                 node.path("appliedControlId").asText(""),
+                node.path("tokenSource").asText("unknown"),
+                node.path("tokenOk").asBoolean(true),
                 Instant.now());
         ControlCommand control = service.pluginHeartbeat(heartbeat);
         Map<String, Object> response = new LinkedHashMap<>();
@@ -300,6 +302,10 @@ public final class InboxHttpServer implements AutoCloseable {
     }
 
     private boolean authorized(HttpExchange exchange) {
+        if (token.isEmpty()) {
+            // security.auth=none (D-064): loopback binding is still enforced above.
+            return true;
+        }
         String header = exchange.getRequestHeaders().getFirst("Authorization");
         byte[] actual = header == null ? new byte[0] : header.getBytes(StandardCharsets.UTF_8);
         byte[] expected = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);

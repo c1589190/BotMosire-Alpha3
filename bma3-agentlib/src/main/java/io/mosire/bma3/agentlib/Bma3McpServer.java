@@ -75,6 +75,7 @@ public final class Bma3McpServer implements AutoCloseable {
     private final int requestedPort;
     private final String path;
     private final String token;
+    private final boolean authRequired;
     private final String serverName;
     private final String serverVersion;
     private final List<AgentTool> tools;
@@ -125,7 +126,11 @@ public final class Bma3McpServer implements AutoCloseable {
         if (!path.startsWith("/")) {
             throw new IllegalArgumentException("path 必须以 / 开头");
         }
-        this.token = requireToken(token);
+        this.token = token == null ? "" : token.trim();
+        this.authRequired = !this.token.isEmpty();
+        if (this.authRequired) {
+            requireToken(this.token);
+        }
         this.serverName = requireText(serverName, "serverName");
         this.serverVersion = requireText(serverVersion, "serverVersion");
         this.tools = List.copyOf(Objects.requireNonNull(tools, "tools"));
@@ -178,7 +183,9 @@ public final class Bma3McpServer implements AutoCloseable {
                 this.frontExecutor = executor;
                 this.internalPort = internal.boundPort();
                 this.boundPort = front.getAddress().getPort();
-                this.expectedAuthorization = ("Bearer " + token).getBytes(StandardCharsets.UTF_8);
+                this.expectedAuthorization = authRequired
+                        ? ("Bearer " + token).getBytes(StandardCharsets.UTF_8)
+                        : null;
                 this.started = true;
                 LOG.info("Bot MCP 已启动 host={} port={} path={} tools={}",
                         host, boundPort, path, tools.size());
@@ -208,6 +215,11 @@ public final class Bma3McpServer implements AutoCloseable {
     }
 
     /** Names where the expected token comes from (never the token itself). */
+    /** Whether this server enforces a Bearer token (false for {@code security.auth=none}). */
+    public boolean authRequired() {
+        return authRequired;
+    }
+
     public Bma3McpServer authHint(String hint) {
         if (hint != null && !hint.isBlank()) {
             this.authHint = hint;
@@ -347,6 +359,9 @@ public final class Bma3McpServer implements AutoCloseable {
      * single boolean forced the operator to guess from a WARN line in the log.
      */
     private String authFailure(HttpExchange exchange) {
+        if (!authRequired) {
+            return null;
+        }
         byte[] expected = expectedAuthorization;
         if (expected == null) {
             return "server_not_ready";

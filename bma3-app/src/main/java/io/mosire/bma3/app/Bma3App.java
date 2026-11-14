@@ -57,6 +57,7 @@ import io.mosire.bma3.watchdog.task.Tasks;
 import io.mosire.bma3.watchdog.tool.WatchdogTools;
 import java.net.URI;
 import java.nio.file.Files;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -90,6 +91,7 @@ public final class Bma3App implements AutoCloseable {
     private final ConfigWatcher watcher;
     private final WatchdogEngine watchdog;
     private final QqDirectoryStore directory;
+    private final SingleInstanceLock instanceLock;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
                     SqliteInboxStore inboxStore, InboxService inboxService,
@@ -97,7 +99,7 @@ public final class Bma3App implements AutoCloseable {
                     AccountRegistry accounts, Bma3McpServer mcp,
                     BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
                     ConfigWatcher watcher, WatchdogEngine watchdog,
-                    QqDirectoryStore directory) {
+                    QqDirectoryStore directory, SingleInstanceLock instanceLock) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -112,6 +114,7 @@ public final class Bma3App implements AutoCloseable {
         this.watcher = watcher;
         this.watchdog = watchdog;
         this.directory = directory;
+        this.instanceLock = instanceLock;
     }
 
     public static Bma3App start(AppConfig config) {
@@ -125,11 +128,32 @@ public final class Bma3App implements AutoCloseable {
     public static Bma3App start(AppConfig config, Map<String, String> env, Path configRoot) {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(configRoot, "configRoot");
-        String mcpToken = secret(env, config.server().tokenEnv(), "server.tokenEnv");
+        SingleInstanceLock instanceLock;
+        try {
+            instanceLock = SingleInstanceLock.acquire(config.dataDir());
+        } catch (IOException failure) {
+            throw new IllegalStateException("获取单实例锁失败: " + failure.getMessage(), failure);
+        }
         try {
             Files.createDirectories(config.dataDir());
         } catch (Exception failure) {
+            instanceLock.close();
             throw new IllegalStateException("创建 dataDir 失败", failure);
+        }
+        boolean authRequired = config.security().requiresToken();
+        Bma3Env tokenFile = Bma3Env.ensure(Bma3Env.resolve(config, configRoot), false);
+        if (tokenFile.degraded()) {
+            LOG.warn("event=token_file_write_failed file={}", tokenFile.file());
+        }
+        String mcpToken = authRequired ? tokenFile.mcpToken() : "";
+        String inboxToken = authRequired ? tokenFile.inboxToken() : "";
+        if (authRequired && (mcpToken.isBlank() || inboxToken.isBlank())) {
+            instanceLock.close();
+            throw new ConfigException("security.auth",
+                    "token 模式需要 MCP_TOKEN/INBOX_TOKEN: " + tokenFile.file());
+        }
+        if (!authRequired) {
+            LOG.warn("event=auth_disabled reason=security.auth=none file={}", tokenFile.file());
         }
 
         SqliteMessageBoardStore board = new SqliteMessageBoardStore(
@@ -205,7 +229,7 @@ public final class Bma3App implements AutoCloseable {
                 });
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
-                config.inbox().inboxId(), mcpToken, inboxService);
+                config.inbox().inboxId(), inboxToken, inboxService);
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
@@ -250,7 +274,7 @@ public final class Bma3App implements AutoCloseable {
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
                     config.server().mcpPath(), mcpToken, "bma3", "0.0.5-hotfix2", tools)
-                    .authHint(config.server().tokenEnv());
+                    .authHint(authRequired ? tokenFile.file().toString() : "security.auth=none");
             mcp.start();
 
             watchdog.addProbe(Probes.process())
@@ -260,7 +284,7 @@ public final class Bma3App implements AutoCloseable {
                             ? ProbeResult.up("directory", "SELECT 1")
                             : ProbeResult.down("directory", "DB_UNAVAILABLE", "SELECT 1 failed")))
                     .addProbe(Probes.inboxHttp(config.server().host(), inboxHttp.boundPort(),
-                            config.inbox().inboxId(), mcpToken, inboxHttp::running))
+                            config.inbox().inboxId(), inboxToken, inboxHttp::running))
                     .addProbe(Probes.inboxBacklog(inboxService, 120_000L))
                     .addProbe(Probes.mcp(mcp))
                     .addProbe(Probes.qqAccount(accounts))
@@ -286,10 +310,15 @@ public final class Bma3App implements AutoCloseable {
                         return ProbeResult.degraded("config", "RELOAD_REJECTED",
                                 activeWatcher.lastReloadError());
                     }));
-            watchdog.addRemediation(Remediations.reconnectQq(accounts))
-                    .addRemediation(Remediations.restartInboxHttp(inboxHttp))
-                    .addRemediation(Remediations.restartMcp(mcp))
-                    .addRemediation(Remediations.nudgePlugin(inboxService));
+            if (authRequired) {
+                watchdog.addRemediation(Remediations.reconnectQq(accounts))
+                        .addRemediation(Remediations.restartInboxHttp(inboxHttp))
+                        .addRemediation(Remediations.restartMcp(mcp))
+                        .addRemediation(Remediations.nudgePlugin(inboxService));
+            } else {
+                // D-064/Q4: with no auth, recovery actions stay observe-only.
+                LOG.warn("event=watchdog_remediation_disabled reason=security.auth=none");
+            }
             watchdog.addTask(Tasks.autoDismiss(inboxService, Duration.ofSeconds(60)));
             Consumer<String> deployerAlert = text -> {
                 AppConfig latest = current.get();
@@ -306,7 +335,7 @@ public final class Bma3App implements AutoCloseable {
 
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
-                    directory);
+                    directory, instanceLock);
         } catch (RuntimeException failure) {
             if (watchdog != null) {
                 watchdog.close();
@@ -328,6 +357,7 @@ public final class Bma3App implements AutoCloseable {
             qqExtras.close();
             inboxHttp.close();
             health.close();
+            instanceLock.close();
             inboxStore.close();
             board.close();
             throw failure;
@@ -560,5 +590,8 @@ public final class Bma3App implements AutoCloseable {
         health.close();
         inboxStore.close();
         board.close();
+        if (instanceLock != null) {
+            instanceLock.close();
+        }
     }
 }

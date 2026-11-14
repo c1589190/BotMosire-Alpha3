@@ -48,7 +48,8 @@ class Bma3AppFakeQqTest {
                             "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
                     new AppConfig.Inbox("bma3", 0),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
-            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
+            app = Bma3App.start(config, Map.of(), tempDir);
+            String mcpToken = Bma3Env.read(tempDir.resolve(".bma3env")).get(Bma3Env.MCP_TOKEN);
             assertThat(app.mcpPort()).isPositive();
             assertThat(app.healthPort()).isPositive();
             assertThat(app.inboxHttpPort()).isPositive();
@@ -73,7 +74,7 @@ class Bma3AppFakeQqTest {
                     .resumableStreams(false)
                     .connectTimeout(Duration.ofSeconds(5))
                     .httpRequestCustomizer((request, method, uri, body, context) ->
-                            request.header("Authorization", "Bearer mcp-token"))
+                            request.header("Authorization", "Bearer " + mcpToken))
                     .build();
             mcp = McpClient.sync(transport).build();
             mcp.initialize();
@@ -140,7 +141,8 @@ class Bma3AppFakeQqTest {
                                     "qq_self_name", 0, "qq_command", 0),
                             java.util.List.of()),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
-            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
+            app = Bma3App.start(config, Map.of(), tempDir);
+            String mcpToken = Bma3Env.read(tempDir.resolve(".bma3env")).get(Bma3Env.MCP_TOKEN);
 
             oneBot.send("""
                     {"post_type":"message","message_type":"group","self_id":10001,
@@ -195,7 +197,8 @@ class Bma3AppFakeQqTest {
                             AppConfig.Weighting.defaultAttributes(),
                             java.util.List.of()),
                     new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
-            app = Bma3App.start(config, Map.of("BMA3_TEST_TOKEN", "mcp-token"), tempDir);
+            app = Bma3App.start(config, Map.of(), tempDir);
+            String mcpToken = Bma3Env.read(tempDir.resolve(".bma3env")).get(Bma3Env.MCP_TOKEN);
 
             oneBot.send("""
                     {"post_type":"message","message_type":"group","self_id":10001,
@@ -214,7 +217,7 @@ class Bma3AppFakeQqTest {
                     .resumableStreams(false)
                     .connectTimeout(Duration.ofSeconds(5))
                     .httpRequestCustomizer((request, method, uri, body, context) ->
-                            request.header("Authorization", "Bearer mcp-token"))
+                            request.header("Authorization", "Bearer " + mcpToken))
                     .build();
             mcp = McpClient.sync(transport).build();
             mcp.initialize();
