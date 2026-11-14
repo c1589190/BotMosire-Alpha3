@@ -6,22 +6,47 @@ const WAKE_REVISION_HEADER = '[INBOX_PANEL]'
 const ACTIVE_MARKER = '（消息更新活跃）'
 const STATE_VERSION = 1
 
+/**
+ * Read the jar-owned token file (D-063). The plugin never generates or stores a token: BMA3 writes
+ * `<configRoot>/.bma3env` and this side only reads `INBOX_TOKEN` out of it.
+ *
+ * @param config - loader row config carrying `envFile`
+ * @returns the inbox token, or '' when the file/key is missing (server may run with auth:none)
+ */
 function tokenFor(config) {
-  const fileToken = config.tokenFile ? readFileSync(config.tokenFile, 'utf8').trim() : undefined
-  return config.token
-    ?? fileToken
-    ?? (config.tokenEnv ? process.env[config.tokenEnv] : undefined)
-    ?? process.env.BMA3_INBOX_TOKEN
-    ?? ''
+  const token = readInboxToken(config)
+  return token ?? ''
 }
 
-/** Where the token comes from — never the value, never the path. */
+function readInboxToken(config) {
+  if (!config.envFile) return undefined
+  try {
+    const text = readFileSync(config.envFile, 'utf8')
+    for (const raw of text.split('\n')) {
+      const line = raw.trim()
+      if (line === '' || line.startsWith('#')) continue
+      const split = line.indexOf('=')
+      if (split <= 0) continue
+      if (line.slice(0, split).trim() !== 'INBOX_TOKEN') continue
+      const value = line.slice(split + 1).trim()
+      return value === '' ? undefined : value
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Bearer header, or nothing at all when the jar runs without auth (D-064). */
+function authHeaders(config) {
+  const token = tokenFor(config)
+  return token === '' ? {} : { Authorization: `Bearer ${token}` }
+}
+
+/** Where the token comes from — never the value. */
 function tokenSource(config) {
-  if (config.token) return 'config'
-  if (config.tokenFile) return 'file'
-  if (config.tokenEnv) return `env:${config.tokenEnv}`
-  if (process.env.BMA3_INBOX_TOKEN) return 'env:BMA3_INBOX_TOKEN'
-  return 'none'
+  if (!config.envFile) return 'none'
+  return readInboxToken(config) === undefined ? 'env-file:missing' : 'env-file'
 }
 
 function endpoint(config, suffix = '') {
@@ -328,7 +353,7 @@ export function createInboxClient(ctx, config = {}) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${tokenFor(config)}`,
+          ...authHeaders(config),
         },
         body: JSON.stringify({
           sessionId: state.targetSessionId ?? '',
@@ -338,8 +363,15 @@ export function createInboxClient(ctx, config = {}) {
           lastMcpStartId: state.lastMcpStartId,
           lastError: state.lastError ?? '',
           appliedControlId: state.appliedControlId,
+          tokenSource: tokenSource(config),
+          tokenOk: state.lastAuthFailed !== true,
         }),
       })
+      if (response.status === 401) {
+        state.lastAuthFailed = true
+      } else if (response.ok) {
+        state.lastAuthFailed = false
+      }
       if (!response.ok) {
         state.lastError = `heartbeat: HTTP ${response.status}`
         return null
@@ -419,7 +451,7 @@ export function createInboxClient(ctx, config = {}) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${tokenFor(config)}`,
+        ...authHeaders(config),
       },
       body: JSON.stringify(payload),
     })
@@ -506,7 +538,7 @@ export function createInboxClient(ctx, config = {}) {
         method: 'GET',
         headers: {
           Accept: 'text/event-stream',
-          Authorization: `Bearer ${tokenFor(config)}`,
+          ...authHeaders(config),
           ...(state.lastRevision > 0 ? { 'Last-Event-ID': String(state.lastRevision) } : {}),
         },
         signal: abort.signal,

@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, createInboxClient, renderPanel, SseParser } from '../lib/inbox.js'
+/** Write a jar-shaped .bma3env and return its path (D-063: the plugin only reads it). */
+function tokenEnvFile(value = 'secret') {
+  const dir = mkdtempSync(join(tmpdir(), 'bma3-inbox-token-'))
+  const file = join(dir, '.bma3env')
+  writeFileSync(file, `MCP_TOKEN=mcp-${value}\nINBOX_TOKEN=${value}\n`)
+  return file
+}
+
 
 test('renderPanel shows bounded windows, source labels and relation markers', () => {
   const text = renderPanel({
@@ -66,7 +74,7 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
     autoStart: false,
     baseUrl: 'http://127.0.0.1:18766',
     inboxId: 'bma3',
-    token: 'secret-token',
+    envFile: tokenEnvFile('secret-token'),
     fetchImpl,
     persistState: false,
   })
@@ -78,7 +86,7 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
   assert.equal(initial.callingSession, 'session-1')
   assert.equal(initial.running, false, 'autoStart:false ⇒ 未启动')
   assert.equal(initial.paused, false)
-  assert.equal(initial.config.tokenSource, 'config')
+  assert.equal(initial.config.tokenSource, 'env-file', 'token 只来自 jar 生成的 .bma3env（D-063）')
   assert.equal(initial.config.inboxId, 'bma3')
 
   const bound = JSON.parse((await inbox.execute({ action: 'bind' }, { agent: { id: 'session-1' } })).text)
@@ -130,7 +138,7 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
   const client = createInboxClient(ctx, {
     baseUrl: 'http://127.0.0.1:18766',
     inboxId: 'bma3',
-    token: 'secret',
+    envFile: tokenEnvFile('secret'),
     fetchImpl,
     pumpMs: 10,
     persistState: false,
@@ -192,7 +200,7 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
   const client = createInboxClient(ctx, {
     baseUrl: 'http://127.0.0.1:18766',
     inboxId: 'bma3',
-    token: 'secret',
+    envFile: tokenEnvFile('secret'),
     fetchImpl,
     pumpMs: 10,
     persistState: false,
@@ -271,7 +279,7 @@ test('a persisted push revision prevents re-injection after a plugin restart', a
       throw new Error(`unexpected URL ${url}`)
     }
     const client = createInboxClient(ctx, {
-      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', envFile: tokenEnvFile('secret'),
       fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile,
     })
     client.start()
@@ -322,7 +330,7 @@ test('unloading the plugin must not persist the user-stop intent', async () => {
     throw new Error(`unexpected URL ${url}`)
   }
   const config = {
-    baseUrl: 'http://127.0.0.1:18777', inboxId: 'bma3', token: 'secret',
+    baseUrl: 'http://127.0.0.1:18777', inboxId: 'bma3', envFile: tokenEnvFile('secret'),
     fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile,
   }
   const makeCtx = () => {
@@ -383,7 +391,7 @@ test('bind persists the session and resumes it when it is not live', async () =>
     return { ok: true, status: 200, json: async () => ({ ackedRevision: 1 }) }
   }
   const client = createInboxClient(ctx, {
-    baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+    baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', envFile: tokenEnvFile('secret'),
     fetchImpl, pumpMs: 10, heartbeatMs: 10000, stateFile, autoStart: false,
   })
   client.bind('session-9')
@@ -402,7 +410,7 @@ test('a bound target never falls back to another idle session', () => {
   const client = createInboxClient(
     { agents: { get: () => undefined, list: () => [other] } },
     {
-      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', token: 'secret',
+      baseUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', envFile: tokenEnvFile('secret'),
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
       persistState: false, autoStart: false, stateFile,
     })

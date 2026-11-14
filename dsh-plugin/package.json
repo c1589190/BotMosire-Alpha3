@@ -1,14 +1,14 @@
 {
   "name": "@mosire/bma3-dsh",
-  "version": "0.0.5-hotfix2",
+  "version": "0.0.6",
   "private": true,
   "type": "module",
-  "description": "BMA3 thin DSH bundle: Inbox wake injection, role prompt (self) and tool preset.",
+  "description": "BMA3 thin DSH bundle: Inbox wake injection, the BMA3 persona preset and its thin tool face.",
   "exports": {
     ".": "./index.js",
     "./inbox": "./lib/inbox.js",
     "./preset": "./lib/preset.js",
-    "./self": "./lib/self.js",
+    "./persona": "./lib/persona.js",
     "./package.json": "./package.json"
   },
   "files": [

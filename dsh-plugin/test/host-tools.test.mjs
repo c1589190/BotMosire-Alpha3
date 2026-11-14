@@ -73,3 +73,15 @@ test('invalidateHostToolCache drops a positive lookup', () => {
   assert.equal(hostToolCacheSize(host.entryPoint), 0)
   rmSync(host.root, { recursive: true, force: true })
 })
+
+test('subpath specifiers resolve through the package that owns them', () => {
+  const ep = process.argv[1]
+  const root = hostToolEntry('@deepseek-ai/dsh-plugin-manager', ep)
+  if (root === undefined) {
+    // This machine's host does not ship the plugin manager; nothing to prove.
+    return
+  }
+  const tools = hostToolEntry('@deepseek-ai/dsh-plugin-manager/tools', ep)
+  assert.notEqual(tools, undefined, '子路径要从包根目录里解析，不能只找同名包')
+  assert.notEqual(tools, root)
+})

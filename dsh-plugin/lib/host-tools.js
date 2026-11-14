@@ -119,8 +119,27 @@ export function invalidateHostToolCache(entryPoint = process.argv[1]) {
   }
 }
 
+/**
+ * Subpath specifier resolution: `@scope/pkg/sub` is not a package of its own, so dependency-scope
+ * lookups and the pnpm-store scan only ever find `@scope/pkg`. Resolve the package root first, then
+ * resolve the subpath from inside that package's own directory.
+ * @param specifier - full specifier, possibly with a subpath.
+ * @returns the entry file, or undefined when this is not a subpath or it does not resolve.
+ */
+function resolveSubpath(specifier, entryPoint) {
+  const parts = specifier.split('/')
+  const rootLength = specifier.startsWith('@') ? 2 : 1
+  if (parts.length <= rootLength) return undefined
+  const rootEntry = lookupHostTool(parts.slice(0, rootLength).join('/'), entryPoint)
+  if (rootEntry === undefined) return undefined
+  const rootDir = packageDirOf(rootEntry)
+  return rootDir === undefined ? undefined : resolveFrom(rootDir, specifier)
+}
+
 function lookupHostTool(specifier, entryPoint) {
   if (typeof entryPoint === 'string' && entryPoint !== '') {
+    const subpath = resolveSubpath(specifier, entryPoint)
+    if (subpath !== undefined) return subpath
     for (const anchor of ANCHORS) {
       let anchorDir
       try {

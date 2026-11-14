@@ -1,3 +1,7 @@
+> 2026-11-14（D-066）：`bma3-connect-check.mjs` 已随 `lib/mcp-bridge.js` 一起删除 ——
+> jar 的 MCP 由 DSH 自带 `mcp_connector_configure` 直连，插件不再桥接。
+> `dsh-tool-face-probe.mjs` 保留为「DSH 作用域/restrict 语义」的独立探针（不依赖插件代码）。
+
 # 本地端到端联调脚本（一次性，不是 CI）
 
 真进程 + 真 MCP/HTTP + **假 OneBot 11 正向 WS**。用来回答"这套东西真跑起来是什么样"，
@@ -114,3 +118,52 @@ BMA3_TEST_QQ=<your qq> python3 tools/e2e-local/llbot_send_test.py
 ```
 
 2026-11-12 实测：私聊文本 `SENT`；私聊文件 `upload_private_file` **`SENT via base64://`**；真实入站回复收到。
+
+## DSH 工具面作用域探针（不起 DSH、不联网）
+
+`dsh-tool-face-probe.mjs` 用**宿主自己的** `@deepseek-ai/dsh-tools` + `dsh-scope` 构造一个最小
+Cordis 世界（全局层 / preset 层 / agent 层），断言一件事：
+
+> `tools.restrict()` 裁的是「全局 + **祖先作用域**」的工具，只有观察者自己那层的注册豁免。
+
+这是 `dsh-plugin/lib/self.js` 那条 allow 白名单能不能保住 preset 工具的前提条件；
+单测的 fake harness 是单层 registry，测不到这个差别。
+
+```bash
+node tools/e2e-local/dsh-tool-face-probe.mjs
+# 运行时: dsh-tools@0.2.2-rc.3 · dsh-scope@0.2.2-rc.3
+# PASS · rc=0
+# 可用 BMA3_DSH_BIN=/path/to/node_modules/@deepseek-ai/dsh/lib/bin.js 指定宿主入口
+```
+
+背景与结论见 [`docs/superpowers/reports/2026-11-14-bma3-dsh-tool-face-survey.md`](../../docs/superpowers/reports/2026-11-14-bma3-dsh-tool-face-survey.md)。
+
+## DSH tools/list 合规检查（X1）
+
+`dsh-tools-list-check.mjs` 把 jar 的 `tools/list` 结果按 DSH 的函数名契约与 JSON Schema 子集体检：
+
+```bash
+curl -sS -X POST http://127.0.0.1:<mcpPort>/mcp \
+  -H "Authorization: Bearer $(grep '^MCP_TOKEN=' <config>/.bma3env | cut -d= -f2)" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' -o tools.json
+node tools/e2e-local/dsh-tools-list-check.mjs tools.json --server bma3
+```
+
+- 名字：`mcp__<server>__<raw>` ≤64 字符、只含 `[A-Za-z0-9_-]`、无重名（重名会让整代注册回滚）。
+- schema：列出 `minimum`/`maximum`/`anyOf`/`$ref` 等 DSH 子集之外的写法。**这些目前不会被 DSH 拒绝**
+  （它只校验 output schema），所以默认只提示；加 `--strict` 才计入退出码。
+- 2026-11-14 实测：40 个工具、名字问题 0、最长公开名 37/64、schema 提示 39 条（全是 `minimum`/`maximum`）。
+
+## bma3 桥接挂载检查（P5）
+
+做一次 connect，断言工具以 `mcp__<server>__*` 进注册表、状态变 connected、disconnect 后清空。不启动 DSH、不调模型。
+
+```bash
+# 连接前工具数: 0
+# connect: {"ok":true,"pending":false}
+# 连接后工具数: 40 · jar 工具 40
+# PASS：桥接挂载 → 工具注册 → 断开清理 全部成立
+```
+
+2026-11-14 实测：40 个 jar 工具注册成功、断开后清零。

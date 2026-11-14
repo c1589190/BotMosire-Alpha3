@@ -1,4 +1,4 @@
-# BMA3 DSH bundle. One package, three modules: inbox/preset are loader rows; self lives inside the preset.
+# BMA3 DSH bundle. Two rows, two responsibilities: inbox wake injection and the BMA3 persona preset.
 - insert:
     - id: bma3-inbox
       name: '@mosire/bma3-dsh'
@@ -12,7 +12,11 @@
         # stateFile: /home/you/.dsh/storages/bma3-inbox.json
         heartbeatMs: 15000
 
+    # 人设注入 + 薄工具面（bash/pwsh、readImage、subagent、plugin-manager）；无白名单、无 restrict。
+    # 提示词文件默认 ~/.dsh/bma3/systemprompt.md（$DSH_HOME 优先），示例见 examples/systemprompt.md。
     - id: bma3-preset
       name: '@mosire/bma3-dsh'
       config:
         module: preset
+        # promptFile: ~/.dsh/bma3/systemprompt.md
+        # complete: true   # 默认 true：人设就是完整 system prompt；false 则叠加在默认前缀位置
