@@ -46,13 +46,82 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## Agent 怎么自己扩工具面
+## 连上 bma3 jar（0.0.6 的正确方式）
 
-| 想要 | 用什么 |
+插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
+`@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。
+
+### 端点与凭据从哪来
+
+| 事实 | 位置 |
 |---|---|
-| 连 MCP server（含 bma3 jar） | `mcp_connector_configure` → 工具落**全局层**，名字 `mcp__<server>__*` |
-| 加/减本地插件行 | `tool-plugin-manager`（预设已挂） |
-| 按会话临时收窄 | `mcp_connector_session_tools`（内部就是 `agent.ctx.tools.restrict({deny})`） |
+| MCP 端点 | `<config 目录>/config/app.yaml` 的 `server.port` + `server.mcpPath`（默认 `8765` + `/mcp`） |
+| **MCP token** | **`<config 目录>/.bma3env` 的 `MCP_TOKEN`** —— 不是 `dataDir` 下，也不是环境变量 |
+| Inbox token | 同一文件里的 `INBOX_TOKEN`（两个 token 相互独立） |
+| 鉴权模式 | `security.auth: token`（默认，要 Bearer）/ `none`（`--no-auth`，仅回环，不需要 header） |
+
+jar 启动时自动写这个文件（0600、原子写、存在即复用）。**不要**再读 `server.tokenEnv`：
+那个键 0.0.6 仍被解析但已不参与鉴权。
+
+### 一次性配置（推荐）
+
+在 `~/.dsh/profiles/<name>/cordis.patch.yml` 末尾加：
+
+```yaml
+- insert:
+    - id: bma3-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      # jar 从没起过（没有 .bma3env）就不挂这一行，免得留一个必然失败的悬空连接
+      disabled: !!js "!process.getBuiltinModule('node:fs').existsSync('/opt/bma3/run/.bma3env')"
+      config:
+        serverName: bma3
+        transport: streamable-http
+        url: http://127.0.0.1:18765/mcp        # 换成你的 port + mcpPath
+        headers:
+          # 组装期从 jar 自己的 .bma3env 读 token：不进对话、不进仓库、不用手抄
+          Authorization: !!js '`Bearer ${/^MCP_TOKEN=(.*)$/m.exec(process.getBuiltinModule("node:fs").readFileSync("/opt/bma3/run/.bma3env","utf8"))[1].trim()}`'
+        failOnStartupError: false
+        reconnect:
+          initialDelayMs: 1000
+          maxDelayMs: 30000
+          # 默认 10 次 ≈ 2 分钟；给足 8 小时，jar 晚起也能接上
+          maxAttempts: 1000
+```
+
+要点：
+
+- `!!js` 里**不能用 `require`**，要用 `process.getBuiltinModule('node:fs')`（宿主的 `!!js` 沙箱里没有 `require`）。
+- 新行必须写在 `- insert: [...]` 里；顶层平铺的 `id` 是"改已有行"，会报 `entry "xxx" not found`。
+- `auth: none` 时删掉 `headers` 整段即可（不要把空 token 塞进去，会变成 `Authorization: Bearer `）。
+- **jar 没起会怎样**：DSH 照常启动，这一行按 `initialDelayMs` 翻倍退避重试，**预算耗尽后永久放弃**
+  （默认 10 次 ≈ 2 分钟），之后 jar 起来了也**不会自愈**，要重启 DSH。所以把 `maxAttempts` 调大，
+  或者让 jar 先起（systemd `After=`/`Requires=`）。
+
+### Agent 侧自查（没有一次性配置时才需要）
+
+```bash
+pgrep -af 'bma3-app.*\.jar'          # → 拿 --config /path/to/root
+sed -n 's/.*port: \([0-9]*\).*/\1/p' /path/to/root/config/app.yaml
+sed -n 's#.*mcpPath: *\([^,}]*\).*#\1#p' /path/to/root/config/app.yaml
+sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
+```
+
+然后让宿主加同一行（或让运维加）。**不要把 token 抄进对话当参数**：它会被重发给模型供应商
+每一轮（D-060 只放行"落进运行期日志"，不等于"每轮出境"）。
+
+### 验证
+
+连上后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
+`bma3_watchdog_*`）。最快的自检是调一次 `mcp__bma3__inbox_status`，返回 JSON 即通。
+
+### 常见故障
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| `unknown tool "mcp__bma3__*"` | 行没挂 / 连接失败 / jar 没起 | 看 MCP 面板状态；确认 `.bma3env` 存在；重启 DSH 重新求值 |
+| MCP 请求 401 | token 取错（用了旧 env token 或 MCP/Inbox 混用） | 只认 `.bma3env` 的 `MCP_TOKEN` |
+| `serverName "bma3" is already in use` | 另有一条 `mcp-client` 行用了同一 `serverName` | 改 `serverName` 或删掉重复行 |
+| 第二实例起不来 `已有 BMA3 实例运行中` | 单实例锁（同一 `dataDir`） | 先停旧实例，或换 `dataDir` |
 
 ## 媒体：OCR / ASR（DeepSeek 官方接口）
 
@@ -76,9 +145,9 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
   name: '@mosire/bma3-dsh'
   config:
     module: inbox
-    baseUrl: http://127.0.0.1:46500
+    baseUrl: http://127.0.0.1:18766
     inboxId: bma3
-    tokenEnv: BMA3_INBOX_TOKEN
+    envFile: /opt/bma3/run/.bma3env    # jar 生成的同一份文件，读 INBOX_TOKEN
     autoStart: true
     heartbeatMs: 15000
     # stateFile: ~/.dsh/storages/bma3-inbox.json
@@ -86,33 +155,9 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 - 一个 inbox 一条 SSE；`source` 只是条目，不存在 per-source 订阅（红线 11）。
 - 写盘内容只有 sessionId、水位、暂停标志。
-- token 从 `tokenEnv` 指定的环境变量读；读不到就不带 Authorization 头发请求。
+- token 从 `envFile` 指向的 `.bma3env` 读 `INBOX_TOKEN`；读不到就不带 Authorization 头发请求。
+  （0.0.5 的 `tokenFile` / `tokenEnv` 两个键已删除，写了也不会生效。）
 - 工具：`bma3_inbox`（status/bind/pause/resume/start/stop/ack）。
-
-## Agent 怎么连 jar 的 MCP
-
-jar 起来后会在数据目录写 `.bma3env`（0600），里面有 `MCP_TOKEN` 和 `INBOX_TOKEN`。
-端点是 `http://127.0.0.1:<port>/mcp`（默认 18765）。Agent 用 DSH 自带的连接器工具连接：
-
-```text
-mcp_connector_configure(
-  name: "bma3",
-  url: "http://127.0.0.1:18765/mcp",
-  transport: "streamable-http",
-  authMode: "bearer",
-  bearerToken: <读 .bma3env 的 MCP_TOKEN>
-)
-```
-
-配置通过校验后 Host 会挂载它，工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、
-`get_config`/`set_config`、`bma3_watchdog_*`）。想按会话临时启用某几个用
-`mcp_connector_session_tools`。
-
-不想用 token 就让 jar 用 `--no-auth` 启动，此时 `.bma3env` 里的 token 留空，
-连接器改用 `authMode: "none"`。
-
-> 红线 2（D-060）：Agent 自行配置连接时可以把 token 作为工具参数，它会落进当次会话日志；
-> 但 token 不得进入提交、配置样例、仓库文件与导出/快照类输出。凭据文件必须 0600。
 
 ## 装到 profile
 

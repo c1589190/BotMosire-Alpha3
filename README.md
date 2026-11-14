@@ -225,27 +225,49 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**唯一方式：Agent 用 DSH 自带的连接器自己连**（D-066 —— 插件不再做桥接）。
+**0.0.6 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
 
-jar 起来后会在数据目录写 `.bma3env`（0600），里面有 `MCP_TOKEN` / `INBOX_TOKEN`；
-MCP 端点是 `http://127.0.0.1:18765/mcp`。会话里对 Agent 说「接上 bma3」，它应当：
+jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 
-```text
-mcp_connector_configure(
-  name: "bma3",
-  url: "http://127.0.0.1:18765/mcp",
-  transport: "streamable-http",
-  authMode: "bearer",
-  bearerToken: <读 .bma3env 的 MCP_TOKEN>
-)
+| 事实 | 位置 |
+|---|---|
+| MCP 端点 | `<config 目录>/config/app.yaml` → `server.port` + `server.mcpPath`（默认 `8765` + `/mcp`） |
+| MCP token | **`<config 目录>/.bma3env` 的 `MCP_TOKEN`**（不是 `dataDir`，也不是环境变量） |
+| Inbox token | 同一文件的 `INBOX_TOKEN`；两个 token 相互独立，轮换一个不影响另一个 |
+
+在 profile 里加（`~/.dsh/profiles/<name>/cordis.patch.yml`）：
+
+```yaml
+- insert:
+    - id: bma3-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      disabled: !!js "!process.getBuiltinModule('node:fs').existsSync('/opt/bma3/run/.bma3env')"
+      config:
+        serverName: bma3
+        transport: streamable-http
+        url: http://127.0.0.1:18765/mcp
+        headers:
+          Authorization: !!js '`Bearer ${/^MCP_TOKEN=(.*)$/m.exec(process.getBuiltinModule("node:fs").readFileSync("/opt/bma3/run/.bma3env","utf8"))[1].trim()}`'
+        failOnStartupError: false
+        reconnect: { initialDelayMs: 1000, maxDelayMs: 30000, maxAttempts: 1000 }
 ```
 
-通过校验后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
-`bma3_watchdog_*`）。按会话临时启用子集用 `mcp_connector_session_tools`。
-不想用 token 就让 jar 用 `--no-auth` 启动，连接器改 `authMode: "none"`。
+连上后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
+`bma3_watchdog_*`），最快的自检是调一次 `mcp__bma3__inbox_status`。
 
-> 红线 2（D-060）：Agent 自行配置连接时 token 会落进当次会话日志；仍禁止进入提交、配置样例、
-> 仓库文件与导出/快照类输出；凭据文件必须 0600。
+要点与坑：
+
+- `!!js` 里**没有 `require`**，要用 `process.getBuiltinModule('node:fs')`。
+- 新行必须包在 `- insert: [...]` 里；顶层平铺的 `id` 是"改已有行"（会报 `entry not found`）。
+- **jar 没起**：DSH 照常启动，该行退避重试，**预算耗尽后永久放弃**（默认 10 次 ≈ 2 分钟），之后
+  jar 起来也不会自愈 —— 要么把 `maxAttempts` 调大，要么让 jar 先起（systemd `After=`）。
+- `--no-auth` 起的 jar 删掉 `headers` 整段即可。
+- 同一 `dataDir` 只能有一个 jar（单实例锁），第二个进程会退出并报已有 pid。
+- 不要把它 `mcp_connector_configure` 那套混着用：那是第三方 `dsh-mcp-connector` 插件的工具，
+  没装就不存在。
+
+> 红线 2（D-060）：token 不得进入提交、配置样例、仓库文件与导出/快照类输出；凭据文件必须 0600。
+> 上面用 `!!js` 在组装期读文件，就是为了让 token **永远不经过对话**。
 
 ### 5. 常见问题
 

@@ -6,7 +6,8 @@
         module: inbox
         baseUrl: http://127.0.0.1:46500
         inboxId: bma3
-        tokenEnv: BMA3_INBOX_TOKEN
+        # token 从 jar 生成的同一份 .bma3env 里读 INBOX_TOKEN（0.0.5 的 tokenEnv/tokenFile 已删除）
+        # envFile: /opt/bma3/run/.bma3env
         autoStart: true
         # 默认 ~/.dsh/storages/bma3-inbox.json；写盘内容只有 sessionId/水位/暂停标志
         # stateFile: /home/you/.dsh/storages/bma3-inbox.json
