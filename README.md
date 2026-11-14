@@ -40,9 +40,17 @@ ls -lh bma3-app/target/bma3-app-0.0.4-hotfix1.jar
 ```bash
 mkdir -p /opt/bma3/run/config /opt/bma3/data
 cp bma3-app/src/main/resources/config-template/app.yaml /opt/bma3/run/config/app.yaml
-openssl rand -hex 24 > /opt/bma3/token
-chmod 600 /opt/bma3/token
+# token 不用手工造：jar 首启会在配置目录生成 .bma3env（MCP_TOKEN / INBOX_TOKEN，0600，幂等）。
+# 轮换用 --rotate-token；想彻底不要鉴权就加 --no-auth（仅回环可用）。
 ```
+
+首次启动后配置目录里会多出：
+
+```text
+/opt/bma3/run/config/.bma3env     # 0600，jar 生成，DSH 插件只读
+```
+
+同一 `dataDir` 只允许一个进程：第二次启动会退出码 1 并打印已有实例的 pid。
 
 最小配置示例（把 `dataDir`、endpoint 和 token env 换成实际值）：
 
@@ -183,7 +191,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
     module: inbox
     baseUrl: http://127.0.0.1:46500
     inboxId: bma3
-    tokenFile: /opt/bma3/token
+    envFile: /opt/bma3/run/config/.bma3env
     sessionId: session-...   # 可选；省略时取第一个 idle 会话
     autoStart: true
     # stateFile: /home/you/.dsh/storages/bma3-inbox.json  # 默认即此路径
@@ -198,64 +206,46 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
     module: preset
 ```
 
-启用后在 DSH 新建会话时选择 **BMA3** preset。工作区根目录放两个文件：
+启用后在 DSH 新建会话时选择 **BMA3** preset。预设只做一件事：注入你自己的系统提示词。
 
 ```text
-systemprompt.md     # 人设正文；每步按 mtime/size 重读
-agentconfig.json    # 默认工具组；不含 lock 字段
+~/.dsh/bma3/systemprompt.md    # 人设正文（$DSH_HOME 优先）；每次组装重读，缺失即不注入
 ```
 
-可从 [`dsh-plugin/examples/`](dsh-plugin/examples/) 复制模板。`bash`/`pwsh`、`read_image`
-由 preset composition 固定，`agentconfig` 改不掉；子 Agent 的 spawn 走 DSH 内置 `minimal`。
+可从 [`dsh-plugin/examples/systemprompt.md`](dsh-plugin/examples/systemprompt.md) 复制模板。
+工具面沿用宿主默认：插件不再挂 bash/read_image/子 Agent 行，也没有 `agentconfig.json`
+（工具面分层已按 D-066 删除）。
 
-`tokenFile` 必须是 0600 的 Inbox Bearer 文件。一个 inbox 只有一条 SSE；source 只是面板里的条目，不存在 per-source 订阅。普通群消息是否进入面板由服务端统一优先级决定（群内 @/命令等信号会提高优先级），不再需要 `minPriority`。
+`envFile` 指向 jar 生成的 `.bma3env`（0600），插件只读 `INBOX_TOKEN`，不再接受 `tokenFile`/`tokenEnv`/`token`（D-063）。一个 inbox 只有一条 SSE；source 只是面板里的条目，不存在 per-source 订阅。普通群消息是否进入面板由服务端统一优先级决定（群内 @/命令等信号会提高优先级），不再需要 `minPriority`。
 
 插件连上后自动注入受限面板；需要指定接收会话时调用 `bma3_inbox bind`，绑定会**落盘**，DSH 重启后插件会 `agents.resume` 恢复该会话并自动启动 SSE。`bma3_inbox status` 查看连接/游标/push 水位/心跳；`bma3_inbox ack` 手动推进读游标（正常注入成功后插件会自动按 itemIds ack）。唤醒文本以 `[INBOX_PANEL]` 开头，只带受限窗口和关系摘要；同源推送后又有新消息时另开一条并标「（消息更新活跃）」。
 
-### 4. 添加 BMA3 MCP（完整工具需要）
+### 4. 接上 BMA3 MCP（业务工具）
 
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
-`qq_*` 等工具不会出现。完整工具需要至少一条 `@deepseek-ai/dsh-mcp-client` 连接
-（`dsh-mcp-connector` 是管理/配置层，不是 transport 本身）。
+`qq_*` 等工具不会出现。
 
-在 DSH 的 MCP 连接里新增：
+**唯一方式：Agent 用 DSH 自带的连接器自己连**（D-066 —— 插件不再做桥接）。
 
-- 名称：`bma3`
-- URL：`http://127.0.0.1:8765/mcp`
-- 传输：streamable HTTP
-- 鉴权：Bearer，值同 `/opt/bma3/token`
+jar 起来后会在数据目录写 `.bma3env`（0600），里面有 `MCP_TOKEN` / `INBOX_TOKEN`；
+MCP 端点是 `http://127.0.0.1:18765/mcp`。会话里对 Agent 说「接上 bma3」，它应当：
 
-或直接加 profile row：
-
-```yaml
-- id: bma3-mcp
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: bma3
-    transport: streamable-http
-    url: http://127.0.0.1:8765/mcp
-    headers:
-      Authorization: !!js '`Bearer ${process.env.BMA3_MCP_TOKEN}`'
-    failOnStartupError: true
+```text
+mcp_connector_configure(
+  name: "bma3",
+  url: "http://127.0.0.1:18765/mcp",
+  transport: "streamable-http",
+  authMode: "bearer",
+  bearerToken: <读 .bma3env 的 MCP_TOKEN>
+)
 ```
 
-加载后可用的工具组：
+通过校验后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
+`bma3_watchdog_*`）。按会话临时启用子集用 `mcp_connector_session_tools`。
+不想用 token 就让 jar 用 `--no-auth` 启动，连接器改 `authMode: "none"`。
 
-- QQ 账号：`qq_account_list/status`（`qq_account_list` 带 `connected`/`lastError`/`self`）
-- 会话导航：`qq_thread_list`、`qq_conversation_history`、`qq_message_get`、`qq_search`
-- 读写：`qq_conversation_read/ack/send/send_image/send_file`、`qq_reply`、`qq_private_send`
-- 媒体/富消息：`qq_media_view`、`qq_card_view`（json/xml 卡片、群邀请 groupId+sequence）、`qq_forward_view`（合并转发一层展开、分页）
-- 群关系：`qq_group_list`、`qq_group_members`（群名片/角色/头衔）、`qq_group_member_info`、`qq_group_request_list/decide`、`qq_group_invite_accept`
-- 平台历史：`qq_remote_history`（只读穿透，**游标分页**：count 1..100 默认 30，`nextCursor`/`prevCursor` 翻页；provider 内部每 30 条一个 RPC，大页会打死协议管道 —— 见 [D-056](docs/superpowers/specs/2026-11-13-remote-history-paging-design.md)）
-- 用户备注：`qq_user_note_list/upsert`（只存别名/标签/备注，不存分数）
-- 配置：`get_config`、`set_config`（改 `config/app.yaml` 并热重载；`qq_person_id/<qq>` 是稳定的人维度加分键）
-- 目录：`qq_group_list`、`qq_friend_list`
-- Inbox：`inbox_status/list/items/get/ack/dismiss/wait`（ack 幂等；dismiss 支持 `visible/filter/ids`、`priorityBelow`、`olderThanSeconds`、`dryRun`）
-- Watchdog：`bma3_watchdog_status/probe/remediate`
-- 浏览器：`browser_open/snapshot/click/type/text/screenshot/video_frames`
-
-`qq_conversation_send_image` 的 `imagePath` 必须在 `dataDir` 下，适合把登录 QR 截图发给用户。
-`qq_conversation_send_file` 先尝试 `base64://`，再试绝对路径；若 LLBot 在另一台机器，可用 bash 把文件放到 QQ 机后传 `providerPath`（不在 BMA3 开文件服务器）。
+> 红线 2（D-060）：Agent 自行配置连接时 token 会落进当次会话日志；仍禁止进入提交、配置样例、
+> 仓库文件与导出/快照类输出；凭据文件必须 0600。
 
 ### 5. 常见问题
 

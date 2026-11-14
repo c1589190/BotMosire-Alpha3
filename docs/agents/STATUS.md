@@ -1,6 +1,56 @@
-# STATUS —— 更新时间：2026-11-12 19:10 (UTC+8)
+# STATUS —— 更新时间：2026-11-14 (UTC+8)
 
 ## 当前目标 / 进行中范围
+
+> ⚠️ **2026-11-14 方向反转（D-066）**：用户裁定**删除工具面耦合层**，插件收窄为两件事 ——
+> ① `bma3-jar` 的 MCP 服务可达，并由 Agent 用 DSH 自带 `mcp_connector_configure` 自行配置连接；
+> ② inbox 注入 DSH 会话。**`bma3` 预设保留**，但职责只剩「注入自定义系统提示词」。
+> 下面 0.0.6 的工具面切片（D-059/D-065、`toolFace`、`bma3_status/connect/tools`、预设内 MCP 桥接、
+> per-agent 组合）**已全部删除**，相关条目仅作历史记录；token 自举（`Bma3Env`/`--no-auth`/`--rotate-token`/
+> 单实例锁）与 D-058/D-060 仍然有效。
+
+**工具面调查入库（2026-11-14，只读，未改产品代码）**：bma3 preset 的 Agent 工具面链路已固化到
+[`../superpowers/reports/2026-11-14-bma3-dsh-tool-face-survey.md`](../superpowers/reports/2026-11-14-bma3-dsh-tool-face-survey.md)。
+- **装配五层**：profile → bundle（`dsh-plugin/cordis.patch.yml`）→ 模块分发（`index.js:24-40`）→ 组合（`lib/preset.js:13-62`，scoped 工具唯一来源）→ 策略（`lib/self.js:563-631`）。Agent 只能改 `<cwd>/agentconfig.json`。
+- **核心差距**：`self.js:177-184` 用**全局视图**算 allow，而宿主 `restrict()` 裁的是「全局 + **祖先作用域**」的工具（探针 `tools/e2e-local/dsh-tool-face-probe.mjs`，宿主 `dsh-tools@0.2.2-rc.3` PASS）⇒ preset 层的 `bash/read_image/subagent/*` 会被同一次 `restrict()` 裁掉；`bash/read_image` 靠 `repairHostTools()` 在 agent 层重挂复活，**subagent 一族无复活路径**。
+- 另：`wait_agent` 漏在 `SUBAGENT_BASENAMES`（`self.js:68-75`）；`xvfb_*`/`browser_*`/`inbox_dismiss` 无组覆盖；`PRESET_PROVIDED_GROUPS` 把 terminal/image/subagent 从 `missingGroups` 吞掉（`self.js:326`）；单测 fake harness 是单层 registry，测不出以上。
+- 门禁：`dsh-plugin npm test` **45 pass / rc=0**；探针 **PASS / rc=0**。真实 DSH 里的 bma3 工具面仍 `NOT_RUN`（该时点 preset 行 disabled）。
+- 下一步：用户提出「原生 / 业务 / 可选」三层工具面方向，评估见当次会话；**设计稿待写**（按 §1 需 spec 的不变量 + 验收判据）。
+
+**上游能力核查（2026-11-14，只读）**：DeepSeek 2026-11-13 发布「全家桶应用 API」，契约摘要入
+[`../upstream/2026-11-14-deepseek-fullstack-app-api.md`](../upstream/2026-11-14-deepseek-fullstack-app-api.md)。
+- 独立接口：Search / Fetch（各 5 元/1000 次成功，QPS 100 / 25）、OCR（1.5 元/1000 页）、ASR（0.78 元/小时）、TTS（3 元/万字符）、文件解析（按页）。
+- **可直接复用**：宿主 `0.2.2-rc.3` 已带 `dsh-web` + `dsh-web-deepseek-api`（`deepseek-search-api`/`deepseek-fetch-api`，直连上面两个接口、无额外模型轮次）+ `dsh-tool-web`（`web_search`/`web_fetch`）。`dsh-tool-web` 的 `ctx.tools.register(..., { when: () => ctx.web.searchReady(...) })` 就是"能力就绪才暴露"的现成范式（`src/search.ts:414`、`src/fetch.ts:516`），可作为三层设计 L2 门控的先例。
+- **不可直接用**：模型侧 `deepseek_web_search` / `deepseek_read_url` —— `dsh-llm-deepseek@0.2.2-rc.3` 的 wire 类型无 `server_tool_use`，要改上游。
+- **缺口/风险**：bma3 无文档解析（OCR 可补，但属按页计费的重操作）；QQ 语音若要 ASR 需先转码（API 只收 16 bit PCM WAV / Ogg Opus）；正文出境是新红线问题；`web_search` 与 modsearch 的 `read_page`/`x_search` 语义重叠需去重。
+- 未验证：未用真实 Key 调用任何接口（`NOT_RUN`）。
+
+**工具面分层裁定（2026-11-14，D-058/D-059）**：用户给出两条方向裁定并已入 [`DESIGN_RULINGS.md`](../superpowers/DESIGN_RULINGS.md)。
+- **D-058 不设出网闸门**：Agent 可自行连任意 MCP server（任意 URL/headers）；安全边界由容器/VM 承担，插件不做白名单。
+- **D-059 默认窄面**：bma3 预设默认只可见 `bash` + bma3 基础检查 + MCP 配置/连接工具；业务工具、DSH 搜索/文件/子 Agent 默认不可见，由工具面管理工具加回。
+- **技术后果（已核实）**：「能被加回」要求工具**已在某作用域注册**——本机 base 层 `tool-bash`/`tool-pwsh`/`tool-fs`/`tool-subagent`/`tool-web` 全局行全部 `disabled: true`，只在 preset 内挂载。所以 preset 需要「挂得宽、显示得窄」，否则管理器无法复活未挂载的工具。
+- **已裁定（D-060）**：`mcp_connector_configure` 的 Bearer token 是字面值参数（`dsh-mcp-connector/lib/index.js:2163-2210`）→ 会进会话日志；用户裁定**收窄红线 2**（允许落进运行期会话日志，仍禁止进提交/配置样例/仓库文件/MCP 结果，凭据文件仍须 0600）。根 `AGENTS.md` §3 已改。
+- **D-064**：无鉴权改为**显式启动模式**（`security.auth: token|none` / `--no-auth`），默认 `token` 且缺 token 仍 fail-fast；`/healthz` 报 `auth` 供插件决定带不带 Bearer。
+- **D-061/D-062/D-063（同次）**：单实例锁（同一 `dataDir` 只允许一个 jar）；允许**无 token 启动**（仅回环，非回环仍硬拒）；token 统一由 jar 生成 `.bma3env`（`MCP_TOKEN`/`INBOX_TOKEN`，0600、原子写、幂等），**删除插件的 `tokenFile`/`tokenEnv`**。
+- **设计稿已成文**：[`../superpowers/specs/2026-11-14-bma3-tool-face-layers-design.md`](../superpowers/specs/2026-11-14-bma3-tool-face-layers-design.md)（三层工具面 + token 自举 + 单实例 + 心跳/watchdog；含 9 条不变量 I1–I9、12 条验收判据 A1–A12）。
+- **0.0.6 范围草案**（详见 spec §7）：① jar：`.bma3env` 生成 + 双 token 分离 + 单实例锁 + 无 token 模式；② 插件：删业务清单/`tokenFile`、preset 挂宽显窄、`bma3_status`（三态）/`bma3_connect`/`bma3_tools`（list/enable/disable/reset）；③ 联动：heartbeat 加 `tokenSource`/`tokenOk` + watchdog 两个探针；④ 门禁：`tools/list` 合规校验脚本。
+- **未决（实现前需拍板，spec §8）**：Q1 `toolFace` 存 workspace 还是会话；Q2 分组靠前缀还是透传 `annotations`；Q3 是否提供 `--rotate-token`；Q4 无 token 模式下 watchdog 敏感动作是否降级；Q5 默认窄面是否包含 connector 的 `configure`/`reconnect`。
+- **切片 1 已实现并真机验证（2026-11-14）**：jar 侧 `SingleInstanceLock` + `Bma3Env`（`.bma3env` 生成/幂等/0600/原子写）+ `AppConfig.Security`（`auth: token|none`、`envFile`）+ CLI `--no-auth`/`--rotate-token` + **MCP/Inbox token 分离** + 无鉴权模式（`Bma3McpServer`/`InboxHttpServer` 空 token 即跳过校验，回环仍硬约束）。
+  - 门禁：`./mvnw -o test` **BUILD SUCCESS**（bma3-app 41 tests，含新增 `Bma3EnvTest` 6、`SingleInstanceLockTest` 3、`ConfigLoaderTest` +3）。
+  - 真机 smoke（`/tmp/bma3-env-smoke`）：`.bma3env` 0600 双 token；重启后逐字节不变（幂等）；第二实例退出码 1 并报 pid；`--no-auth` 下 MCP `initialize` 无 Authorization 返回 200；`auth=token` 下 MCP 用 `INBOX_TOKEN` → 401、用 `MCP_TOKEN` → 200，Inbox 反之亦然（Token 分离成立）；`tools/list` 给出 **40 个工具**、公开名最长 37 字符。
+  - 附带结论：DSH **不对 input schema 做子集校验**（只校验 output），故 jar 的 `minimum/maximum` 不构成阻塞（详见 spec §9）。
+- **切片 2 已完成**：`PluginHeartbeat` 增 `tokenSource`/`tokenOk`（保留 8 参兼容构造）；`Probes.dshPlugin` 报 `TOKEN_MISMATCH`；**`security.auth=none` 时 watchdog 只观测不恢复**（D-064/Q4，启动打 `event=watchdog_remediation_disabled`）。测试：`PluginHeartbeatTest`(2)、`ProbesDshPluginTest`(4)。
+- **切片 3 已完成（插件侧 P1/P2/P3）**：`self.js` 删除 `DEFAULT_TOOL_GROUPS`/`BASIC_BMA3_BASENAMES`/`SUBAGENT_BASENAMES`/`resolveToolGroups`/`LOCKED_TOOL_BASENAMES`，改为 **`toolFace` 规则**（`native`/`mcp-admin`/`mcp:<server>`/`prefix:<text>`/`all`/字面名）+ `expandToolFaceRules()`；策略改为按 **agent 视图**展开（修掉 0.0.5 把 preset 工具一起裁掉的缺陷）；`agentconfig.json` 升到 **v2**，v1 的 `defaultTools` 忽略并在 status 报 `legacyDefaultToolsIgnored`；`preset.js` 增加 `tool-web` 候选行，**仅当宿主有 `web` seam 时挂载**（否则整棵 preset 会 pending）。README/examples 同步。
+  - 门禁：`dsh-plugin npm test` **48 pass**（原 45；新增 `self.test.mjs` 13 条含分层 harness）；`./mvnw -o test` **BUILD SUCCESS / 170 tests**。
+- **切片 4–7 已完成**：新增 `lib/mcp-bridge.js`（`.bma3env` 解析 / TCP 端点探测 / 把 `@deepseek-ai/dsh-mcp-client` 挂到 **preset 作用域**）；self 新增 **`bma3_status`**（env/endpoint/mcp 三态，永不回显 token）、**`bma3_connect`**（connect/disconnect/status，无参即可）、**`bma3_tools`**（`list`/`enable`/`disable`/`reset`/`save`，规则驱动，只改本会话，`save` 才落 `agentconfig.json`）；preset 行把 `envFile`/`mcpUrl`/`mcpServerName` 透传给 self；**`inbox.js` 删除 `tokenFile`/`tokenEnv`/`token`**，改为只读 `.bma3env` 的 `INBOX_TOKEN`，无 token 时不发 `Authorization`，heartbeat 带 `tokenSource`/`tokenOk`。
+  - 门禁：`dsh-plugin npm test` **60 pass**（新增 `mcp-bridge.test.mjs` 6 条 + self 6 条）；`./mvnw -o -q test` rc=0。
+  - 真机 smoke（`/tmp/bma3-smoke2`，token 模式）：`.bma3env` 双 key；`probeEndpoint` 可达；插件客户端用 `envFile` 报 `tokenSource=env-file`；Inbox 用 `INBOX_TOKEN` 200 / 用 `MCP_TOKEN` 401；MCP `initialize`+`tools/list` 带 `MCP_TOKEN` 得到 40 工具。
+- **X1 已完成**：`tools/e2e-local/dsh-tools-list-check.mjs`（名字契约 ≤64/字符集/重名 + schema 子集体检，`--strict` 才计入退出码）。实测 40 工具、名字问题 0、最长公开名 37/64、schema 提示 39 条（全是 `minimum`/`maximum`，DSH 不校验 input schema，故不阻塞）。
+- **X3 大部分完成**：新增 `tools/e2e-local/bma3-connect-check.mjs`——用**真实** `@deepseek-ai/dsh-mcp-client` + `lib/mcp-bridge.js` 对真 jar 做 connect：**40 个 jar 工具以 `mcp__bma3__*` 注册成功、status 变 connected、disconnect 后清零（PASS）**。jar 侧 HTTP 冒烟（token 模式）也 PASS。
+  - **进行中（用户选 A：在 web profile 临时启用）**：已备份 `~/.dsh/profiles/web/cordis.patch.yml.bak-x3-153245`，把 `bma3-inbox` 的 `tokenFile` 换成 `envFile: /tmp/bma3-session/.bma3env`（`autoStart:false`）、并启用 `bma3-preset`（带 `envFile`/`mcpUrl`）。宿主 pid 4232 未重启（dump-config 已确认行生效）。jar 在跑：`/tmp/bma3-session`，端口 18765/18766/18767，`auth=token`。
+  - **待用户操作**：在 Web UI 新建会话并选 **BMA3** preset，发一条测试任务（`bma3_status` → `bma3_connect` → `bma3_tools enable mcp:bma3` → `mcp__bma3__inbox_list`）；之后读该会话日志核对，再回滚 profile 补丁并关 jar。
+  - 原先的临时 headless 尝试结论（可复用）：headless 模板**没有 agentPresets 服务**（bma3 两行 pending）、`deepseek-official` 路由缺 API key、`dsh-tui` 因版本不兼容被跳过 —— 三条都排除了"不动 live 宿主"的路子。
+- 未验证：`bma3_tools`/`bma3_status`/`bma3_connect` 尚无实现（切片 3–7）；`.bma3env` 的写失败降级路径 `NOT_RUN`。
 
 **最近调查（2026-11-13，未改产品代码）**：Computer Use 服务技术路线调查 —— 应远端建议（轻量桌面 + Chromium/Playwright + 独立容器）核查 Linux 侧现成技术，给出 5 条候选路线与建议。
 结论摘要：L1 浏览器 / L2 桌面 / L3 人机接力应分层；本机实测 headless Chromium 886 MB/9 进程、Xvfb 61.9 MB、CDP+AX 树+点击均可用。
@@ -236,3 +286,24 @@
 ```bash
 git status --short --branch
 ```
+
+## 0.0.6 收窄：删除工具面耦合层（2026-11-14，D-066）
+
+- **删除范围（代码）**：`lib/self.js`（949 行）、`lib/self-entry.js`、`lib/mcp-bridge.js`、`lib/host-tools.js`、`examples/agentconfig.json`，以及 `self/host-tools/mcp-bridge` 三个测试文件；`index.js` 的 `MODULES` 只剩 `inbox`/`preset`；`package.json` 去掉 `./self` 导出、版本升 `0.0.6`。
+- **保留并重写**：`lib/persona.js`（新，预设唯一一行）+ `lib/preset.js`（缩到 90 行，只注册定义）+ `cordis.patch.yml`（两行）。
+- **预设现在的行为**：在**预设作用域**注册一个遮蔽 `deployment:persona-prefix` 的 prompt section（`systemPrompt.section()` 按调用方 scope 落层，agent 被 parent 到该 generation scope 即可见 —— 所以**不需要任何 per-agent 钩子**）；文本取 `$DSH_HOME/bma3/systemprompt.md` 或行配置 `promptFile`；每次组装重读、读取失败保留上一份非空文本、缺失或为空则**不挂任何 section**。
+- **行为取舍（需用户知悉）**：旧实现按 `<cwd>/systemprompt.md` 取**工作区人设**；新实现是**单一固定路径**，因为按 workspace 取文必须在 `agent.ctx` 里逐 agent 注册 section，而那正是被删掉的 per-agent 耦合。要恢复工作区人设需要重新引入 per-agent 挂载。
+- **门禁**：`dsh-plugin npm test` **40 pass / rc=0**（62 → 40：删掉 22 条工具面/桥接测试，新增 `persona.test.mjs` 8 条 + 重写 `preset.test.mjs` 5 条 + `manifest.test.mjs` 回归）。
+- **验收判据 ①（jar MCP 可达）PASS**：真实 `curl` 对 `http://127.0.0.1:18765/mcp` 做 Streamable HTTP + `Authorization: Bearer $MCP_TOKEN` → `initialize` **200**（`serverInfo=bma3/0.0.5-hotfix2`，`Mcp-Session-Id` 返回），同一 session `tools/list` → **40 tools**。即：未经过任何插件代码的标准 MCP 客户端可以直接连上。
+- **验收判据 ②（inbox 注入）PASS（既有证据）**：`bma3_inbox` 工具在真实会话里可用，`status` 返回 `tokenSource=env-file`、`baseUrl=127.0.0.1:18766`、`agentLive=true`。
+- **`NOT_RUN`**：Agent 用 `mcp_connector_configure` 真连一次（本机凭据写入属于用户环境变更，留给用户/Agent 执行）；`BMA3` 预设在真实会话里注入 system prompt 的实机效果（需要一次真实会话，宿主必须加载 0.0.6 代码）。
+- **过程教训（记入维护）**：三次"还是没有"的冒烟全部落在 **pid 4232 的旧宿主**（`session.lock` 被其持有），我改的进程（:3090）从未收到任何 agent —— 真实宿主验证前必须先确认会话归谁所有。
+
+## 0.0.6 工具面定稿：挂载即暴露 + 官方 mcp-client 验证（2026-11-14，D-067）
+
+- **删掉组别白名单**：`defaultTools` 组名 / `resolveToolGroups` / `tools.restrict({allow})` 全不再有。理由：它依赖别的插件先把名字注册进全局层（0.0.5 里业务工具出不出现取决于 profile 里有没有别的手配 mcp-client），且 allow 从**全局视图**算 ⇒ 预设自己挂的 `bash`/`read_image`/`subagent` 被同一次 restrict 裁掉。
+- **预设改为薄面 6 行**：`persona` + `tool-bash`/`tool-pwsh` + `tool-fs`（仅 `readImage`）+ `tool-subagent-control` + `tool-subagent`（`agentPreset: minimal`）+ `tool-plugin-manager`（宿主有 `profileContext` 才挂、否则 disabled）。挂什么就是什么，无策略层。
+- **Agent 三条扩展路径**：MCP server → `mcp_connector_configure`（工具落全局层，`mcp__<server>__*`）；本地插件行 → `tool-plugin-manager`；按会话收窄 → `mcp_connector_session_tools`（其实现就是 `agent.ctx.tools.restrict({deny})`，与"无 allow 层"不冲突）。
+- **验收判据 ①（jar 支持 DSH 官方 mcp-client）PASS —— 真机实测**：`mcp_connector_configure(name=bma3, url=http://127.0.0.1:18765/mcp, transport=streamable-http, authMode=bearer, bearerToken=$MCP_TOKEN)` → 返回「已配置并连接」；`mcp_connector_status` 显示 `manual/bearer/streamable-http · 已连接 · 始终注入 · 全局`，诊断 `ok`；40 个工具以 `mcp__bma3__*` 注册进会话；真实调用 `mcp__bma3__inbox_status` → `{"available":0,"pendingPush":0,"panelRevision":0,…}`。验证后已 `mcp_connector_disconnect` 断开（连的是 `build/e2e` 测试 jar，不留常驻）。
+- **门禁**：`dsh-plugin npm test` **41 pass**（preset 定义 7 行断言 + plugin-manager seam 开关 + `ctx.inject` 等待回归仍保留）。
+- **`NOT_RUN`**：薄面 6 行在真实 BMA3 会话里的实际可见工具数（需要一次真实会话，宿主须加载本次代码）。

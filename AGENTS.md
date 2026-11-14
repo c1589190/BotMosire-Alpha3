@@ -20,7 +20,7 @@
 
 - 已完成：继承调查、文档系统、Java 21 技术选型、Plan 1 实现（core/store、AgentLib MCP、OneBot 11 正向 WS、Inbox、app、DSH 薄插件、jpackage/installer 骨架）。
 - 当前门禁：`./mvnw -q test` PASS（19 suites / 50 tests，1 个真实浏览器 smoke 默认跳过）；`dsh-plugin` `npm test` PASS（14 tests）；`packaging/smoke.sh` 本轮 `NOT_RUN`。
-- 已实现：DSH 插件侧 BMA3 preset / 工作区人设 loader / 默认工具组 / `minimal` 子 Agent（`dsh-plugin/lib/self.js`）；真实 DSH preset 激活与远端联调仍 `NOT_RUN`。
+- 已实现：DSH 插件侧只剩两件事 —— `inbox` 注入（`lib/inbox.js`）与 `bma3` 预设的自定义系统提示词注入（`lib/persona.js` + `lib/preset.js`）。工具面分层、`bma3_*` 自检工具、预设内 MCP 桥接、per-agent 组合已于 2026-11-14 按 D-066 全部删除；jar 的 MCP 由 Agent 用 DSH 自带 `mcp_connector_*` 自行配置连接。真实宿主里的 preset 注入与 connector 实连仍 `NOT_RUN`。
 - 已开始：Linux 全桌面 Computer Use —— `bma3-xvfb`（Xvfb 工作区封装 + 平台检测，12 个 `xvfb_*` 工具，2026-11-13 本机真机验证通过；见 `docs/superpowers/specs/2026-11-13-bma3-xvfb-design.md`）。
 - 未开始：B 站登录/私信/视频工具、真实 LLBot/DSH/systemd 联调。
 - **仍然禁止无 spec 直接写产品代码；新功能按「需求 → spec（不变量 + 验收判据）→ 计划 → 实现」推进。**
@@ -39,7 +39,7 @@
 ## 3. 常驻红线
 
 1. **默认只绑定回环地址**；非回环监听必须 fail-closed。
-2. **密钥零泄露**：token、Authorization、QQ/B 站凭据不得进入日志、MCP 结果、配置样例或提交；B 站 Cookie 文件必须 0600。
+2. **密钥零泄露（按 [D-060](docs/superpowers/DESIGN_RULINGS.md) 修订，2026-11-14）**：token、Authorization、QQ/B 站凭据**不得进入提交、配置样例、仓库内文件与 MCP 工具结果**；B 站 Cookie 与所有凭据文件必须 0600。**运行期会话日志除外** —— 能读到运行日志的只有管理员与 Agent 本身，因此允许 Agent 在**自行配置连接**时把 token 作为工具参数（会落进当次会话日志）。仍然强制：凭据文件 0600；导出/快照/示例类输出必须打码（connector 的 `connection-backup.js` 已是此行为）。
 3. **正文不落日志**：日志只记录 ID、状态、计数、错误码、耗时和参数 key。
 4. **消息板是业务事实源**：完整消息、历史、未读和发送状态以消息板为准；唤醒层只做通知与预览。
 5. **Agent 不维护内部标记**：revision、snapshot、itemId、内部 seq、幂等键由服务端管理。
