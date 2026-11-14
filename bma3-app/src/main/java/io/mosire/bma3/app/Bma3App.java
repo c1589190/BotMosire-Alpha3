@@ -273,7 +273,7 @@ public final class Bma3App implements AutoCloseable {
                 tools.addAll(XvfbTools.all(xvfb));
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", "0.0.5-hotfix2", tools)
+                    config.server().mcpPath(), mcpToken, "bma3", Main.VERSION, tools)
                     .authHint(authRequired ? tokenFile.file().toString() : "security.auth=none");
             mcp.start();
 
