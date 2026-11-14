@@ -89,7 +89,7 @@ public final class QqMediaViewTool implements AgentTool {
             var fetched = QqMediaSupport.fetch(url, policy);
 
             String contentType = fetched.contentType();
-            String extension = QqMediaSupport.extension(contentType);
+            String extension = QqMediaSupport.extension(contentType, fetched.bytes());
             boolean text = QqMediaSupport.isText(contentType, fetched.bytes());
 
             var root = QqToolSupport.object();

@@ -223,7 +223,57 @@ final class QqMediaSupport {
         }
     }
 
-    static String extension(String contentType) {
+    /**
+     * 文件扩展名：**先按魔数识别**，再退回 Content-Type。
+     *
+     * QQ 语音这条路上 Content-Type 会撒谎 —— 实测同一条语音声明 `audio/mp3` 而内容其实是
+     * AMR（`#!AMR`），只信头部会把 `bma3_asr` 引到错误的解码假设上。
+     * @param contentType 响应头里的类型，可为 null。
+     * @param bytes 已下载的字节，可为 null。
+     * @return 扩展名（不含点）。
+     */
+    /**
+     * 按魔数识别音频容器。
+     * @param bytes 文件头字节。
+     * @returns 扩展名，识别不出时 null。
+     */
+    static String sniffAudioFormat(byte[] bytes) {
+        if (bytes == null || bytes.length < 4) {
+            return null;
+        }
+        if (bytes.length >= 12 && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                && bytes[8] == 'W' && bytes[9] == 'A' && bytes[10] == 'V' && bytes[11] == 'E') {
+            return "wav";
+        }
+        if (bytes.length >= 5 && bytes[0] == '#' && bytes[1] == '!' && bytes[2] == 'A' && bytes[3] == 'M' && bytes[4] == 'R') {
+            return "amr";
+        }
+        if (bytes[0] == 'O' && bytes[1] == 'g' && bytes[2] == 'g' && bytes[3] == 'S') {
+            return "ogg";
+        }
+        if (bytes[0] == 'I' && bytes[1] == 'D' && bytes[2] == '3') {
+            return "mp3";
+        }
+        if (bytes[0] == 'f' && bytes[1] == 'L' && bytes[2] == 'a' && bytes[3] == 'C') {
+            return "flac";
+        }
+        if (bytes.length >= 8 && bytes[4] == 'f' && bytes[5] == 't' && bytes[6] == 'y' && bytes[7] == 'p') {
+            return "m4a";
+        }
+        if (bytes.length >= 2 && (bytes[0] == 0x02 || bytes[0] == 0x03) && bytes[1] == '#') {
+            return "silk";
+        }
+        if (bytes.length >= 2 && (bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xE0) == 0xE0) {
+            return "mp3";
+        }
+        return null;
+    }
+
+    static String extension(String contentType, byte[] bytes) {
+        String sniffed = sniffAudioFormat(bytes);
+        if (sniffed != null) {
+            return sniffed;
+        }
         String type = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
         int semicolon = type.indexOf(';');
         if (semicolon >= 0) {
@@ -237,6 +287,14 @@ final class QqMediaSupport {
             case "text/plain" -> "txt";
             case "application/json" -> "json";
             case "application/pdf" -> "pdf";
+            // 语音消息：QQ 侧常见是 SILK/AMR，LLBot 转码后多为 mp3；音频识别工具按扩展名选解码路径。
+            case "audio/mpeg", "audio/mp3" -> "mp3";
+            case "audio/amr", "audio/amr-nb" -> "amr";
+            case "audio/wav", "audio/wave", "audio/x-wav" -> "wav";
+            case "audio/ogg", "audio/opus" -> "ogg";
+            case "audio/silk", "audio/x-silk" -> "silk";
+            case "audio/mp4", "audio/m4a", "audio/aac" -> "m4a";
+            case "video/mp4" -> "mp4";
             default -> "bin";
         };
     }

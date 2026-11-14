@@ -86,6 +86,78 @@ class QqMediaViewToolTest {
     }
 
     @Test
+    void aVoiceMessageIsWrittenWithAnAudioExtension() throws Exception {
+        byte[] amr = {'#', '!', 'A', 'M', 'R', 10, 1, 2, 3};
+        try (FakeCdn cdn = new FakeCdn("/voice.amr", "audio/amr", amr)) {
+            try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(
+                    tempDir.resolve("bot.db"))) {
+                SourceAddress source = SourceAddress.parse("qq_group/bot-1/955432692");
+                board.append(new InboundMessage(source, "9003", Instant.now(),
+                        List.of(new Segment("record", "[语音]", Map.of("file", "voice.amr"))),
+                        Direction.INBOUND, "20003", "LvtN"));
+
+                FakeClient client = new FakeClient(mapper.readTree("""
+                        {"status":"ok","retcode":0,"data":{"message":[
+                          {"type":"record","data":{"file":"voice.amr","url":"%s"}}]}}
+                        """.formatted(cdn.url())));
+                List<AgentTool> tools = tools(board, client);
+
+                JsonNode history = mapper.readTree(tool(tools, "qq_conversation_history")
+                        .execute(call(Map.of("source", source.format(), "includeSegments", true)))
+                        .message());
+                String fileId = history.path("messages").get(0).path("segments").get(0)
+                        .path("fileId").asText();
+
+                ToolResult viewed = tool(tools, "qq_media_view")
+                        .execute(call(Map.of("fileId", fileId)));
+                assertThat(viewed.success()).as(viewed.message()).isTrue();
+                JsonNode body = mapper.readTree(viewed.message());
+                assertThat(body.path("inline").asBoolean()).isFalse();
+                Path written = Path.of(body.path("path").asText());
+                assertThat(written).exists();
+                assertThat(written.getFileName().toString()).endsWith(".amr");
+                assertThat(Files.readAllBytes(written)).isEqualTo(amr);
+            }
+        }
+    }
+
+    @Test
+    void aVoiceMessageKeepsItsRealFormatEvenWhenTheContentTypeLies() throws Exception {
+        // 实测：LLBot 对同一条语音声明 audio/mp3，内容其实是 AMR（#!AMR）。
+        byte[] amr = {'#', '!', 'A', 'M', 'R', 10, 12, (byte) 0xC6, 0x14, 0x1D};
+        try (FakeCdn cdn = new FakeCdn("/voice.mp3", "audio/mp3", amr)) {
+            try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(
+                    tempDir.resolve("bot.db"))) {
+                SourceAddress source = SourceAddress.parse("qq_private/bot-1/3668539114");
+                board.append(new InboundMessage(source, "9004", Instant.now(),
+                        List.of(new Segment("record", "[语音]", Map.of("file", "voice.mp3"))),
+                        Direction.INBOUND, "20004", "LvtN"));
+
+                FakeClient client = new FakeClient(mapper.readTree("""
+                        {"status":"ok","retcode":0,"data":{"message":[
+                          {"type":"record","data":{"file":"voice.mp3","url":"%s"}}]}}
+                        """.formatted(cdn.url())));
+                List<AgentTool> tools = tools(board, client);
+
+                JsonNode history = mapper.readTree(tool(tools, "qq_conversation_history")
+                        .execute(call(Map.of("source", source.format(), "includeSegments", true)))
+                        .message());
+                String fileId = history.path("messages").get(0).path("segments").get(0)
+                        .path("fileId").asText();
+
+                ToolResult viewed = tool(tools, "qq_media_view")
+                        .execute(call(Map.of("fileId", fileId)));
+                assertThat(viewed.success()).as(viewed.message()).isTrue();
+                JsonNode body = mapper.readTree(viewed.message());
+                Path written = Path.of(body.path("path").asText());
+                assertThat(written.getFileName().toString())
+                        .as("按魔数落 .amr，而不是信 audio/mp3 头落成 .mp3")
+                        .endsWith(".amr");
+            }
+        }
+    }
+
+    @Test
     void smallTextIsInlinedInsteadOfWrittenToDisk() throws Exception {
         byte[] text = "群文件正文".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         try (FakeCdn cdn = new FakeCdn("/note.txt", "text/plain; charset=utf-8", text)) {
