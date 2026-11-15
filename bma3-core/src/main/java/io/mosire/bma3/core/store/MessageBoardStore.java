@@ -1,5 +1,6 @@
 package io.mosire.bma3.core.store;
 
+import io.mosire.bma3.core.message.DeliveryStatus;
 import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.message.Message;
 import io.mosire.bma3.core.source.SourceAddress;
@@ -10,6 +11,39 @@ import java.util.Optional;
 public interface MessageBoardStore extends AutoCloseable {
 
     AppendResult append(InboundMessage inbound);
+
+    /**
+     * Persists a new outbound row as {@link DeliveryStatus#PENDING} with its operation and part
+     * metadata, in the same INSERT transaction, before any provider call is made.
+     *
+     * @throws IllegalArgumentException when the message is inbound or the metadata is invalid
+     * @throws IllegalStateException    when the message key already exists (fail closed: never
+     *                                  hand the caller another operation's row)
+     */
+    AppendResult beginOutbound(InboundMessage message, String operationId, int partIndex,
+                               int partTotal);
+
+    /**
+     * Atomically closes one existing {@code PENDING} outbound row, writing the terminal status and
+     * the external message id together.
+     *
+     * @return {@code true} only when a {@code PENDING} outbound row matched; {@code false} for a
+     *         missing row, an inbound row, a legacy row or an already-terminal row, which stay
+     *         untouched. An external id is only accepted together with {@link DeliveryStatus#SENT}.
+     * @throws IllegalArgumentException for a non-terminal status or invalid metadata
+     */
+    boolean finishOutbound(long localSeq, DeliveryStatus status, String externalMessageId,
+                           String errorCode);
+
+    /**
+     * Conservatively converges every {@code PENDING} outbound row to
+     * {@link DeliveryStatus#UNKNOWN}. Call this only after the application holds its
+     * single-instance data-directory lock and before accepting requests; merely opening a store
+     * must never do this.
+     *
+     * @return number of recovered rows
+     */
+    int recoverPendingOutbound();
 
     List<Message> read(SourceAddress source, long afterSeq, int limit);
 

@@ -158,6 +158,23 @@ public final class Bma3App implements AutoCloseable {
 
         SqliteMessageBoardStore board = new SqliteMessageBoardStore(
                 config.dataDir().resolve("bot.db"));
+        // Conservative crash recovery belongs to the locked process start, not to opening the
+        // board: only here is it certain no live send can still own a PENDING row. It runs before
+        // any service (Inbox HTTP, MCP, QQ) accepts a request. Log the count only, never bodies.
+        try {
+            int recovered = board.recoverPendingOutbound();
+            if (recovered > 0) {
+                LOG.info("event=outbound_pending_recovered count={}", recovered);
+            }
+        } catch (RuntimeException failure) {
+            try {
+                board.close();
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            instanceLock.close();
+            throw failure;
+        }
         SqliteInboxStore inboxStore = new SqliteInboxStore(
                 config.dataDir().resolve("inbox.db"));
         QqDirectoryStore directory = new QqDirectoryStore(

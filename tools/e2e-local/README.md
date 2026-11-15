@@ -63,9 +63,21 @@ weighting:
                 qq_reply_to_bot: 100, qq_self_name: 60, qq_command: 100}}
 ```
 
-## 统一真环境回归
+## Inbox ACK 本地回环验证（当前代码）
 
-`e2e_inbox_roundtrip.mjs` 用**真插件客户端**（`dsh-plugin/lib/inbox.js`）打**真 jar**（真 HTTP/SSE/ack）：
+```bash
+node tools/e2e-local/e2e_inbox_ack_recovery.mjs
+```
+
+该脚本使用临时目录、随机 token 与回环临时端口，把真实本地 Java Inbox 服务接到真实插件客户端，
+DSH `followup` 是 fake；首次 ACK 实际提交后才模拟响应丢失，再检查客户端重建后的原请求重试、
+逐条确认和新 push。它不连接真实 QQ/DSH，不能证明真实宿主重启或跨系统恰好一次。运行需要
+Java 21、Node 22 及本地 Maven 依赖；脚本默认离线编译当前源码。
+
+## 历史回归（旧版，不适用于当前协议）
+
+以下 `e2e_inbox_roundtrip.mjs` 的旧测试使用 `persistState:false` 和旧 token 配置，
+**不适用于当前持久 ACK 协议，不可作为新版验收证据**。当时它用真插件客户端打真 jar：
 
 ```bash
 node tools/e2e-local/e2e_inbox_roundtrip.mjs <inboxHttpPort> <injectPort>

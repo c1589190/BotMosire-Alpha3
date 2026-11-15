@@ -24,6 +24,7 @@ public final class QqConversationHistoryTool implements AgentTool {
     @Override
     public String description() {
         return "按 source 读取消息板历史（含入站/出站）；每条带 sender{id,name}、externalMessageId、self；"
+                + "出站记录另带 delivery{status,operationId,partIndex,partTotal,errorCode}；"
                 + "不推进读取游标。includeSegments=true 时返回结构化 segments（图片/引用/at payload）。";
     }
 

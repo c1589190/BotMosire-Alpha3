@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -178,7 +179,13 @@ public final class InboxService {
         }
         return new InboxPanel(inboxId, panelRevision, pushRevision, ackedRevision, Instant.now(),
                 items, eligible.size(),
-                includeOmitted ? Math.max(0, eligible.size() - items.size()) : 0, includeOmitted);
+                includeOmitted ? Math.max(0, eligible.size() - items.size()) : 0, includeOmitted,
+                store.identity());
+    }
+
+    /** Durable identity of the inbox database; stable across ordinary restarts. */
+    public String inboxIdentity() {
+        return store.identity();
     }
 
     /** Unacked items in panel order (priority desc, then most recently active). */
@@ -206,9 +213,10 @@ public final class InboxService {
     public synchronized InboxAck ackPanel(long requestedRevision) {
         long target = Math.min(Math.max(0L, requestedRevision), panelRevision);
         if (target <= ackedRevision) {
-            return new InboxAck(ackedRevision, status().unread(), panelRevision);
+            return new InboxAck(ackedRevision, status().unread(), panelRevision, List.of(),
+                    List.of(), List.of(), store.identity(), true);
         }
-        int acked = 0;
+        List<InboxItem> toAck = new ArrayList<>();
         long covered = ackedRevision;
         for (InboxItem item : store.items()) {
             if (item.status() == ItemStatus.ACKED || !item.frozen()) {
@@ -217,81 +225,214 @@ public final class InboxService {
             if (item.eventRevision() > target) {
                 continue;
             }
-            store.update(item.withStatus(ItemStatus.ACKED));
-            pendingSince.remove(item.id());
-            pendingFirstSeen.remove(item.id());
+            toAck.add(item);
             covered = Math.max(covered, item.eventRevision());
-            acked++;
         }
-        if (acked > 0) {
-            ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
-            store.saveAckedRevision(ackedRevision);
-            nextRevision();
-        }
+        List<String> ackedIds = toAck.isEmpty() ? List.of() : commitAckBatch(toAck, covered);
         notifyAll();
-        return new InboxAck(ackedRevision, status().unread(), panelRevision);
+        return new InboxAck(ackedRevision, status().unread(), panelRevision, ackedIds, List.of(),
+                List.of(), store.identity(), true);
     }
 
     /** Explicit "ack everything visible" (tool path); requires no push state. */
     public synchronized InboxAck ackPanel() {
-        int acked = 0;
+        List<InboxItem> toAck = new ArrayList<>();
         long covered = ackedRevision;
         for (InboxItem item : store.items()) {
             if (item.status() == ItemStatus.ACKED) {
                 continue;
             }
-            store.update(item.withStatus(ItemStatus.ACKED));
-            pendingSince.remove(item.id());
-            pendingFirstSeen.remove(item.id());
+            toAck.add(item);
             covered = Math.max(covered, item.eventRevision());
-            acked++;
         }
-        if (acked > 0) {
-            ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
-            store.saveAckedRevision(ackedRevision);
-            nextRevision();
-        }
+        List<String> ackedIds = toAck.isEmpty() ? List.of() : commitAckBatch(toAck, covered);
         notifyAll();
-        return new InboxAck(ackedRevision, status().unread(), panelRevision);
+        return new InboxAck(ackedRevision, status().unread(), panelRevision, ackedIds, List.of(),
+                List.of(), store.identity(), true);
     }
 
     /**
-     * Acks exactly the given items. Per-item ack is the authoritative path; the global cursor is
-     * advanced to the newest revision covered by the acked items purely for observability.
+     * Acks exactly the given items, tolerating ids that no longer exist (legacy manual path).
+     *
+     * <p>Per-item ack is the authoritative path; the global cursor is advanced to the newest
+     * revision covered by the acked items purely for observability.</p>
      *
      * <p>Idempotent (D-043): asking again for items that are already ACKED is a successful no-op.
-     * Only ids that do not exist at all, or an item that changed after the caller saw it, fail.</p>
+     * The result always reports per-item proof ({@code ackedItemIds}, {@code alreadyAckedItemIds},
+     * {@code missingItemIds}); a request that named an unknown id returns {@code complete=false}
+     * instead of pretending the batch succeeded. Only ids that do not exist at all fail.</p>
      */
     public synchronized InboxAck ackItems(Set<String> itemIds, Long expectedRevision) {
         if (itemIds == null || itemIds.isEmpty()) {
             throw new IllegalArgumentException("ITEM_IDS_EMPTY");
         }
         checkItemRevision(itemIds, expectedRevision);
-        boolean anyKnown = store.items().stream().anyMatch(item -> itemIds.contains(item.id()));
-        if (!anyKnown) {
+        Map<String, InboxItem> requested = new LinkedHashMap<>();
+        for (InboxItem item : store.items()) {
+            if (itemIds.contains(item.id())) {
+                requested.put(item.id(), item);
+            }
+        }
+        if (requested.isEmpty()) {
             throw new IllegalArgumentException("ITEM_NOT_FOUND: " + itemIds);
         }
+        List<String> missing = itemIds.stream()
+                .filter(id -> !requested.containsKey(id)).toList();
+        List<InboxItem> toAck = new ArrayList<>();
+        List<String> alreadyAcked = new ArrayList<>();
         long covered = ackedRevision;
-        int acked = 0;
-        for (InboxItem item : store.items()) {
-            if (!itemIds.contains(item.id()) || item.status() == ItemStatus.ACKED) {
+        for (String id : itemIds) {
+            InboxItem item = requested.get(id);
+            if (item == null) {
                 continue;
             }
-            store.update(item.withStatus(ItemStatus.ACKED));
+            if (item.status() == ItemStatus.ACKED) {
+                alreadyAcked.add(id);
+                continue;
+            }
+            toAck.add(item);
+            covered = Math.max(covered, item.eventRevision());
+        }
+        if (toAck.isEmpty()) {
+            // Idempotent re-ack: everything requested was already acknowledged.
+            return new InboxAck(ackedRevision, status().unread(), panelRevision, List.of(),
+                    alreadyAcked, missing, store.identity(), missing.isEmpty());
+        }
+        List<String> ackedIds = commitAckBatch(toAck, covered);
+        return new InboxAck(ackedRevision, status().unread(), panelRevision, ackedIds,
+                alreadyAcked, missing, store.identity(), missing.isEmpty());
+    }
+
+    /**
+     * Identity-guarded ACK for the DSH plugin: the caller proves which database and which items it
+     * actually saw.
+     *
+     * <p>Everything is validated before anything is written, in this one serialized operation:</p>
+     * <ol>
+     *   <li>the presented identity must be non-empty and equal to this database's durable
+     *       identity, otherwise the whole request is rejected with a distinct reason;</li>
+     *   <li>the caller's panel revision must not be newer than this inbox's (and no requested item
+     *       may have changed after it);</li>
+     *   <li>every requested id must still exist and must have been handed to a push
+     *       ({@link InboxItem#frozen()}). Unknown, cleaned-up or never-pushed ids reject the whole
+     *       request.</li>
+     * </ol>
+     *
+     * <p>Item status changes and the ACK cursor / panel revision commit in one database
+     * transaction; a write failure rolls all of them back, so a rejected or failed call changes
+     * nothing. Repeating the call after a lost response is safe: already-ACKED items are reported
+     * in {@code alreadyAckedItemIds} rather than confirmed twice.</p>
+     */
+    public synchronized InboxAck ackItemsGuarded(Set<String> itemIds, Long expectedRevision,
+                                                 String requestedIdentity) {
+        String currentIdentity = store.identity();
+        String presented = requestedIdentity == null ? "" : requestedIdentity.trim();
+        if (presented.isEmpty()) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("INBOX_IDENTITY_REQUIRED");
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.INBOX_IDENTITY_REQUIRED, List.of());
+        }
+        if (!presented.equals(currentIdentity)) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("INBOX_IDENTITY_MISMATCH");
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.INBOX_IDENTITY_MISMATCH, List.of());
+        }
+        // The original panel revision is part of the proof. A caller must not be able to skip the
+        // version check by passing null, so a missing or negative revision rejects the whole batch.
+        if (expectedRevision == null) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("REVISION_REQUIRED");
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.REVISION_REQUIRED, List.of());
+        }
+        if (expectedRevision < 0L) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("REVISION_INVALID");
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.REVISION_INVALID, List.of());
+        }
+        if (itemIds == null || itemIds.isEmpty()) {
+            throw new IllegalArgumentException("ITEM_IDS_EMPTY");
+        }
+        checkItemRevision(itemIds, expectedRevision);
+
+        Map<String, InboxItem> requested = new LinkedHashMap<>();
+        for (InboxItem item : store.items()) {
+            if (itemIds.contains(item.id())) {
+                requested.put(item.id(), item);
+            }
+        }
+        List<String> missing = new ArrayList<>();
+        List<String> unpushed = new ArrayList<>();
+        List<String> alreadyAcked = new ArrayList<>();
+        List<InboxItem> toAck = new ArrayList<>();
+        for (String id : itemIds) {
+            InboxItem item = requested.get(id);
+            if (item == null) {
+                missing.add(id);
+            } else if (item.status() == ItemStatus.ACKED) {
+                alreadyAcked.add(id);
+            } else if (!item.frozen()) {
+                unpushed.add(id);
+            } else {
+                toAck.add(item);
+            }
+        }
+        if (!missing.isEmpty()) {
+            recordError("ITEM_MISSING count=" + missing.size());
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.ITEM_MISSING, missing);
+        }
+        if (!unpushed.isEmpty()) {
+            recordError("ITEM_NOT_PUSHED count=" + unpushed.size());
+            throw new InboxAckRejectedException(
+                    InboxAckRejectedException.Reason.ITEM_NOT_PUSHED, unpushed);
+        }
+        if (toAck.isEmpty()) {
+            return new InboxAck(ackedRevision, status().unread(), panelRevision, List.of(),
+                    alreadyAcked, List.of(), currentIdentity, true);
+        }
+
+        long covered = ackedRevision;
+        for (InboxItem item : toAck) {
+            covered = Math.max(covered, item.eventRevision());
+        }
+        List<String> ackedIds = commitAckBatch(toAck, covered);
+        return new InboxAck(ackedRevision, status().unread(), panelRevision, ackedIds,
+                alreadyAcked, List.of(), currentIdentity, true);
+    }
+
+    /**
+     * Marks the batch ACKED and writes the ACK cursor plus the next panel revision in <b>one</b>
+     * database transaction. In-memory state is updated only after the commit, so a database write
+     * failure (thrown to the caller) leaves both the rows and the observable revisions untouched.
+     */
+    private List<String> commitAckBatch(List<InboxItem> toAck, long covered) {
+        long nextAckedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
+        long nextPanelRevision = panelRevision + 1;
+        try {
+            store.inTransaction(() -> {
+                for (InboxItem item : toAck) {
+                    store.update(item.withStatus(ItemStatus.ACKED));
+                }
+                store.saveAckedRevision(nextAckedRevision);
+                store.savePanelRevision(nextPanelRevision);
+            });
+        } catch (RuntimeException failure) {
+            bump(ackConflicts, "metric_ack_conflicts");
+            recordError("ACK_WRITE_FAILED " + failure.getClass().getSimpleName());
+            throw failure;
+        }
+        for (InboxItem item : toAck) {
             pendingSince.remove(item.id());
             pendingFirstSeen.remove(item.id());
-            covered = Math.max(covered, item.eventRevision());
-            acked++;
         }
-        if (acked == 0) {
-            // Idempotent re-ack: everything requested was already acknowledged.
-            return new InboxAck(ackedRevision, status().unread(), panelRevision);
-        }
-        ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
-        store.saveAckedRevision(ackedRevision);
-        nextRevision();
+        ackedRevision = nextAckedRevision;
+        panelRevision = nextPanelRevision;
         notifyAll();
-        return new InboxAck(ackedRevision, status().unread(), panelRevision);
+        return toAck.stream().map(InboxItem::id).toList();
     }
 
     /** Acks panel items by their 1-based display index (optionally a contiguous range). */
@@ -358,26 +499,18 @@ public final class InboxService {
         }
         boolean truncated = matchedBeforeLimit > matched.size();
         int dismissedCount = 0;
-        long covered = ackedRevision;
-        if (!request.dryRun()) {
+        if (!request.dryRun() && !matched.isEmpty()) {
+            long covered = ackedRevision;
             for (InboxItem item : matched) {
-                store.update(item.withStatus(ItemStatus.ACKED));
-                pendingSince.remove(item.id());
-                pendingFirstSeen.remove(item.id());
                 covered = Math.max(covered, item.eventRevision());
-                dismissedCount++;
             }
-            if (dismissedCount > 0) {
-                ackedRevision = Math.max(ackedRevision, Math.min(covered, panelRevision));
-                store.saveAckedRevision(ackedRevision);
-                nextRevision();
-                add(dismissed, "metric_dismissed", dismissedCount);
-                org.slf4j.LoggerFactory.getLogger(InboxService.class).info(
-                        "event=inbox_dismiss reason={} matched={} dismissed={} skippedImportant={} dryRun={}",
-                        safeReason(request.reason()), matchedBeforeLimit, dismissedCount,
-                        skippedImportant, request.dryRun());
-                notifyAll();
-            }
+            commitAckBatch(matched, covered);
+            dismissedCount = matched.size();
+            add(dismissed, "metric_dismissed", dismissedCount);
+            org.slf4j.LoggerFactory.getLogger(InboxService.class).info(
+                    "event=inbox_dismiss reason={} matched={} dismissed={} skippedImportant={} dryRun={}",
+                    safeReason(request.reason()), matchedBeforeLimit, dismissedCount,
+                    skippedImportant, request.dryRun());
         }
         List<DismissResult.DismissedItem> preview = matched.stream()
                 .limit(MAX_DISMISS_PREVIEW)
@@ -606,11 +739,31 @@ public final class InboxService {
                 pending++;
             }
         }
+        List<InboxItem> visible = visibleItems();
+        int capacity = Math.max(1, runtime.get().maxItemsPerPanel());
+        int windowSize = Math.min(capacity, visible.size());
+        int frozenInWindow = 0;
+        for (int index = 0; index < windowSize; index++) {
+            if (visible.get(index).frozen()) {
+                frozenInWindow++;
+            }
+        }
+        int pendingBlockedByFrozen = 0;
+        if (windowSize >= capacity && frozenInWindow == windowSize) {
+            // Every slot is held by an already-pushed item that nobody acked; anything newer can
+            // only be delivered after an ack frees a slot. Observation only, no reordering.
+            for (int index = windowSize; index < visible.size(); index++) {
+                if (!visible.get(index).frozen()) {
+                    pendingBlockedByFrozen++;
+                }
+            }
+        }
         Instant next = nextDue();
         return new InboxStatus(available, acked, remainingImportant, pending,
                 next == null ? "" : next.toString(), panelRevision, ackedRevision, unread,
                 pushRevision, ackConflicts.get(), pushes.get(), repushes.get(), dismissed.get(),
-                List.copyOf(recentErrors));
+                List.copyOf(recentErrors), frozenInWindow, pendingBlockedByFrozen > 0,
+                pendingBlockedByFrozen);
     }
 
     public synchronized List<ItemSummary> list() {
@@ -677,7 +830,7 @@ public final class InboxService {
 
     public synchronized InboxRuntimeInfo runtimeInfo() {
         return new InboxRuntimeInfo(processId, mcpStartId, startedAtEpochMillis,
-                panelRevision, pushRevision, ackedRevision);
+                panelRevision, pushRevision, ackedRevision, store.identity());
     }
 
     public void setMcpStartId(String mcpStartId) {
@@ -778,7 +931,7 @@ public final class InboxService {
         int omitted = includeOmitted ? Math.max(0, item.totalMessages() - entries.size()) : 0;
         return new PanelItem(index, item.id(), item.source(), item.sourceLabel(), item.priority(),
                 entries, item.totalMessages(), omitted, item.status(), item.updatedAt(),
-                item.continued(), truncatedChars);
+                item.continued(), truncatedChars, item.frozenRevision());
     }
 
     /** Keeps the newest entries that fit; a single over-long entry is truncated. */

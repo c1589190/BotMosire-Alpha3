@@ -208,6 +208,11 @@ class QqToolsTest {
         }
 
         @Override
+        public boolean connected() {
+            return true;
+        }
+
+        @Override
         public CompletableFuture<JsonNode> sendAction(String action, Map<String, Object> params) {
             sentAction = action;
             sentParams = new ObjectMapper().valueToTree(params);

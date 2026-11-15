@@ -127,6 +127,53 @@ class InboxToolsTest {
         }
     }
 
+    @Test
+    void explicitButMalformedItemIdsMustNotDegradeToARevisionOnlyAck() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("tool-ids.db"))) {
+            InboxService service = service(store);
+            append(service, "qq_group/bot-1/1", 200, "消息");
+            List<AgentTool> tools = InboxTools.all(service);
+            String itemId = service.items().getFirst().id();
+
+            java.util.List<Object> malformed = new java.util.ArrayList<>();
+            malformed.add(List.of());                 // explicit empty list
+            malformed.add("itm-not-a-list");          // wrong JSON type
+            malformed.add(List.of(itemId, 7));        // mixed non-string element
+            malformed.add(List.of(""));               // blank id
+
+            for (Object raw : malformed) {
+                java.util.Map<String, Object> args = new java.util.HashMap<>();
+                args.put("itemIds", raw);
+                ToolResult result = tool(tools, "inbox_ack").execute(call(args));
+                assertThat(result.success()).as("itemIds=" + raw).isFalse();
+                assertThat(result.message()).as("itemIds=" + raw).contains("itemIds");
+                assertThat(service.panel().items())
+                        .as("畸形 itemIds 不能退化到 revision-only/全量 ACK: " + raw)
+                        .hasSize(1);
+            }
+
+            // Explicit null is covered twice: the strict parser rejects it, and the tool-context
+            // boundary cannot even carry it (Map.copyOf rejects null values), so it fails closed
+            // before any ACK instead of becoming a no-argument ACK.
+            assertThat(InboxAckTool.strictItemIds(null)).isNull();
+            assertThat(InboxAckTool.strictItemIds(List.of())).isNull();
+            assertThat(InboxAckTool.strictItemIds("itm-not-a-list")).isNull();
+            assertThat(InboxAckTool.strictItemIds(List.of(itemId, 7))).isNull();
+            assertThat(InboxAckTool.strictItemIds(List.of(itemId))).containsExactly(itemId);
+            java.util.Map<String, Object> withNullValue = new java.util.HashMap<>();
+            withNullValue.put("itemIds", null);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> call(withNullValue))
+                    .as("显式 null 参数在进入工具前就被拒绝（不会退化为全量 ACK）")
+                    .isInstanceOf(NullPointerException.class);
+            assertThat(service.panel().items()).hasSize(1);
+
+            // A true manual no-argument ACK keeps its legacy "ack everything visible" meaning.
+            ToolResult manual = tool(tools, "inbox_ack").execute(call(Map.of()));
+            assertThat(manual.success()).as(manual.message()).isTrue();
+            assertThat(service.panel().items()).isEmpty();
+        }
+    }
+
     private static AgentTool tool(List<AgentTool> tools, String name) {
         return tools.stream().filter(tool -> name.equals(tool.name())).findFirst().orElseThrow();
     }

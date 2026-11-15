@@ -2,6 +2,7 @@ package io.mosire.bma3.qqconnect.tools;
 
 import io.mosire.bma3.core.source.SourceAddress;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -28,7 +29,12 @@ public final class QqDeployerNotifier implements Consumer<String> {
         send(text);
     }
 
-    /** @return true when an account was available and the send path ran (state may still be UNKNOWN) */
+    /**
+     * Sends one alert through the durable outbound path.
+     *
+     * @return true only when the terminal outcome was durably recorded; it may still be UNKNOWN.
+     *         false means nothing was sent or the result could not be recorded.
+     */
     public boolean send(String text) {
         if (!enabled || deployerQq.isBlank() || text == null || text.isBlank()) {
             return false;
@@ -42,10 +48,20 @@ public final class QqDeployerNotifier implements Consumer<String> {
         try {
             SourceAddress source = SourceAddress.parse(
                     "qq_private/" + accountId + "/" + deployerQq);
-            String states = QqSendSupport.sendText(context, source, text, "", "send_private_msg");
+            List<QqDelivery.Outcome> outcomes = QqSendSupport.sendParts(context, source, text,
+                    "", "send_private_msg", Map.of());
+            if (outcomes.isEmpty()) {
+                return false;
+            }
+            QqDelivery.Outcome last = outcomes.getLast();
             org.slf4j.LoggerFactory.getLogger(QqDeployerNotifier.class)
-                    .info("event=deployer_alert_sent accountId={} states={}", accountId, states);
-            return true;
+                    .info("event=deployer_alert_outcome accountId={} parts={} state={} "
+                                    + "providerState={} errorCode={} recorded={} dispatched={}",
+                            accountId, outcomes.size(), last.status(),
+                            last.providerState() == null ? "" : last.providerState(),
+                            last.errorCode() == null ? "" : last.errorCode(), last.recorded(),
+                            last.dispatched() == null ? "" : last.dispatched());
+            return last.recorded();
         } catch (RuntimeException failure) {
             org.slf4j.LoggerFactory.getLogger(QqDeployerNotifier.class)
                     .warn("event=deployer_alert_failed type={}",

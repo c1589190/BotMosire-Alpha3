@@ -62,10 +62,10 @@ public final class QqPrivateSendTool implements AgentTool {
             long groupId = QqToolSupport.longValue(toolContext, "groupId");
             if (groupId > 0) {
                 // 群临时会话：同一行动作带上 group_id，是 OneBot 给"非好友"准备的通道
-                return ToolResult.ok(QqSendSupport.sendText(context, source, text,
-                        "", "send_private_msg", java.util.Map.of("group_id", groupId)));
+                return QqSendSupport.sendToolResult(context, source, text,
+                        "", "send_private_msg", java.util.Map.of("group_id", groupId));
             }
-            return ToolResult.ok(QqSendSupport.sendText(context, source, text, "", "send_private_msg"));
+            return QqSendSupport.sendToolResult(context, source, text, "", "send_private_msg");
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);
         }

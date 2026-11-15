@@ -1,6 +1,16 @@
-# STATUS —— 更新时间：2026-11-14 (UTC+8)
+# STATUS —— 更新时间：2026-11-15 (UTC+8)
 
 ## 当前目标 / 进行中范围
+
+**用户要求停工（2026-11-15，未提交、未部署）**：本会话用户明确要求「不管你做到哪了，停下，保存当前工作状态」。已停止继续开发和验证；仅按要求记录交接，整体跨组件最终复核被中断，**尚无完整最终复核结论，不应宣称本批全部关账或可部署**。未经用户再次要求不要自动恢复。当前分支 `feat/bma3-plan-1`、HEAD `3b79518`；工作树保留大量已修改和未跟踪文件，未做 `commit`、`push`、部署或清理。
+
+**止损批次停工快照**：[发送与 Inbox 确认止损设计](../superpowers/specs/2026-11-15-delivery-safety-design.md)、[outbound plan](../superpowers/plans/2026-11-15-outbound-delivery-safety.md)、[ACK recovery plan](../superpowers/plans/2026-11-15-inbox-ack-recovery.md)。消息板、QQ 文本/附件、出站状态读取与加锁启动恢复、Inbox 服务端和插件的计划内实现及各责任区针对性复核已完成；整体独立复核在用户停工时中断。插件实例变化后的显式人工重试仅重新建立当前实例基线，仍要求原目标、身份、会话、修订及条目精确匹配，不能证明克隆/回滚。
+
+**停工前测试证据（2026-11-15，本机会话运行）**：`./mvnw -q -o test` rc=0，Surefire 汇总 276 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke）；`dsh-plugin` 的 `npm test -- --test-reporter=dot` rc=0、155 个测试点，输出有 Undici 实验性警告；`git diff --check` rc=0。本地真实 Inbox Java 服务 + 真实插件客户端、fake DSH 的 ACK 丢响应/客户端重建联调由子 Agent 运行 33/33、rc=0，证据 [Task 3 报告](../../.superpowers/sdd/2026-11-15-inbox-ack-recovery/task-3-report.md)；旧 SSE 排队帧未在该回环中单独强制构造。真实 QQ/LLBot、真实 DSH 宿主、远端、掉电、升级/回滚及 `packaging/smoke.sh` 均 `NOT_RUN`。
+
+**待用户重新授权后再做**：先读取当前工作树和 [Inbox 进度](../../.superpowers/sdd/2026-11-15-inbox-ack-recovery/progress.md)、[发送进度](../../.superpowers/sdd/2026-11-15-outbound-delivery-safety/progress.md)，确认被中断的整体复核是否有结果并处理残余风险；不重复运行已有测试，除非代码变化或确有必要。旧插件与新服务端不可混用；升级/回滚须按计划停旧写者并作 SQLite 一致性备份。用户明确要求减少冗余测试，子 Agent 默认 `deepseek-flash`（M-003）。
+
+**0.0.6 远端反馈调查（2026-11-15，只读）**：用户授权检查远端部署；详细证据和限制见 [调查报告](../superpowers/reports/2026-11-15-remote-006-investigation.md)。当前进程打开预期的 `bot.db` / `inbox.db`；插件文件与本地一致、检查时绑定存在且未停止。现存 10,840 条面板 entry 均能按 seq、来源、入站方向、时间对应消息板；会话中找到 Agent 对 `#14457` 的转述，但未找到独立的原始面板记录，根因仍未确认。watchdog 曾记录更新时段 UNBOUND/PUSH_STALLED，当前 UP；真实自动恢复与 fetch 404 根因仍 `NOT_RUN`。本轮无产品代码变更，构建/测试 `NOT_RUN`。
 
 > ⚠️ **2026-11-14 方向反转（D-066）**：用户裁定**删除工具面耦合层**，插件收窄为两件事 ——
 > ① `bma3-jar` 的 MCP 服务可达，并由 Agent 用 DSH 自带 `mcp_connector_configure` 自行配置连接；

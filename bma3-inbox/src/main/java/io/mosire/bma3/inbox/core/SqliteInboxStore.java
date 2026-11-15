@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 /** SQLite persistence for one inbox: bounded item windows, panel metadata, legacy deliveries. */
 public final class SqliteInboxStore implements InboxStore {
@@ -35,6 +36,8 @@ public final class SqliteInboxStore implements InboxStore {
 
     private final Connection connection;
     private boolean closed;
+    /** Set when a failed transaction forced the connection to be closed as untrustworthy. */
+    private boolean quarantined;
 
     public SqliteInboxStore(Path databaseFile) {
         Objects.requireNonNull(databaseFile, "databaseFile");
@@ -45,6 +48,25 @@ public final class SqliteInboxStore implements InboxStore {
                 Files.createDirectories(parent);
             }
             connection = DriverManager.getConnection("jdbc:sqlite:" + absolute);
+        } catch (Exception failure) {
+            throw new IllegalStateException("打开 SQLite Inbox 失败", failure);
+        }
+        initialize();
+    }
+
+    /**
+     * Test seam: run exactly the same schema/identity/transaction code over a caller-provided
+     * connection. It exists so a proxy connection can inject driver failures (for example a
+     * failing {@code rollback()}) that a real SQLite file cannot produce deterministically.
+     * Package-private on purpose; production callers use {@link #SqliteInboxStore(Path)}.
+     */
+    SqliteInboxStore(Connection connection) {
+        this.connection = Objects.requireNonNull(connection, "connection");
+        initialize();
+    }
+
+    private void initialize() {
+        try {
             try (Statement statement = connection.createStatement()) {
                 statement.execute("PRAGMA journal_mode=WAL");
                 statement.execute("PRAGMA busy_timeout=5000");
@@ -86,8 +108,24 @@ public final class SqliteInboxStore implements InboxStore {
                           value TEXT NOT NULL
                         )
                         """);
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS inbox_identity (
+                          id INTEGER PRIMARY KEY CHECK (id = 1),
+                          identity TEXT NOT NULL,
+                          created_at TEXT NOT NULL
+                        )
+                        """);
             }
+            // Fail closed: a store without a readable identity must never serve ACKs, because the
+            // caller cannot prove which database it is talking to.
+            ensureIdentity();
         } catch (Exception failure) {
+            closed = true;
+            try {
+                connection.close();
+            } catch (SQLException | RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
             throw new IllegalStateException("打开 SQLite Inbox 失败", failure);
         }
     }
@@ -297,6 +335,172 @@ public final class SqliteInboxStore implements InboxStore {
         }
     }
 
+    // ---------------------------------------------------------------- identity / transactions
+
+    /** Creates the identity row on first open, then verifies it can be read back. */
+    private void ensureIdentity() throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement("""
+                INSERT OR IGNORE INTO inbox_identity (id, identity, created_at) VALUES (1, ?, ?)
+                """)) {
+            insert.setString(1, newIdentity());
+            insert.setString(2, Instant.now().toString());
+            insert.executeUpdate();
+        }
+        identity();
+    }
+
+    private static String newIdentity() {
+        return "inb_" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    @Override
+    public synchronized String identity() {
+        ensureOpen();
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery(
+                     "SELECT identity FROM inbox_identity WHERE id = 1")) {
+            if (!result.next()) {
+                throw new IllegalStateException("Inbox 身份缺失");
+            }
+            String value = result.getString(1);
+            if (value == null || value.isBlank()) {
+                throw new IllegalStateException("Inbox 身份为空");
+            }
+            return value;
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 Inbox 身份失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized String rotateIdentity() {
+        ensureOpen();
+        String next = newIdentity();
+        try {
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "UPDATE inbox_identity SET identity = ?, created_at = ? WHERE id = 1")) {
+                statement.setString(1, next);
+                statement.setString(2, Instant.now().toString());
+                if (statement.executeUpdate() != 1) {
+                    throw new SQLException("inbox_identity 行缺失，无法轮换");
+                }
+            }
+            return next;
+        } catch (SQLException failure) {
+            throw new IllegalStateException("轮换 Inbox 身份失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized void inTransaction(Runnable work) {
+        ensureOpen();
+        if (work == null) {
+            throw new IllegalArgumentException("TRANSACTION_WORK_EMPTY");
+        }
+        boolean autoCommit;
+        try {
+            autoCommit = connection.getAutoCommit();
+        } catch (SQLException failure) {
+            throw new IllegalStateException("Inbox 事务不可用", failure);
+        }
+        if (!autoCommit) {
+            // Already inside a transaction (nested call): join it, never split the unit of work.
+            work.run();
+            return;
+        }
+        try {
+            connection.setAutoCommit(false);
+        } catch (SQLException failure) {
+            throw new IllegalStateException("Inbox 事务不可用", failure);
+        }
+
+        try {
+            work.run();
+        } catch (RuntimeException | Error failure) {
+            if (rollbackOrQuarantine(failure)) {
+                Throwable restoreFailure = restoreAutoCommit();
+                if (restoreFailure != null) {
+                    failure.addSuppressed(restoreFailure);
+                    quarantine(failure);
+                }
+            }
+            throw failure;
+        }
+
+        try {
+            connection.commit();
+        } catch (SQLException commitFailure) {
+            if (rollbackOrQuarantine(commitFailure)) {
+                Throwable restoreFailure = restoreAutoCommit();
+                if (restoreFailure != null) {
+                    commitFailure.addSuppressed(restoreFailure);
+                    quarantine(commitFailure);
+                }
+            }
+            throw new IllegalStateException("Inbox 事务提交失败", commitFailure);
+        }
+
+        // Only a committed transaction may have auto-commit restored. Doing it on a connection whose
+        // rollback failed would make the driver commit partial work (setAutoCommit(true) runs
+        // "commit;" on this driver), so that path quarantines instead.
+        Throwable restoreFailure = restoreAutoCommit();
+        if (restoreFailure != null) {
+            quarantine(restoreFailure);
+            throw new IllegalStateException("恢复自动提交失败，连接已隔离", restoreFailure);
+        }
+    }
+
+    /**
+     * Rolls back after {@code failure}.
+     *
+     * @return {@code true} only when the rollback definitely succeeded and the transaction is
+     *         settled, so restoring auto-commit is safe; {@code false} when the connection had to be
+     *         quarantined because its transaction state is unknown.
+     */
+    private boolean rollbackOrQuarantine(Throwable failure) {
+        try {
+            connection.rollback();
+            return true;
+        } catch (SQLException | RuntimeException rollbackFailure) {
+            if (rollbackFailure != failure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            quarantine(failure);
+            return false;
+        }
+    }
+
+    /** @return the failure when auto-commit could not be restored, {@code null} when it was. */
+    private Throwable restoreAutoCommit() {
+        try {
+            connection.setAutoCommit(true);
+            return null;
+        } catch (SQLException | RuntimeException failure) {
+            return failure;
+        }
+    }
+
+    /**
+     * Makes the connection unusable after an unattributable transaction failure. Every later
+     * operation fails closed; the original failure stays the one thrown to the caller, with the
+     * failure that forced the quarantine attached as suppressed.
+     */
+    private void quarantine(Throwable cause) {
+        closed = true;
+        if (quarantined) {
+            return;
+        }
+        quarantined = true;
+        try {
+            connection.close();
+        } catch (SQLException | RuntimeException closeFailure) {
+            if (closeFailure != cause) {
+                cause.addSuppressed(closeFailure);
+            }
+        }
+    }
+
+    /** Monotonic panel revision, persisted across restarts. */
     @Override
     public synchronized long panelRevision() {
         return meta("panel_revision");
@@ -358,11 +562,13 @@ public final class SqliteInboxStore implements InboxStore {
 
     @Override
     public synchronized boolean ping() {
-        ensureOpen();
+        if (closed) {
+            return false;
+        }
         try (Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery("SELECT 1")) {
             return result.next();
-        } catch (SQLException failure) {
+        } catch (SQLException | RuntimeException failure) {
             return false;
         }
     }
@@ -420,6 +626,10 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     private void ensureOpen() {
+        if (quarantined) {
+            throw new IllegalStateException(
+                    "Inbox store 已隔离：事务未能安全回滚，必须重启服务后重新打开数据库");
+        }
         if (closed) {
             throw new IllegalStateException("Inbox store 已关闭");
         }

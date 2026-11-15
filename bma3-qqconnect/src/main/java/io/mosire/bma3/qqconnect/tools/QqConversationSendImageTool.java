@@ -5,6 +5,7 @@ import io.mosire.agentlib.permission.ToolSpec;
 import io.mosire.agentlib.tool.AgentTool;
 import io.mosire.agentlib.tool.ToolContext;
 import io.mosire.agentlib.tool.ToolResult;
+import io.mosire.bma3.core.message.DeliveryStatus;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.message.Segment;
@@ -23,6 +24,12 @@ import java.util.UUID;
  * Sends a local image (for example a login QR screenshot) as an OneBot image segment. The file
  * must live under the configured image root; bytes are sent as {@code base64://} so a remote
  * LLBot does not need to see the BMA3 filesystem.
+ *
+ * <p>The outbound row is persisted as {@code PENDING} before the provider request, and the terminal
+ * state plus external id are written atomically afterwards. A bounded wait (Task 2 attachment
+ * bound) turns a missing/late response into {@code UNKNOWN}; the late response cannot rewrite the
+ * board and no automatic retry follows. Any optional text is part of the same OneBot message, so a
+ * failed image can never cause a separate text follow-up.</p>
  */
 public final class QqConversationSendImageTool implements AgentTool {
 
@@ -42,7 +49,8 @@ public final class QqConversationSendImageTool implements AgentTool {
     @Override
     public String description() {
         return "向 source 指定的 QQ 会话发送本地图片（如登录二维码截图）；图片必须位于 data 目录下，"
-                + "以 base64 发送，避免云端 LLBot 路径不可见。";
+                + "以 base64 发送，避免云端 LLBot 路径不可见。发送前先落 PENDING，超时/断线/"
+                + "未知响应=UNKNOWN，不自动重发；可选文本与图片在同一消息中发送。";
     }
 
     @Override
@@ -80,13 +88,6 @@ public final class QqConversationSendImageTool implements AgentTool {
             }
             message.add(Map.of("type", "image", "data", Map.of("file", encoded)));
 
-            var stored = context.board().append(new InboundMessage(
-                    source,
-                    "out-image-" + UUID.randomUUID(),
-                    Instant.now(),
-                    List.of(new Segment("image", image.getFileName().toString())),
-                    Direction.OUTBOUND));
-
             String action;
             Map<String, Object> params;
             if ("qq_group".equals(source.platform())) {
@@ -98,32 +99,65 @@ public final class QqConversationSendImageTool implements AgentTool {
                 params = Map.of("user_id", Long.parseLong(source.segments().get(1)),
                         "message", message);
             }
-            String state;
-            String externalId = "";
+
+            // The board is the business source of truth: when the same provider message carries
+            // text plus image, the row must contain the caption segment that was actually sent.
+            List<Segment> boardSegments = new ArrayList<>();
+            if (!text.isBlank()) {
+                boardSegments.add(new Segment("text", text));
+            }
+            boardSegments.add(new Segment("image", image.getFileName().toString()));
+            InboundMessage outbound = new InboundMessage(
+                    source,
+                    "out-image-" + UUID.randomUUID(),
+                    Instant.now(),
+                    boardSegments,
+                    Direction.OUTBOUND);
+            String operationId = "op-" + UUID.randomUUID();
+            QqDelivery.Pending pending;
             try {
-                var response = client.sendAction(action, params).join();
-                boolean ok = "ok".equals(response.path("status").asText())
-                        && response.path("retcode").asInt(-1) == 0;
-                state = ok ? "SENT" : "FAILED_BEFORE_SEND";
-                externalId = response.path("data").path("message_id").asText("");
+                pending = QqDelivery.begin(context, outbound, operationId, 1, 1);
             } catch (RuntimeException failure) {
-                state = "UNKNOWN";
+                // No board row and no provider request: a definite non-dispatch.
+                return response(QqDelivery.boardWriteFailure(operationId, 1, 1),
+                        action, size, text);
             }
-            if (!externalId.isBlank()) {
-                context.board().attachExternalMessageId(stored.message().localSeq(), externalId);
-            }
-            var root = QqToolSupport.object();
-            root.put("state", state);
-            root.put("localSeq", stored.message().localSeq());
-            root.put("messageId", externalId);
-            root.put("action", action);
-            root.put("bytes", size);
-            return ToolResult.ok(root.toString());
+            // connected()==false proves the request is rejected locally before any platform
+            // side effect; every result after a real dispatch stays conservative.
+            QqDelivery.ProviderResult providerResult = client.connected()
+                    ? QqDelivery.dispatch(client, action, params, QqDelivery.ATTACHMENT_WAIT)
+                    : QqDelivery.failedBeforeSend(QqDelivery.NOT_DISPATCHED);
+            QqDelivery.Outcome outcome = QqDelivery.finish(context, pending, providerResult);
+            return response(outcome, action, size, text);
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);
         } catch (Exception failure) {
             return ToolResult.error("IMAGE_SEND_FAILED", "图片发送失败");
         }
+    }
+
+    private static ToolResult response(QqDelivery.Outcome outcome, String action, long size,
+                                       String text) {
+        var root = QqDelivery.json(outcome);
+        root.put("action", action);
+        root.put("bytes", size);
+        if (!text.isBlank()) {
+            // The text travels inside the same OneBot message: its state is the message state.
+            root.put("textState", outcome.status().name());
+        }
+        boolean boardWriteFailed = QqDelivery.BOARD_WRITE_FAILED.equals(outcome.errorCode());
+        boolean unknown = outcome.status() == DeliveryStatus.UNKNOWN;
+        if (boardWriteFailed || unknown) {
+            root.put("resendAllowed", false);
+        }
+        if (boardWriteFailed) {
+            root.put("hint", "结果未能可靠落板；禁止重发或重新上传");
+        } else if (unknown) {
+            root.put("hint", "附件状态不确定，可能已发送；禁止自动重发");
+        }
+        return boardWriteFailed
+                ? ToolResult.error(QqDelivery.BOARD_WRITE_FAILED, root.toString())
+                : ToolResult.ok(root.toString());
     }
 
     private Path imagePath(String raw) {

@@ -4,13 +4,56 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { apply, createInboxClient, renderPanel, SseParser } from '../lib/inbox.js'
+import { apply, createInboxClient, inboxStatePaths, renderPanel, SseParser } from '../lib/inbox.js'
 /** Write a jar-shaped .bma3env and return its path (D-063: the plugin only reads it). */
 function tokenEnvFile(value = 'secret') {
   const dir = mkdtempSync(join(tmpdir(), 'bma3-inbox-token-'))
   const file = join(dir, '.bma3env')
   writeFileSync(file, `MCP_TOKEN=mcp-${value}\nINBOX_TOKEN=${value}\n`)
   return file
+}
+
+/** A complete, identity-guarded ACK response matching the Task 1 server contract. */
+function completeAck(body, { ackedRevision = Number(body.revision) } = {}) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ackedRevision,
+      ackedItemIds: [...body.itemIds],
+      alreadyAckedItemIds: [],
+      missingItemIds: [],
+      inboxIdentity: body.inboxIdentity,
+      complete: true,
+    }),
+  }
+}
+
+async function waitFor(predicate, message = 'condition', timeout = 2500) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`timed out waiting for ${message}`)
+}
+
+/** Empty panel used by the post-ACK fresh verification call. */
+function emptyPanel(identity, pushRevision) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      inboxId: 'bma3',
+      revision: pushRevision,
+      pushRevision,
+      totalItems: 0,
+      omittedItems: 0,
+      includeOmittedCount: true,
+      items: [],
+      inboxIdentity: identity,
+    }),
+  }
 }
 
 
@@ -102,15 +145,35 @@ test('apply exposes one-panel tools and does not leak the token', async () => {
   assert.equal(JSON.parse((await inbox.execute({ action: 'unbind' }, {})).text).targetSessionId, null)
 
   const ack = JSON.parse((await inbox.execute({ action: 'ack' }, { agent: { id: 'session-1' } })).text)
-  assert.equal(ack.ackedRevision, 42)
-  const ackCall = calls.find((call) => /\/v1\/inboxes\/bma3\/ack$/.test(call.url))
-  assert.ok(ackCall, 'ack 必须发到 /ack')
-  assert.equal(ackCall.init.headers.Authorization, 'Bearer secret-token')
+  assert.equal(ack.pendingAck, null)
+  assert.equal(ack.ackedRevision, 0)
+  assert.equal(
+    calls.find((call) => /\/v1\/inboxes\/bma3\/ack$/.test(call.url)),
+    undefined,
+    'ack 动作不能再退化成 revision-only ACK',
+  )
+  await client.heartbeat()
+  const heartbeatCall = calls.find((call) => call.url.endsWith('/plugin/heartbeat'))
+  assert.equal(heartbeatCall.init.headers.Authorization, 'Bearer secret-token')
+  await assert.rejects(
+    () => inbox.execute({ action: 'discard' }, { agent: { id: 'session-1' } }),
+    /confirm|确认/u,
+  )
+  const discarded = JSON.parse(
+    (await inbox.execute({ action: 'discard', confirm: true }, { agent: { id: 'session-1' } })).text,
+  )
+  assert.equal(discarded.action, 'discard')
+  assert.match(discarded.message, /没有待 ACK/u)
+  await assert.rejects(
+    () => inbox.execute({ action: 'accept-identity' }, { agent: { id: 'session-1' } }),
+    /confirm|确认/u,
+  )
   assert.doesNotMatch(JSON.stringify(client.status()), /secret-token/)
 })
 
 
 test('one SSE panel wakes an idle agent and advances the cursor', async () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-inbox-inject-')), 'state.json')
   const messages = []
   const agent = {
     id: 'session-1',
@@ -131,7 +194,11 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     if (url.endsWith('/ack')) {
       ackCalls += 1
       ackBodies.push(JSON.parse(init.body))
-      return { ok: true, status: 200, json: async () => ({ ackedRevision: 7 }) }
+      return completeAck(JSON.parse(init.body), { ackedRevision: 7 })
+    }
+    if (url.endsWith('/panel')) return emptyPanel('inb_test_one', 7)
+    if (url.endsWith('/plugin/heartbeat')) {
+      return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
     }
     throw new Error(`unexpected URL ${url}`)
   }
@@ -141,7 +208,7 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     envFile: tokenEnvFile('secret'),
     fetchImpl,
     pumpMs: 10,
-    persistState: false,
+    stateFile,
   })
   try {
     client.start()
@@ -149,10 +216,13 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
       'id: 7\nevent: panel\ndata: ' + JSON.stringify({
         inboxId: 'bma3',
         revision: 7,
+        pushRevision: 7,
+        inboxIdentity: 'inb_test_one',
         totalItems: 1,
         includeOmittedCount: true,
         items: [{
           id: 'itm-test-1',
+          frozenRevision: 7,
           source: 'qq_group/bot-1/955432692',
           sourceLabel: 'QQ群 955432692',
           priority: 300,
@@ -169,16 +239,17 @@ test('one SSE panel wakes an idle agent and advances the cursor', async () => {
     assert.match(messages[0].content[0].text, /^\[INBOX_PANEL\]/)
     assert.match(messages[0].content[0].text, /QQ群 955432692/)
     assert.match(messages[0].content[0].text, /\[@3924945183\]/)
-    assert.equal(ackCalls, 1)
-    assert.ok(ackBodies.at(-1).itemIds?.length, 'ack 必须带上面板里实际显示的 itemIds')
-    assert.equal(ackBodies.at(-1).itemIds.length, 1)
+    await waitFor(() => ackCalls === 1, 'guarded ACK')
+    assert.equal(ackBodies.at(-1).itemIds?.length, 1, 'ack 必须带上面板里实际显示的 itemIds')
+    assert.equal(ackBodies.at(-1).inboxIdentity, 'inb_test_one')
   } finally {
-    client.stop()
+    client.dispose()
     controller.close()
   }
 })
 
 test('pause stops injection without dropping the SSE, resume picks the next panel up', async () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-inbox-pause-')), 'state.json')
   const messages = []
   const agent = {
     id: 'session-1',
@@ -189,11 +260,15 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
   let controller
   let ackCalls = 0
   const body = new ReadableStream({ start(next) { controller = next } })
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init) => {
     if (url.endsWith('/events')) return { ok: true, status: 200, body }
     if (url.endsWith('/ack')) {
       ackCalls += 1
-      return { ok: true, status: 200, json: async () => ({ ackedRevision: 9 }) }
+      return completeAck(JSON.parse(init.body), { ackedRevision: 9 })
+    }
+    if (url.endsWith('/panel')) return emptyPanel('inb_test_pause', 9)
+    if (url.endsWith('/plugin/heartbeat')) {
+      return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
     }
     throw new Error(`unexpected URL ${url}`)
   }
@@ -203,12 +278,13 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
     envFile: tokenEnvFile('secret'),
     fetchImpl,
     pumpMs: 10,
-    persistState: false,
+    stateFile,
   })
   const panel = (revision) => 'id: ' + revision + '\nevent: panel\ndata: ' + JSON.stringify({
-    inboxId: 'bma3', revision, totalItems: 1, includeOmittedCount: true,
+    inboxId: 'bma3', revision, pushRevision: revision, inboxIdentity: 'inb_test_pause',
+    totalItems: 1, includeOmittedCount: true,
     items: [{
-      id: 'itm-test-' + revision,
+      id: 'itm-test-' + revision, frozenRevision: revision,
       source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1', priority: 300,
       totalMessages: 1, omittedMessages: 0, entries: [{ line: '[12:00] #1 A：hi' }],
     }],
@@ -229,9 +305,9 @@ test('pause stops injection without dropping the SSE, resume picks the next pane
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     assert.equal(messages.length, 1)
-    assert.equal(ackCalls, 1)
+    await waitFor(() => ackCalls === 1, 'guarded ACK')
   } finally {
-    client.stop()
+    client.dispose()
     controller.close()
   }
 })
@@ -255,27 +331,33 @@ test('renderPanel marks a source that is still active', () => {
 
 test('a persisted push revision prevents re-injection after a plugin restart', async () => {
   const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-inbox-')), 'state.json')
+  const paths = inboxStatePaths({ stateFile })
   const panel = {
-    inboxId: 'bma3', revision: 7, pushRevision: 5, totalItems: 1, includeOmittedCount: true,
+    inboxId: 'bma3', revision: 7, pushRevision: 5, inboxIdentity: 'inb_test_restart',
+    totalItems: 1, includeOmittedCount: true,
     items: [{
-      id: 'itm-1', source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1',
+      id: 'itm-1', frozenRevision: 5,
+      source: 'qq_group/bot-1/1', sourceLabel: 'QQ群 1',
       priority: 300, totalMessages: 1, omittedMessages: 0, continued: false,
       entries: [{ line: '[12:00] #1 A：hi' }],
     }],
   }
-  const run = async (messages) => {
+  const run = async (messages, expectInjection = true) => {
     const agent = { id: 'session-1', status: 'idle', followup(message) { messages.push(message) } }
     const ctx = { agents: { get: () => agent, list: () => [agent] } }
     let controller
+    let ackCalls = 0
     const body = new ReadableStream({ start(next) { controller = next } })
-    const fetchImpl = async (url) => {
+    const fetchImpl = async (url, init) => {
       if (url.endsWith('/events')) return { ok: true, status: 200, body }
       if (url.endsWith('/plugin/heartbeat')) {
         return { ok: true, status: 200, json: async () => ({ mcpStartId: 'mcp-1' }) }
       }
       if (url.endsWith('/ack')) {
-        return { ok: true, status: 200, json: async () => ({ ackedRevision: 7 }) }
+        ackCalls += 1
+        return completeAck(JSON.parse(init.body), { ackedRevision: 7 })
       }
+      if (url.endsWith('/panel')) return emptyPanel('inb_test_restart', 5)
       throw new Error(`unexpected URL ${url}`)
     }
     const client = createInboxClient(ctx, {
@@ -285,21 +367,27 @@ test('a persisted push revision prevents re-injection after a plugin restart', a
     client.start()
     const frame = 'id: 7\nevent: panel\ndata: ' + JSON.stringify(panel) + '\n\n'
     controller.enqueue(new TextEncoder().encode(frame))
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    if (expectInjection) {
+      await waitFor(() => messages.length === 1, 'first injection')
+      await waitFor(() => ackCalls === 1 && client.status().pendingAck === null, 'first guarded ACK')
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
     return { client, controller, messages }
   }
 
   const first = await run([])
   assert.equal(first.messages.length, 1)
-  first.client.stop(false)
+  first.client.dispose()
   first.controller.close()
 
-  const second = await run([])
+  const second = await run([], false)
   assert.equal(second.messages.length, 0, '同一 pushRevision 重启后不能再注入')
-  const saved = JSON.parse(readFileSync(stateFile, 'utf8'))
+  const saved = JSON.parse(readFileSync(paths.v2, 'utf8'))
+  assert.equal(saved.pendingAck, null)
   assert.equal(saved.injectedPushRevision, 5)
   assert.equal(saved.lastPushRevision, 5)
-  second.client.stop(false)
+  second.client.dispose()
   second.controller.close()
 })
 
@@ -315,6 +403,7 @@ test('a persisted push revision prevents re-injection after a plugin restart', a
 test('unloading the plugin must not persist the user-stop intent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'bma3-reload-'))
   const stateFile = join(dir, 'state.json')
+  const paths = inboxStatePaths({ stateFile })
   const agent = { id: 'session-1', status: 'idle', followup() {} }
   const controllers = []
   const fetchImpl = async (url) => {
@@ -346,7 +435,7 @@ test('unloading the plugin must not persist the user-stop intent', async () => {
   const first = apply(firstCtx, config)
   assert.equal(first.status().running, true)
   firstCtx.dispose()
-  const afterUnload = JSON.parse(readFileSync(stateFile, 'utf8'))
+  const afterUnload = JSON.parse(readFileSync(paths.v2, 'utf8'))
   assert.equal(afterUnload.stopped, false, '拆掉插件不等于用户点了 stop')
 
   const secondCtx = makeCtx()
@@ -356,7 +445,7 @@ test('unloading the plugin must not persist the user-stop intent', async () => {
   // An explicit stop IS user intent and must survive a reload.
   second.stop()
   secondCtx.dispose()
-  const afterStop = JSON.parse(readFileSync(stateFile, 'utf8'))
+  const afterStop = JSON.parse(readFileSync(paths.v2, 'utf8'))
   assert.equal(afterStop.stopped, true)
 
   const thirdCtx = makeCtx()
@@ -368,6 +457,7 @@ test('unloading the plugin must not persist the user-stop intent', async () => {
 
 test('bind persists the session and resumes it when it is not live', async () => {
   const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-bind-')), 'state.json')
+  const paths = inboxStatePaths({ stateFile })
   let resumed = null
   const agent = { id: 'session-9', status: 'idle', followup() {} }
   const ctx = {
@@ -400,8 +490,8 @@ test('bind persists the session and resumes it when it is not live', async () =>
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.equal(resumed, 'session-9')
-  assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).targetSessionId, 'session-9')
-  client.stop(false)
+  assert.equal(JSON.parse(readFileSync(paths.v2, 'utf8')).targetSessionId, 'session-9')
+  client.dispose()
 })
 
 test('a bound target never falls back to another idle session', () => {

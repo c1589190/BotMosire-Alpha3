@@ -1,5 +1,7 @@
 package io.mosire.bma3.qqconnect.tools;
 
+import io.mosire.agentlib.tool.ToolResult;
+import io.mosire.bma3.core.message.DeliveryStatus;
 import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.message.Segment;
@@ -7,6 +9,7 @@ import io.mosire.bma3.core.source.SourceAddress;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -28,18 +31,70 @@ final class QqSendSupport {
     static String sendText(QqToolContext context, SourceAddress source, String text,
                            String replyToMessageId, String actionName,
                            Map<String, Object> extras) {
+        return jsonArray(sendParts(context, source, text, replyToMessageId, actionName, extras));
+    }
+
+    /**
+     * Entry-point result for the three send tools: a board write failure is an outer tool error
+     * carrying the complete structured parts array; provider UNKNOWN stays an ordinary result
+     * (it may already have been sent and must not be treated as retryable).
+     */
+    static ToolResult sendToolResult(QqToolContext context, SourceAddress source, String text,
+                                     String replyToMessageId, String actionName) {
+        return sendToolResult(context, source, text, replyToMessageId, actionName, Map.of());
+    }
+
+    static ToolResult sendToolResult(QqToolContext context, SourceAddress source, String text,
+                                     String replyToMessageId, String actionName,
+                                     Map<String, Object> extras) {
+        List<QqDelivery.Outcome> outcomes = sendParts(context, source, text, replyToMessageId,
+                actionName, extras);
+        boolean boardWriteFailed = outcomes.stream().anyMatch(outcome ->
+                QqDelivery.BOARD_WRITE_FAILED.equals(outcome.errorCode()));
+        String json = jsonArray(outcomes, boardWriteFailed);
+        return boardWriteFailed
+                ? ToolResult.error(QqDelivery.BOARD_WRITE_FAILED, json)
+                : ToolResult.ok(json);
+    }
+
+    private static String jsonArray(List<QqDelivery.Outcome> outcomes) {
+        return jsonArray(outcomes, false);
+    }
+
+    private static String jsonArray(List<QqDelivery.Outcome> outcomes, boolean resendForbidden) {
+        var array = QqToolSupport.JSON.createArrayNode();
+        outcomes.forEach(outcome -> {
+            var node = QqDelivery.json(outcome);
+            if (resendForbidden) {
+                // The whole operation is not resendable once any part could not be recorded.
+                node.put("resendAllowed", false);
+            }
+            array.add(node);
+        });
+        return array.toString();
+    }
+
+    /**
+     * Persists one PENDING row per actual chunk before dispatch and stops after the first part that
+     * is not {@link DeliveryStatus#SENT} or whose terminal state could not be recorded.
+     */
+    static List<QqDelivery.Outcome> sendParts(QqToolContext context, SourceAddress source,
+                                              String text, String replyToMessageId,
+                                              String actionName, Map<String, Object> extras) {
         QqSendPolicy policy = context.policy();
         List<String> chunks = chunks(text, policy);
         OneBot11Client client = QqToolSupport.client(context, source);
-        StringBuilder states = new StringBuilder("[");
+        var self = context.accounts().self(source.accountId())
+                .orElse(new io.mosire.bma3.qqconnect.account.AccountRegistry.SelfIdentity("", ""));
+        // One fresh server-generated operation id per tool call; each chunk is a part of it.
+        String operationId = "op-" + UUID.randomUUID();
+        List<QqDelivery.Outcome> outcomes = new ArrayList<>();
         for (int index = 0; index < chunks.size(); index++) {
             String chunk = chunks.get(index);
-            var self = context.accounts().self(source.accountId())
-                    .orElse(new io.mosire.bma3.qqconnect.account.AccountRegistry.SelfIdentity("", ""));
-            var stored = context.board().append(new InboundMessage(
+            InboundMessage outbound = new InboundMessage(
                     source, "out-" + UUID.randomUUID(), Instant.now(),
                     List.of(new Segment("text", chunk)), Direction.OUTBOUND,
-                    self.userId(), self.nickname()));
+                    self.userId(), self.nickname());
             Object message;
             if (replyToMessageId != null && !replyToMessageId.isBlank() && index == 0) {
                 message = List.of(
@@ -57,54 +112,32 @@ final class QqSendSupport {
                         "message", message);
             } else {
                 // 群临时会话：user_id + group_id 一起给
-                Map<String, Object> withExtras = new java.util.LinkedHashMap<>();
+                Map<String, Object> withExtras = new LinkedHashMap<>();
                 withExtras.put("user_id", Long.parseLong(source.segments().get(1)));
                 withExtras.put("message", message);
                 withExtras.putAll(extras);
                 params = withExtras;
             }
-            String state;
-            String messageId = "";
-            int retcode = -1;
-            String providerStatus = "";
-            String providerMessage = "";
+            // Persist PENDING only after the request is fully built, and before it is dispatched.
+            // A failed part write must not lose the earlier parts' structured results, and this
+            // part's provider must not be called.
+            QqDelivery.Pending pending;
             try {
-                var response = client.sendAction(actionName, params)
-                        .orTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                        .join();
-                retcode = response.path("retcode").asInt(-1);
-                providerStatus = response.path("status").asText("");
-                providerMessage = response.path("message").asText("");
-                boolean ok = "ok".equals(providerStatus) && retcode == 0;
-                state = ok ? "SENT" : "FAILED_BEFORE_SEND";
-                messageId = response.path("data").path("message_id").asText("");
+                pending = QqDelivery.begin(context, outbound, operationId,
+                        index + 1, chunks.size());
             } catch (RuntimeException failure) {
-                // 超时/断线：可能已经发出去了，所以只能是 UNKNOWN，且绝不自动重发
-                state = "UNKNOWN";
-                providerMessage = failure.getCause() == null
-                        ? failure.getClass().getSimpleName()
-                        : failure.getCause().getClass().getSimpleName();
+                outcomes.add(QqDelivery.boardWriteFailure(operationId, index + 1, chunks.size()));
+                break;
             }
-            if (!messageId.isBlank()) {
-                context.board().attachExternalMessageId(stored.message().localSeq(), messageId);
-            }
-            if (states.length() > 1) {
-                states.append(',');
-            }
-            var entry = QqToolSupport.object();
-            entry.put("localSeq", stored.message().localSeq());
-            entry.put("state", state);
-            entry.put("messageId", messageId);
-            entry.put("retcode", retcode);
-            entry.put("providerStatus", providerStatus);
-            entry.put("providerMessage", providerMessage == null ? "" : providerMessage);
-            states.append(entry.toString());
-            if (!"SENT".equals(state)) {
+            QqDelivery.ProviderResult providerResult = QqDelivery.dispatch(client, actionName,
+                    params, QqDelivery.TEXT_WAIT);
+            QqDelivery.Outcome outcome = QqDelivery.finish(context, pending, providerResult);
+            outcomes.add(outcome);
+            if (outcome.status() != DeliveryStatus.SENT || !outcome.recorded()) {
                 break;
             }
         }
-        states.append(']');
-        return states.toString();
+        return outcomes;
     }
 
     static void validateText(String text, QqToolContext context) {

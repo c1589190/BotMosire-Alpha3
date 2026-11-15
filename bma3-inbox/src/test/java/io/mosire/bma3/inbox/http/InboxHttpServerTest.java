@@ -36,40 +36,215 @@ class InboxHttpServerTest {
             InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
             try {
                 server.start();
-                String base = "http://127.0.0.1:" + server.boundPort();
-                assertThat(get(base + "/healthz", null).statusCode()).isEqualTo(200);
-                assertThat(get(base + "/v1/inboxes/bma3/status", null).statusCode()).isEqualTo(401);
+                assertThat(get(base(server) + "/healthz", null).statusCode()).isEqualTo(200);
+                assertThat(get(base(server) + "/v1/inboxes/bma3/status", null).statusCode())
+                        .isEqualTo(401);
 
-                HttpResponse<String> status = get(base + "/v1/inboxes/bma3/status", "token");
+                HttpResponse<String> status = get(base(server) + "/v1/inboxes/bma3/status",
+                        "token");
                 assertThat(status.statusCode()).isEqualTo(200);
                 assertThat(mapper.readTree(status.body()).path("available").asInt()).isEqualTo(1);
 
-                HttpResponse<String> items = get(base + "/v1/inboxes/bma3/items", "token");
+                HttpResponse<String> items = get(base(server) + "/v1/inboxes/bma3/items",
+                        "token");
                 assertThat(items.statusCode()).isEqualTo(200);
                 assertThat(items.body()).doesNotContain("\"content\"");
                 assertThat(items.body()).contains("hello");
                 String itemId = mapper.readTree(items.body()).get(0).path("id").asText();
 
-                HttpResponse<String> detail = get(base + "/v1/inboxes/bma3/items/" + itemId,
-                        "token");
+                HttpResponse<String> detail = get(base(server)
+                        + "/v1/inboxes/bma3/items/" + itemId, "token");
                 assertThat(detail.statusCode()).isEqualTo(200);
                 assertThat(mapper.readTree(detail.body()).path("id").asText()).isEqualTo(itemId);
 
-                HttpResponse<String> ack = post(base + "/v1/inboxes/bma3/ack", "token",
-                        "{\"itemIds\":[\"" + itemId + "\"]}");
-                assertThat(ack.statusCode()).isEqualTo(200);
+                // 逐条 ACK 只接受"推送过"的条目，并且必须带数据库身份（插件契约）。
+                var pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+                assertThat(pushed).isNotNull();
+                String identity = mapper.readTree(
+                        get(base(server) + "/v1/inboxes/bma3/panel", "token").body())
+                        .path("inboxIdentity").asText();
+                assertThat(identity).isNotBlank();
+
+                HttpResponse<String> ack = post(base(server) + "/v1/inboxes/bma3/ack", "token",
+                        "{\"revision\":" + pushed.revision() + ",\"itemIds\":[\"" + itemId
+                                + "\"],\"inboxIdentity\":\"" + identity + "\"}");
+                assertThat(ack.statusCode()).as(ack.body()).isEqualTo(200);
                 assertThat(mapper.readTree(ack.body()).path("remaining").asInt()).isZero();
 
-                HttpResponse<String> second = post(base + "/v1/inboxes/bma3/ack", "token",
-                        "{\"itemIds\":[\"" + itemId + "\"]}");
+                HttpResponse<String> second = post(base(server) + "/v1/inboxes/bma3/ack", "token",
+                        "{\"revision\":" + pushed.revision() + ",\"itemIds\":[\"" + itemId
+                                + "\"],\"inboxIdentity\":\"" + identity + "\"}");
                 assertThat(second.statusCode())
                         .as("ack 幂等：重复 ack 已确认条目是成功 no-op")
                         .isEqualTo(200);
                 assertThat(mapper.readTree(second.body()).path("remaining").asInt()).isZero();
+                assertThat(mapper.readTree(second.body()).path("alreadyAckedItemIds").get(0)
+                        .asText()).isEqualTo(itemId);
             } finally {
                 server.close();
             }
         }
+    }
+
+    @Test
+    void aNonObjectAckBodyIsRejectedInsteadOfAckingEverything() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("non-object.db"))) {
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
+            service.append(new AppendItem("qq_private/bot-1/1", "hello", 300,
+                    Instant.now().minusSeconds(5)));
+            InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
+            try {
+                server.start();
+                // JSON scalars / arrays / literal null are not an ACK request at all. They must not
+                // collapse into an empty object (which the manual path treats as "ack everything").
+                for (String body : java.util.List.of("null", "[]", "[\"x\"]", "\"hello\"",
+                        "123", "true", "false", "7.5")) {
+                    HttpResponse<String> rejected = post(
+                            base(server) + "/v1/inboxes/bma3/ack", "token", body);
+                    assertThat(rejected.statusCode()).as(body + " -> " + rejected.body())
+                            .isEqualTo(400);
+                    assertThat(mapper.readTree(rejected.body()).path("error").asText())
+                            .as(body).isEqualTo("invalid_body");
+                    assertThat(service.panel().items()).as(body).hasSize(1);
+                }
+                // Undecodable JSON must also fail closed instead of reaching any ACK path.
+                for (String body : java.util.List.of("{", "not json", "{\"revision\":}")) {
+                    HttpResponse<String> rejected = post(
+                            base(server) + "/v1/inboxes/bma3/ack", "token", body);
+                    assertThat(rejected.statusCode()).as(body + " -> " + rejected.body())
+                            .isEqualTo(400);
+                    assertThat(mapper.readTree(rejected.body()).path("error").asText())
+                            .as(body).isEqualTo("invalid_json");
+                    assertThat(service.panel().items()).as(body).hasSize(1);
+                }
+            } finally {
+                server.close();
+            }
+        }
+    }
+
+    @Test
+    void trailingTokensAfterTheJsonObjectAreRejectedInsteadOfAckingEverything() throws Exception {
+        // Jackson's default readTree stops at the first root value, so "{} {}" used to be read as
+        // "{}" and silently become the all-visible ACK. A complete-JSON check must reject it.
+        java.util.List<String> bodies = java.util.List.of(
+                "{} {}", "{} x", "{\"revision\":1}junk", "{}[]", "{} 123");
+        int caseIndex = 0;
+        for (String body : bodies) {
+            try (SqliteInboxStore store = new SqliteInboxStore(
+                    tempDir.resolve("trailing-" + (caseIndex++) + ".db"))) {
+                InboxService service = new InboxService(store,
+                        new DeliveryPolicy(200, Duration.ofMillis(50), Duration.ofMillis(100)));
+                service.append(new AppendItem("qq_private/bot-1/1", "hello", 300,
+                        Instant.now().minusSeconds(5)));
+                // Freeze the item so even a legacy revision-only ACK would be observable here.
+                assertThat(service.awaitPush(service.pushRevision(), Duration.ofSeconds(2)))
+                        .isNotNull();
+                String itemId = service.panel().items().getFirst().id();
+                InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token",
+                        service);
+                try {
+                    server.start();
+                    HttpResponse<String> rejected = post(
+                            base(server) + "/v1/inboxes/bma3/ack", "token", body);
+                    assertThat(rejected.statusCode()).as(body + " -> " + rejected.body())
+                            .isEqualTo(400);
+                    assertThat(mapper.readTree(rejected.body()).path("error").asText())
+                            .as(body).isEqualTo("invalid_json");
+                    assertThat(service.panel().items()).as(body).hasSize(1);
+                    assertThat(store.item(itemId).orElseThrow().status())
+                            .as(body).isEqualTo(io.mosire.bma3.inbox.core.ItemStatus.AVAILABLE);
+                } finally {
+                    server.close();
+                }
+            }
+        }
+    }
+
+    @Test
+    void trailingWhitespaceAfterAValidObjectIsStillAccepted() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("trailing-ws.db"))) {
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofMillis(50), Duration.ofMillis(100)));
+            service.append(new AppendItem("qq_private/bot-1/1", "hello", 300,
+                    Instant.now().minusSeconds(5)));
+            var pushed = service.awaitPush(service.pushRevision(), Duration.ofSeconds(2));
+            assertThat(pushed).isNotNull();
+            InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token",
+                    service);
+            try {
+                server.start();
+                // A complete JSON value followed only by whitespace is still valid JSON, and this
+                // legacy revision-only request keeps its meaning.
+                HttpResponse<String> accepted = post(base(server) + "/v1/inboxes/bma3/ack",
+                        "token", "{\"revision\":" + pushed.revision() + "}\n");
+                assertThat(accepted.statusCode()).as(accepted.body()).isEqualTo(200);
+                assertThat(service.panel().items()).isEmpty();
+            } finally {
+                server.close();
+            }
+        }
+    }
+
+    @Test
+    void emptyBodyAndEmptyObjectRemainTheIntentionalManualFullAck() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("manual-empty.db"))) {
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
+            InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
+            try {
+                server.start();
+                service.append(new AppendItem("qq_private/bot-1/1", "first", 300,
+                        Instant.now().minusSeconds(5)));
+                HttpResponse<String> emptyBody = post(base(server) + "/v1/inboxes/bma3/ack",
+                        "token", "");
+                assertThat(emptyBody.statusCode()).as(emptyBody.body()).isEqualTo(200);
+                assertThat(service.panel().items()).as("空 body 是有意的人工全量 ACK").isEmpty();
+
+                service.append(new AppendItem("qq_private/bot-1/2", "second", 300,
+                        Instant.now().minusSeconds(5)));
+                HttpResponse<String> emptyObject = post(base(server) + "/v1/inboxes/bma3/ack",
+                        "token", "{}");
+                assertThat(emptyObject.statusCode()).as(emptyObject.body()).isEqualTo(200);
+                assertThat(service.panel().items()).as("{} 仍是有意的人工全量 ACK").isEmpty();
+            } finally {
+                server.close();
+            }
+        }
+    }
+
+    @Test
+    void aPresentButMalformedRevisionNeverFallsBackToAnUnversionedAck() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("legacy-revision.db"))) {
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
+            service.append(new AppendItem("qq_private/bot-1/1", "hello", 300,
+                    Instant.now().minusSeconds(5)));
+            InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
+            try {
+                server.start();
+                // No itemIds: this is the legacy manual path, where an absent revision is still
+                // allowed. A present-but-invalid one must not silently become "ack everything".
+                for (String body : java.util.List.of("{\"revision\":\"7\"}",
+                        "{\"revision\":null}", "{\"revision\":-1}",
+                        "{\"revision\":7.5}")) {
+                    HttpResponse<String> rejected = post(
+                            base(server) + "/v1/inboxes/bma3/ack", "token", body);
+                    assertThat(rejected.statusCode()).as(body + " -> " + rejected.body())
+                            .isEqualTo(400);
+                    assertThat(mapper.readTree(rejected.body()).path("error").asText())
+                            .isEqualTo("revision_invalid");
+                    assertThat(service.panel().items()).as(body).hasSize(1);
+                }
+            } finally {
+                server.close();
+            }
+        }
+    }
+
+    private static String base(InboxHttpServer server) {
+        return "http://127.0.0.1:" + server.boundPort();
     }
 
     @Test

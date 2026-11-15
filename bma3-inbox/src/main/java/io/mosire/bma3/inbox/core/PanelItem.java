@@ -13,6 +13,11 @@ import java.util.List;
  *
  * <p>{@code truncatedChars} is the number of rendered characters dropped by
  * {@code inbox.display.maxCharsPerItem}; zero means the window was complete.</p>
+ *
+ * <p>{@code frozenRevision} is the push revision that froze this item, or {@code 0} when the item
+ * was never handed to a push. It is the provable "already pushed" eligibility a guarded ACK needs:
+ * an item that no push ever carried cannot have been shown to the caller, so it must not be
+ * acknowledged through that path.</p>
  */
 public record PanelItem(
         int index,
@@ -26,7 +31,8 @@ public record PanelItem(
         ItemStatus status,
         Instant lastAt,
         boolean continued,
-        int truncatedChars) {
+        int truncatedChars,
+        long frozenRevision) {
 
     public PanelItem {
         source = source == null ? "" : source;
@@ -35,26 +41,27 @@ public record PanelItem(
         status = status == null ? ItemStatus.AVAILABLE : status;
         lastAt = lastAt == null ? Instant.now() : lastAt;
         truncatedChars = Math.max(0, truncatedChars);
+        frozenRevision = Math.max(0L, frozenRevision);
     }
 
-    /** Compatibility constructor: no panel position, no truncation metadata. */
+    /** Compatibility constructor: no panel position, no truncation/push metadata. */
     public PanelItem(String id, String source, String sourceLabel, int priority,
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt) {
         this(0, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, false, 0);
+                status, lastAt, false, 0, 0L);
     }
 
-    /** Compatibility constructor: no truncation metadata. */
+    /** Compatibility constructor: no truncation/push metadata. */
     public PanelItem(int index, String id, String source, String sourceLabel, int priority,
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt, boolean continued) {
         this(index, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, continued, 0);
+                status, lastAt, continued, 0, 0L);
     }
 
     public PanelItem withIndex(int newIndex) {
         return new PanelItem(newIndex, id, source, sourceLabel, priority, entries, totalMessages,
-                omittedMessages, status, lastAt, continued, truncatedChars);
+                omittedMessages, status, lastAt, continued, truncatedChars, frozenRevision);
     }
 }

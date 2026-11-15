@@ -115,6 +115,18 @@ final class QqToolSupport {
         sender.put("card", message.inbound().senderCard());
         sender.put("role", message.inbound().senderRole());
         node.put("text", messageText(message));
+        var delivery = message.delivery();
+        if (delivery != null) {
+            // Outbound-only: inbound rows have no delivery state and must never appear to have one.
+            ObjectNode deliveryNode = node.putObject("delivery");
+            deliveryNode.put("status", delivery.status().name());
+            deliveryNode.put("operationId", delivery.operationId());
+            deliveryNode.put("partIndex", delivery.partIndex());
+            deliveryNode.put("partTotal", delivery.partTotal());
+            if (delivery.errorCode() != null) {
+                deliveryNode.put("errorCode", delivery.errorCode());
+            }
+        }
         if (includeSegments) {
             String lookupId = lookupId(message);
             ArrayNode segments = node.putArray("segments");

@@ -51,7 +51,7 @@ public final class QqReplyTool implements AgentTool {
                     ? value : "";
             String action = "qq_group".equals(source.platform())
                     ? "send_group_msg" : "send_private_msg";
-            return ToolResult.ok(QqSendSupport.sendText(context, source, text, replyTo, action));
+            return QqSendSupport.sendToolResult(context, source, text, replyTo, action);
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);
         }

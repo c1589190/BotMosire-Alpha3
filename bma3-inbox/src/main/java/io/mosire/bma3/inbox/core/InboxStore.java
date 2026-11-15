@@ -40,6 +40,34 @@ public interface InboxStore extends AutoCloseable {
      */
     int purge(java.time.Instant cutoff, int maxItems);
 
+    /**
+     * Opaque, durable identity of the database behind this store.
+     *
+     * <p>It is created on first open and survives ordinary service restarts; a separately created
+     * database has a different identity. A snapshot restore or clone keeps the original identity, so
+     * this value cannot by itself detect a rollback — an operator must rotate it for a restored
+     * copy (see {@link #rotateIdentity()}).</p>
+     */
+    String identity();
+
+    /**
+     * Replaces the durable identity and returns the new value. Only meaningful while no other
+     * process uses the data directory (the app's single-instance lock enforces that); the plugin
+     * must treat a changed identity as a different inbox and stop automatic ACK.
+     *
+     * <p>Fails closed: when the write cannot be confirmed this throws instead of returning a
+     * value, because silently keeping the old identity would let a restored copy inherit pending
+     * ACKs that belong to the original database.</p>
+     */
+    String rotateIdentity();
+
+    /**
+     * Runs {@code work} as one database transaction: every write done through this store commits
+     * together, or is rolled back when {@code work} throws. A store that cannot offer transactional
+     * writes must throw rather than run the work unprotected.
+     */
+    void inTransaction(Runnable work);
+
     /** Monotonic panel revision, persisted across restarts. */
     long panelRevision();
 

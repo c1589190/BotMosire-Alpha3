@@ -24,6 +24,7 @@ public final class QqMessageGetTool implements AgentTool {
     @Override
     public String description() {
         return "按 source + local seq 读取消息板中的一条消息；带 sender、externalMessageId、self，"
+                + "出站记录另带 delivery{status,operationId,partIndex,partTotal,errorCode}；"
                 + "includeSegments=true 可拿到该消息的结构化段（图片 file/url、引用 id 等）。";
     }
 

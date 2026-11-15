@@ -1,5 +1,7 @@
 package io.mosire.bma3.inbox.http;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -8,6 +10,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.mosire.bma3.inbox.core.ControlCommand;
 import io.mosire.bma3.inbox.core.DismissRequest;
 import io.mosire.bma3.inbox.core.DismissResult;
+import io.mosire.bma3.inbox.core.InboxAckRejectedException;
 import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.PluginHeartbeat;
@@ -212,21 +215,104 @@ public final class InboxHttpServer implements AutoCloseable {
     }
 
     /**
-     * Per-item ack over HTTP: {@code {"itemIds":[…]} } or {@code {"indices":[…]} } ack exactly those
-     * items; {@code {"revision":N}} acks everything at or below that revision (what the DSH plugin
-     * sends after injecting a panel). Returns 409 when the caller's revision is stale.
+     * ACK over HTTP.
+     *
+     * <ul>
+     *   <li>{@code {"revision":N,"itemIds":[…],"inboxIdentity":"…"}} — the identity-guarded path
+     *       the DSH plugin uses: every requested item must be proven and the whole batch is
+     *       rejected with 409 when any part cannot be. It is the only accepted way to ACK named
+     *       ids over HTTP.</li>
+     *   <li>{@code {"indices":[…],"revision":N}} — manual panel-index ACK (legacy surface).</li>
+     *   <li>{@code {"revision":N}} or {@code {}} — manual revision-only ACK (legacy surface).</li>
+     * </ul>
+     *
+     * <p>A present but malformed or empty {@code itemIds} field is rejected with 400 and never
+     * falls through to the revision-only path: a broken ID list must not acknowledge items that
+     * were not named.</p>
      */
     private AckResponse handleAck(HttpExchange exchange) throws IOException {
         byte[] body = exchange.getRequestBody().readAllBytes();
-        var node = body.length == 0 ? null : mapper.readTree(body);
-        Long revision = node != null && node.has("revision")
-                && node.path("revision").canConvertToLong()
-                ? node.path("revision").asLong() : null;
+        JsonNode node;
+        if (body.length == 0) {
+            // The only intentional "ack everything" body: an actually empty entity.
+            node = null;
+        } else {
+            try {
+                node = parseCompleteAckBody(body);
+            } catch (IOException malformed) {
+                // Undecodable or over-long JSON must never reach any ACK path (in particular not
+                // the all-ACK). Default readTree would stop at the first root value and accept
+                // "{} {}" as "{}".
+                return new AckResponse(400, rejection("invalid_json",
+                        Map.of("detail", "ACK body 必须是单个完整 JSON 值")));
+            }
+            if (node == null || !node.isObject()) {
+                // A JSON scalar/array/literal null is not an ACK request. Treating it as an empty
+                // object would silently become the legacy all-visible ACK.
+                return new AckResponse(400, rejection("invalid_body",
+                        Map.of("detail", "ACK body 必须是 JSON 对象；只有空 body 表示人工全量 ACK")));
+            }
+        }
         try {
-            if (node != null && node.has("itemIds") && node.path("itemIds").isArray()) {
-                Set<String> ids = new LinkedHashSet<>();
-                node.path("itemIds").forEach(value -> ids.add(value.asText()));
-                return new AckResponse(200, service.ackItems(ids, revision));
+            // Mentioning inboxIdentity at all is a declaration "this is an identity-guarded ACK".
+            // From that point on the request must carry a usable identity, a non-empty item id list
+            // and the original revision; it must never widen into revision-only / all-visible ACK,
+            // even when the identity value itself is null or malformed.
+            boolean guardedAttempt = node != null
+                    && (node.has("itemIds") || node.has("inboxIdentity"));
+            if (guardedAttempt) {
+                JsonNode rawIdentity = node.get("inboxIdentity");
+                if (rawIdentity == null || rawIdentity.isNull()) {
+                    return new AckResponse(409, rejection("inbox_identity_required",
+                            Map.of("inboxIdentity", service.inboxIdentity())));
+                }
+                if (!rawIdentity.isTextual()) {
+                    return new AckResponse(400, rejection("inbox_identity_invalid",
+                            Map.of("detail", "inboxIdentity 必须是数据库身份字符串")));
+                }
+                String identity = rawIdentity.asText("");
+                if (identity.isBlank()) {
+                    return new AckResponse(409, rejection("inbox_identity_required",
+                            Map.of("inboxIdentity", service.inboxIdentity())));
+                }
+                if (!node.has("itemIds")) {
+                    return new AckResponse(400, rejection("item_ids_required",
+                            Map.of("detail",
+                                    "带 inboxIdentity 的 ACK 必须给出非空 itemIds，"
+                                            + "不能退化为 revision-only/全量 ACK")));
+                }
+                List<String> ids = parseItemIds(node.path("itemIds"));
+                if (ids == null) {
+                    return new AckResponse(400, rejection("invalid_item_ids",
+                            Map.of("detail", "itemIds 必须是非空、无重复的非空字符串数组")));
+                }
+                // The original panel revision is part of the proof of "what was seen". A missing,
+                // null, fractional, textual, boolean, negative or overflowing revision must be
+                // rejected; treating it as "absent" would silently turn a guarded ACK into an
+                // unversioned one.
+                JsonNode rawRevision = node.get("revision");
+                if (rawRevision == null || rawRevision.isNull()) {
+                    return new AckResponse(400, rejection("revision_required",
+                            Map.of("detail", "identity-guarded ACK 必须带原始 panel revision")));
+                }
+                Long revision = nonNegativeRevision(rawRevision);
+                if (revision == null) {
+                    return new AckResponse(400, rejection("revision_invalid",
+                            Map.of("detail", "revision 必须是 long 范围内的非负整数")));
+                }
+                return new AckResponse(200,
+                        service.ackItemsGuarded(new LinkedHashSet<>(ids), revision, identity));
+            }
+            // Legacy manual paths: an absent revision stays allowed (revision-only ACK), but a
+            // present one must still be a valid non-negative long instead of being ignored.
+            Long revision = null;
+            JsonNode rawLegacyRevision = node == null ? null : node.get("revision");
+            if (rawLegacyRevision != null) {
+                revision = nonNegativeRevision(rawLegacyRevision);
+                if (revision == null) {
+                    return new AckResponse(400, rejection("revision_invalid",
+                            Map.of("detail", "revision 必须是 long 范围内的非负整数")));
+                }
             }
             if (node != null && node.has("indices") && node.path("indices").isArray()) {
                 List<Integer> indices = new ArrayList<>();
@@ -235,13 +321,133 @@ public final class InboxHttpServer implements AutoCloseable {
             }
             return new AckResponse(200,
                     revision == null ? service.ackPanel() : service.ackPanel(revision));
+        } catch (InboxAckRejectedException rejection) {
+            int status = switch (rejection.reason()) {
+                case REVISION_REQUIRED, REVISION_INVALID -> 400;
+                default -> 409;
+            };
+            return new AckResponse(status, rejectionBody(rejection));
         } catch (IllegalArgumentException failure) {
             String message = failure.getMessage() == null ? "ack_rejected" : failure.getMessage();
             if (message.startsWith("REVISION_CONFLICT")) {
-                return new AckResponse(409, Map.of("error", "revision_conflict"));
+                return new AckResponse(409, rejection("revision_conflict", Map.of()));
             }
             return new AckResponse(400, Map.of("error", "ack_rejected", "detail", message));
         }
+    }
+
+    /**
+     * Parses the ACK body as <b>exactly one</b> complete JSON value and rejects anything after it.
+     *
+     * <p>{@link ObjectMapper#readTree(byte[])} stops at the first root value by default, so
+     * {@code "{} {}"} would be read as {@code "{}"} and silently become the all-visible ACK. This
+     * stricter parse is local to {@code /ack}; other endpoints keep their previous behaviour.
+     * Returns {@code null} when the body holds no JSON value at all (for example whitespace).</p>
+     */
+    private JsonNode parseCompleteAckBody(byte[] body) throws IOException {
+        try (JsonParser parser = mapper.getFactory().createParser(body)) {
+            JsonNode parsed = mapper.readTree(parser);
+            if (parsed != null && parser.nextToken() != null) {
+                throw new IOException("ACK body 在 JSON 值之后还有多余内容");
+            }
+            return parsed;
+        }
+    }
+
+    /**
+     * Accepts only an integral JSON number in {@code [0, Long.MAX_VALUE]}. Text, boolean, null,
+     * fractional numbers (also {@code 7.0}), negatives and values beyond a long are all invalid.
+     */
+    private static Long nonNegativeRevision(JsonNode raw) {
+        if (raw == null || raw.isNull() || !raw.isIntegralNumber()) {
+            return null;
+        }
+        java.math.BigInteger value = raw.bigIntegerValue();
+        if (value.signum() < 0 || value.bitLength() > 63) {
+            return null;
+        }
+        return value.longValue();
+    }
+
+    /** Strict parser; {@code null} means malformed and the caller must reject the whole request. */
+    private static List<String> parseItemIds(JsonNode array) {
+        if (array == null || !array.isArray() || array.isEmpty()) {
+            return null;
+        }
+        List<String> ids = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (JsonNode value : array) {
+            if (!value.isTextual()) {
+                return null;
+            }
+            String id = value.asText().trim();
+            if (id.isEmpty() || !seen.add(id)) {
+                return null;
+            }
+            ids.add(id);
+        }
+        return ids;
+    }
+
+    private static Map<String, Object> rejection(String error, Map<String, Object> extra) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("error", error);
+        payload.putAll(extra);
+        payload.put("ackedItemIds", List.of());
+        payload.put("alreadyAckedItemIds", List.of());
+        if (!payload.containsKey("missingItemIds")) {
+            payload.put("missingItemIds", List.of());
+        }
+        payload.put("complete", false);
+        return payload;
+    }
+
+    private Map<String, Object> rejectionBody(InboxAckRejectedException rejection) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        switch (rejection.reason()) {
+            case INBOX_IDENTITY_MISMATCH -> {
+                payload.put("error", "inbox_identity_mismatch");
+                payload.put("inboxIdentity", service.inboxIdentity());
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", List.of());
+            }
+            case INBOX_IDENTITY_REQUIRED -> {
+                payload.put("error", "inbox_identity_required");
+                payload.put("inboxIdentity", service.inboxIdentity());
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", List.of());
+            }
+            case ITEM_MISSING -> {
+                payload.put("error", "item_missing");
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", rejection.itemIds());
+            }
+            case ITEM_NOT_PUSHED -> {
+                payload.put("error", "item_not_pushed");
+                payload.put("unpushedItemIds", rejection.itemIds());
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", List.of());
+            }
+            case REVISION_REQUIRED -> {
+                payload.put("error", "revision_required");
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", List.of());
+            }
+            case REVISION_INVALID -> {
+                payload.put("error", "revision_invalid");
+                payload.put("ackedItemIds", List.of());
+                payload.put("alreadyAckedItemIds", List.of());
+                payload.put("missingItemIds", List.of());
+            }
+            default -> payload.put("error", "ack_rejected");
+        }
+        payload.put("complete", false);
+        return payload;
     }
 
     /**

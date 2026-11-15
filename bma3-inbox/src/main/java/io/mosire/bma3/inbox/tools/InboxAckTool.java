@@ -57,8 +57,15 @@ public final class InboxAckTool implements AgentTool {
         Long revision = args.get("revision") instanceof Number number
                 ? number.longValue() : null;
         try {
-            List<String> itemIds = strings(args.get("itemIds"));
-            if (!itemIds.isEmpty()) {
+            if (args.containsKey("itemIds")) {
+                // Explicitly supplied itemIds are a promise about *which* items to ack. A null,
+                // empty, wrongly typed or mixed list must fail instead of silently degrading to
+                // indices/revision-only/all-visible, which would ack items the caller never named.
+                List<String> itemIds = strictItemIds(args.get("itemIds"));
+                if (itemIds == null) {
+                    return ToolResult.error("INVALID_ARGUMENT",
+                            "itemIds 必须是非空、无重复的非空字符串数组；不会退化为 revision-only ACK");
+                }
                 return InboxTools.json(service.ackItems(new java.util.LinkedHashSet<>(itemIds),
                         revision));
             }
@@ -84,14 +91,24 @@ public final class InboxAckTool implements AgentTool {
         }
     }
 
-    private static List<String> strings(Object raw) {
+    /**
+     * Strict parse of an explicitly supplied {@code itemIds}. {@code null} means the value is
+     * malformed (not a list, empty, or containing a non-string/blank element); the caller must
+     * reject it rather than fall through to another addressing mode.
+     *
+     * <p>Package-private so this contract — including an explicit {@code null} value, which the
+     * tool-context boundary cannot carry — is directly unit-tested.</p>
+     */
+    static List<String> strictItemIds(Object raw) {
+        if (!(raw instanceof List<?> list) || list.isEmpty()) {
+            return null;
+        }
         List<String> values = new ArrayList<>();
-        if (raw instanceof List<?> list) {
-            for (Object value : list) {
-                if (value instanceof String text && !text.isBlank()) {
-                    values.add(text);
-                }
+        for (Object value : list) {
+            if (!(value instanceof String text) || text.isBlank()) {
+                return null;
             }
+            values.add(text);
         }
         return values;
     }

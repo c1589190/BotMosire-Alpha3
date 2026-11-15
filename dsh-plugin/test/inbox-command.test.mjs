@@ -69,6 +69,11 @@ function makeClient(overrides = {}) {
     lastPushRevision: 42,
     ackedRevision: 42,
     pendingRevision: 0,
+    pendingAck: null,
+    injectionIntent: null,
+    identityMismatch: null,
+    lastSeenIdentity: 'inb_default',
+    blockedReason: null,
     lastMcpStartId: 'mcp-1',
     stateFile: '/home/x/.dsh/storages/bma3-inbox.json',
     config: { baseUrl: 'http://127.0.0.1:46500', tokenSource: 'env:BMA3_INBOX_TOKEN' },
@@ -84,6 +89,19 @@ function makeClient(overrides = {}) {
     start: () => { calls.push(['start']); state.running = true; state.stopped = false },
     stop: () => { calls.push(['stop']); state.running = false; state.stopped = true },
     ack: async () => { calls.push(['ack']) },
+    discard: (confirm) => {
+      calls.push(['discard', confirm])
+      if (confirm !== true) throw new Error('discard requires explicit confirmation')
+      state.pendingAck = null
+      state.injectionIntent = null
+      return '已放弃待处理记录：可能重复注入或遗留未确认条目。'
+    },
+    acceptIdentity: (confirm) => {
+      calls.push(['accept-identity', confirm])
+      if (confirm !== true) throw new Error('accept-identity requires explicit confirmation')
+      state.identityMismatch = null
+      return '已接受新的 inbox 身份。'
+    },
     ...overrides.methods,
   }
   return { client, calls, state }
@@ -200,6 +218,66 @@ test('the command name does not collide with a DSH builtin', async () => {
   // builtins: goal / plan / feedback / compact / permission / export (+ zh aliases)
   const builtin = ['goal', 'plan', 'feedback', 'compact', 'permission', 'export']
   assert.ok(!builtin.includes(definition.name))
+})
+
+// ---- Durable ACK recovery surfaces ----
+
+const PENDING = {
+  inboxId: 'bma3',
+  inboxIdentity: 'inb_7f3a',
+  targetSessionId: 'sess-7f3a2b1c-9999',
+  panelRevision: 42,
+  pushRevision: 40,
+  itemIds: ['itm-1', 'itm-2'],
+  createdAt: '2026-11-15T00:00:00.000Z',
+  status: 'pending',
+  attempts: 2,
+  retryable: true,
+  lastError: 'ack_http_503',
+  lastAttemptAt: '2026-11-15T00:00:01.000Z',
+}
+
+test('/inbox status exposes a read-only pending ACK summary and the discard warning', async () => {
+  const { result } = await run('status', { status: { pendingAck: PENDING } })
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /待 ACK:/u)
+  assert.match(result.text, /rev=42 push=40 items=2/u)
+  assert.match(result.text, /inb_7f3a/u)
+  assert.match(result.text, /ack_http_503/u)
+  assert.match(result.text, /discard confirm/u)
+  assert.match(result.text, /重复注入|遗留未确认/u)
+})
+
+test('/inbox discard without confirm is refused and warns about duplicates', async () => {
+  const { result, calls } = await run('discard', { status: { pendingAck: PENDING } })
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /discard confirm/u)
+  assert.match(result.text, /重复注入|未确认/u)
+  assert.equal(calls.length, 0, 'no discard without explicit confirmation')
+})
+
+test('/inbox discard confirm invokes the explicit confirmed action', async () => {
+  const { result, calls } = await run('discard confirm', { status: { pendingAck: PENDING } })
+  assert.equal(result.kind, 'success')
+  assert.deepEqual(calls[0], ['discard', true])
+  assert.match(result.text, /已放弃/u)
+  assert.match(result.text, /重复/u)
+})
+
+test('/inbox accept-identity requires confirm and accepts the change explicitly', async () => {
+  const refused = await run('accept-identity', {
+    status: { identityMismatch: { previous: 'inb_old', seen: 'inb_new' } },
+  })
+  assert.equal(refused.result.kind, 'error')
+  assert.match(refused.result.text, /accept-identity confirm/u)
+  assert.equal(refused.calls.length, 0)
+
+  const accepted = await run('accept-identity confirm', {
+    status: { identityMismatch: { previous: 'inb_old', seen: 'inb_new' } },
+  })
+  assert.equal(accepted.result.kind, 'success')
+  assert.deepEqual(accepted.calls[0], ['accept-identity', true])
+  assert.match(accepted.result.text, /已接受/u)
 })
 
 // ---- A8 ----

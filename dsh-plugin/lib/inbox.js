@@ -1,10 +1,17 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import {
+  closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync,
+  unlinkSync, writeFileSync,
+} from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { homedir, hostname } from 'node:os'
 import { dirname } from 'node:path'
 
 const WAKE_REVISION_HEADER = '[INBOX_PANEL]'
 const ACTIVE_MARKER = '（消息更新活跃）'
-const STATE_VERSION = 1
+const STATE_VERSION = 2
+const LEGACY_STATE_VERSION = 1
+const DEFAULT_ACK_RETRY_BASE_MS = 500
+const DEFAULT_ACK_RETRY_MAX_MS = 30000
 
 /**
  * Read the jar-owned token file (D-063). The plugin never generates or stores a token: BMA3 writes
@@ -49,24 +56,451 @@ function tokenSource(config) {
   return readInboxToken(config) === undefined ? 'env-file:missing' : 'env-file'
 }
 
-function endpoint(config, suffix = '') {
-  return `${String(config.baseUrl ?? '').replace(/\/$/, '')}`
-    + `/v1/inboxes/${encodeURIComponent(config.inboxId ?? 'bma3')}${suffix}`
-}
-
 function defaultStateFile(config) {
   return config.stateFile ?? `${homedir()}/.dsh/storages/bma3-inbox.json`
 }
 
-function loadPersisted(config) {
-  if (config.persistState === false) return {}
+/**
+ * The configured path stays the *v1* path. Durable ACK evidence lives in a deterministic v2
+ * sibling so an old plugin binary that keeps writing `state.json` cannot erase the v2 record.
+ * The lock is a sibling of the v2 snapshot (never the v1 file).
+ */
+export function inboxStatePaths(config = {}) {
+  const configured = String(defaultStateFile(config))
+  const v2 = configured.endsWith('.json')
+    ? `${configured.slice(0, -'.json'.length)}.v2.json`
+    : `${configured}.v2`
+  return { configured, v2, lock: `${v2}.lock` }
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function isRevision(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
+function isPositiveRevision(value) {
+  return Number.isSafeInteger(value) && value > 0
+}
+
+const TARGET_FINGERPRINT_VERSION = 1
+const TARGET_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/
+
+/**
+ * Canonical target binding. A URL that carries userinfo/query/fragment is rejected rather than
+ * silently normalized: the endpoint builder only appends a path, so those components could route
+ * to a different real endpoint. Only the clean protocol/host/port/path is hashed; the raw baseUrl
+ * is never persisted or logged.
+ */
+function canonicalTarget(baseUrl) {
+  const raw = String(baseUrl ?? '').trim()
+  if (raw === '') return { error: 'config_target_unsupported' }
+  let url
   try {
-    const raw = readFileSync(defaultStateFile(config), 'utf8')
-    const parsed = JSON.parse(raw)
-    return parsed && parsed.version === STATE_VERSION ? parsed : {}
+    url = new URL(raw)
   } catch {
-    return {}
+    return { error: 'config_target_unsupported' }
   }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { error: 'config_target_unsupported' }
+  }
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
+    return { error: 'config_target_unsupported' }
+  }
+  const path = url.pathname.replace(/\/+$/u, '')
+  const canonical = `${url.protocol}//${url.host}${path}`
+  return {
+    baseUrl: canonical,
+    fingerprint: createHash('sha256').update(canonical).digest('hex'),
+    version: TARGET_FINGERPRINT_VERSION,
+  }
+}
+
+function validIds(value) {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.every(isNonEmptyString)
+    && new Set(value).size === value.length
+}
+
+function validBatchShape(batch) {
+  return isPlainObject(batch)
+    && isNonEmptyString(batch.inboxId)
+    && isNonEmptyString(batch.inboxIdentity)
+    && (batch.targetSessionId === null || isNonEmptyString(batch.targetSessionId))
+    && isRevision(batch.panelRevision)
+    && isPositiveRevision(batch.pushRevision)
+    && validIds(batch.itemIds)
+    && (batch.createdAt === undefined || typeof batch.createdAt === 'string')
+    && (batch.sourceTargetFingerprint === undefined
+      || batch.sourceTargetFingerprint === null
+      || (typeof batch.sourceTargetFingerprint === 'string'
+        && TARGET_FINGERPRINT_PATTERN.test(batch.sourceTargetFingerprint)))
+    && (batch.sourceTargetFingerprintVersion === undefined
+      || batch.sourceTargetFingerprintVersion === null
+      || batch.sourceTargetFingerprintVersion === TARGET_FINGERPRINT_VERSION)
+}
+
+function validPendingAck(pending) {
+  return validBatchShape(pending)
+    && (pending.status === 'pending' || pending.status === 'uncertain')
+    && Number.isInteger(pending.attempts) && pending.attempts >= 0
+    && (pending.lastError === null || typeof pending.lastError === 'string')
+    && typeof pending.retryable === 'boolean'
+    && (pending.lastAttemptAt === undefined || pending.lastAttemptAt === null
+      || typeof pending.lastAttemptAt === 'string')
+}
+
+function validDeferredPush(value) {
+  return isPlainObject(value)
+    && isRevision(Number(value.revision))
+    && isRevision(Number(value.pushRevision))
+    && isNonEmptyString(value.reason)
+    && typeof value.at === 'string'
+}
+
+function validPendingPush(value) {
+  return isPlainObject(value)
+    && isNonEmptyString(value.inboxId)
+    && isNonEmptyString(value.inboxIdentity)
+    && typeof value.sourceTargetFingerprint === 'string'
+    && TARGET_FINGERPRINT_PATTERN.test(value.sourceTargetFingerprint)
+    && value.sourceTargetFingerprintVersion === TARGET_FINGERPRINT_VERSION
+    && (value.targetSessionId === null || isNonEmptyString(value.targetSessionId))
+    && isRevision(value.panelRevision)
+    && isPositiveRevision(value.pushRevision)
+    && validIds(value.itemIds)
+    && typeof value.createdAt === 'string'
+}
+
+function samePendingPush(left, right) {
+  return left.inboxId === right.inboxId
+    && left.inboxIdentity === right.inboxIdentity
+    && left.sourceTargetFingerprint === right.sourceTargetFingerprint
+    && left.sourceTargetFingerprintVersion === right.sourceTargetFingerprintVersion
+    && left.targetSessionId === right.targetSessionId
+    && left.panelRevision === right.panelRevision
+    && left.pushRevision === right.pushRevision
+    && left.itemIds.length === right.itemIds.length
+    && left.itemIds.every((id, index) => id === right.itemIds[index])
+}
+
+function validFreshVerification(value) {
+  return isPlainObject(value)
+    && typeof value.required === 'boolean'
+    && Number.isInteger(value.attempts) && value.attempts >= 0
+    && (value.lastError === null || value.lastError === undefined
+      || typeof value.lastError === 'string')
+    && (value.lastAttemptAt === null || value.lastAttemptAt === undefined
+      || typeof value.lastAttemptAt === 'string')
+    && (value.nextAt === null || value.nextAt === undefined
+      || Number.isFinite(value.nextAt))
+    && (value.at === undefined || typeof value.at === 'string')
+    && (value.inboxId === undefined || value.inboxId === null || isNonEmptyString(value.inboxId))
+    && (value.sourceTargetFingerprint === undefined || value.sourceTargetFingerprint === null
+      || (typeof value.sourceTargetFingerprint === 'string'
+        && TARGET_FINGERPRINT_PATTERN.test(value.sourceTargetFingerprint)))
+    && (value.sourceTargetFingerprintVersion === undefined
+      || value.sourceTargetFingerprintVersion === null
+      || value.sourceTargetFingerprintVersion === TARGET_FINGERPRINT_VERSION)
+}
+
+function validV2(snapshot) {
+  if (!isPlainObject(snapshot) || snapshot.version !== STATE_VERSION) return false
+  if (!(snapshot.targetSessionId === null || snapshot.targetSessionId === undefined
+    || isNonEmptyString(snapshot.targetSessionId))) return false
+  if (typeof snapshot.paused !== 'boolean' || typeof snapshot.stopped !== 'boolean') return false
+  for (const field of ['injectedPushRevision', 'lastPushRevision', 'ackedRevision']) {
+    if (!isRevision(snapshot[field])) return false
+  }
+  if (!(snapshot.lastSeenIdentity === null || snapshot.lastSeenIdentity === undefined
+    || isNonEmptyString(snapshot.lastSeenIdentity))) return false
+  if (snapshot.pendingAck !== null && snapshot.pendingAck !== undefined
+    && !validPendingAck(snapshot.pendingAck)) return false
+  if (snapshot.injectionIntent !== null && snapshot.injectionIntent !== undefined
+    && !validBatchShape(snapshot.injectionIntent)) return false
+  if (snapshot.identityMismatch !== null && snapshot.identityMismatch !== undefined) {
+    if (!isPlainObject(snapshot.identityMismatch)
+      || !isNonEmptyString(snapshot.identityMismatch.seen)) return false
+  }
+  if (snapshot.deferredPush !== null && snapshot.deferredPush !== undefined
+    && !validDeferredPush(snapshot.deferredPush)) return false
+  if (snapshot.freshVerification !== null && snapshot.freshVerification !== undefined
+    && !validFreshVerification(snapshot.freshVerification)) return false
+  if (snapshot.pendingPush !== null && snapshot.pendingPush !== undefined
+    && !validPendingPush(snapshot.pendingPush)) return false
+  return true
+}
+
+function validV1(snapshot) {
+  return isPlainObject(snapshot)
+    && snapshot.version === LEGACY_STATE_VERSION
+    && (snapshot.targetSessionId === null || snapshot.targetSessionId === undefined
+      || typeof snapshot.targetSessionId === 'string')
+    && (snapshot.injectedPushRevision === undefined
+      || isRevision(Number(snapshot.injectedPushRevision)))
+    && (snapshot.lastPushRevision === undefined
+      || isRevision(Number(snapshot.lastPushRevision)))
+    && (snapshot.ackedRevision === undefined
+      || isRevision(Number(snapshot.ackedRevision)))
+}
+
+function migrateV1(snapshot) {
+  return {
+    version: STATE_VERSION,
+    targetSessionId: snapshot.targetSessionId ?? null,
+    paused: Boolean(snapshot.paused),
+    stopped: Boolean(snapshot.stopped),
+    injectedPushRevision: Number(snapshot.injectedPushRevision ?? 0),
+    lastPushRevision: Number(snapshot.lastPushRevision ?? 0),
+    ackedRevision: Number(snapshot.ackedRevision ?? 0),
+    lastMcpStartId: String(snapshot.lastMcpStartId ?? ''),
+    appliedControlId: String(snapshot.appliedControlId ?? ''),
+    restoredAt: snapshot.restoredAt ?? null,
+    lastSeenIdentity: null,
+    pendingAck: null,
+    injectionIntent: null,
+    identityMismatch: null,
+    deferredPush: null,
+    freshVerification: null,
+    pendingPush: null,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function readStateFile(path) {
+  let raw
+  try {
+    raw = readFileSync(path, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { missing: true }
+    return { error: 'state_unreadable' }
+  }
+  try {
+    return { value: JSON.parse(raw) }
+  } catch {
+    return { error: 'state_corrupt' }
+  }
+}
+
+/**
+ * Atomically create the per-state-file lock. `wx` is the actual mutual-exclusion primitive:
+ * a second writer loses the race and fails closed; a crash leaves the file behind and it is
+ * never stolen automatically (the caller must verify no old instance remains and remove it).
+ */
+function acquireStateLock(path) {
+  mkdirSync(dirname(path), { recursive: true })
+  let fd
+  try {
+    fd = openSync(path, 'wx', 0o600)
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      const held = new Error('state_lock_held')
+      held.code = 'state_lock_held'
+      throw held
+    }
+    const unavailable = new Error('state_lock_unavailable')
+    unavailable.code = 'state_lock_unavailable'
+    throw unavailable
+  }
+  try {
+    const token = randomUUID()
+    const owner = JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      startedAt: new Date().toISOString(),
+      token,
+      stateFile: path,
+    })
+    writeFileSync(fd, owner)
+    fsyncSync(fd)
+    return { fd, path, token, owner }
+  } catch (error) {
+    try { closeSync(fd) } catch { /* already closed */ }
+    try { unlinkSync(path) } catch { /* best effort */ }
+    const ambiguous = new Error('state_lock_ambiguous')
+    ambiguous.code = 'state_lock_ambiguous'
+    throw ambiguous
+  }
+}
+
+function readLockToken(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))?.token ?? null
+  } catch {
+    return null
+  }
+}
+
+/** True only while the path still names the inode and token this client created. */
+function lockStillOurs(lock) {
+  if (!lock) return false
+  try {
+    const pathStat = statSync(lock.path)
+    const fdStat = fstatSync(lock.fd)
+    return pathStat.dev === fdStat.dev
+      && pathStat.ino === fdStat.ino
+      && readLockToken(lock.path) === lock.token
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Only remove the lock when the path still contains OUR token. A replaced lock belongs to a
+ * different writer; deleting it would break mutual exclusion for the new owner.
+ */
+function releaseStateLock(lock) {
+  if (!lockStillOurs(lock)) {
+    try { closeSync(lock.fd) } catch { /* already closed */ }
+    return readLockToken(lock.path) === null ? 'state_lock_lost' : 'state_lock_replaced'
+  }
+  try {
+    unlinkSync(lock.path)
+  } catch (error) {
+    try { closeSync(lock.fd) } catch { /* already closed */ }
+    if (error?.code !== 'ENOENT') return 'state_lock_release_failed'
+    return null
+  }
+  try { closeSync(lock.fd) } catch { /* already closed */ }
+  return null
+}
+
+/** temp file with mode 0600 + fsync + rename; the previous snapshot stays intact on failure. */
+function writeSnapshot(path, snapshot) {
+  mkdirSync(dirname(path), { recursive: true })
+  const serialized = JSON.stringify(snapshot)
+  const temporary = `${path}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`
+  let fd = null
+  try {
+    fd = openSync(temporary, 'w', 0o600)
+    writeFileSync(fd, serialized)
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = null
+    renameSync(temporary, path)
+    try {
+      const directory = openSync(dirname(path), 'r')
+      try { fsyncSync(directory) } finally { closeSync(directory) }
+    } catch { /* directory fsync is best effort on every platform */ }
+  } catch (error) {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* already closed */ }
+    }
+    try { unlinkSync(temporary) } catch { /* may not exist */ }
+    throw error
+  }
+}
+
+function panelEnvelope(panel) {
+  const revision = Number(panel?.revision)
+  const push = Number(panel?.pushRevision ?? revision)
+  const items = Array.isArray(panel?.items) ? panel.items : []
+  if (!isRevision(revision) || !isRevision(push)) {
+    return { error: 'panel_revision_invalid' }
+  }
+  return { revision, push, items, empty: items.length === 0 }
+}
+
+function batchFromPanel(panel, targetSessionId, inboxId, targetFingerprint = null) {
+  const revision = Number(panel?.revision)
+  const push = Number(panel?.pushRevision ?? revision)
+  const items = Array.isArray(panel?.items) ? panel.items : []
+  const itemIds = items.map((item) => item?.id)
+  if (!isRevision(revision)) return { error: 'invalid panel revision' }
+  if (!isRevision(push)) return { error: 'invalid push revision' }
+  if (items.length === 0) return { error: 'empty panel' }
+  if (!isPositiveRevision(push)) return { error: 'panel has no push revision' }
+  if (!itemIds.every(isNonEmptyString)) return { error: 'panel item id is missing or empty' }
+  if (new Set(itemIds).size !== itemIds.length) return { error: 'duplicate panel item id' }
+  if (!items.every((item) => isPositiveRevision(Number(item?.frozenRevision)))) {
+    return { error: 'panel item is not demonstrably frozen for a push' }
+  }
+  if (!items.every((item) => Number(item.frozenRevision) === push)) {
+    return { error: 'panel batch mixes frozen revisions' }
+  }
+  return {
+    batch: {
+      inboxId: String(inboxId || 'bma3'),
+      inboxIdentity: String(panel.inboxIdentity).trim(),
+      targetSessionId,
+      panelRevision: revision,
+      pushRevision: push,
+      itemIds: [...itemIds],
+      createdAt: new Date().toISOString(),
+      sourceTargetFingerprint: targetFingerprint,
+      sourceTargetFingerprintVersion: targetFingerprint ? TARGET_FINGERPRINT_VERSION : null,
+    },
+    revision,
+    push,
+    items,
+  }
+}
+
+/** A live GET snapshot may only be used when every displayed item belongs to one newer push. */
+function provableFreshPush(panel, targetFingerprint = null) {
+  const shape = batchFromPanel(panel, null, panel?.inboxId, targetFingerprint)
+  if (shape.error) return { ok: false, reason: shape.error }
+  const { batch, items } = shape
+  if (!items.every((item) => Number(item.frozenRevision) === batch.pushRevision)) {
+    return { ok: false, reason: 'fresh panel mixes frozen revisions (cannot preserve one batch)' }
+  }
+  return { ok: true, batch: { ...batch, targetSessionId: null } }
+}
+
+function ackProof(body, pending) {
+  if (!isPlainObject(body)) return { ok: false, reason: 'ACK response is not an object' }
+  if (body.complete !== true) return { ok: false, reason: 'ACK response did not confirm complete=true' }
+  if (!isNonEmptyString(body.inboxIdentity) || body.inboxIdentity !== pending.inboxIdentity) {
+    return { ok: false, reason: 'ACK response identity echo does not match the stored identity' }
+  }
+  const arrays = [body.ackedItemIds, body.alreadyAckedItemIds, body.missingItemIds]
+  if (!arrays.every((value) => Array.isArray(value) && value.every(isNonEmptyString))) {
+    return { ok: false, reason: 'ACK response is missing per-item proof arrays' }
+  }
+  const [acked, already, missing] = arrays
+  if (new Set(acked).size !== acked.length || new Set(already).size !== already.length) {
+    return { ok: false, reason: 'ACK response contains duplicate item ids' }
+  }
+  if (missing.length > 0) return { ok: false, reason: 'ACK response reports missing item ids' }
+  if (acked.some((id) => already.includes(id))) {
+    return { ok: false, reason: 'ACK response reuses an id in both proof arrays' }
+  }
+  const requested = new Set(pending.itemIds)
+  const union = new Set([...acked, ...already])
+  if (union.size !== requested.size || [...requested].some((id) => !union.has(id))) {
+    return { ok: false, reason: 'ACK response proof does not cover exactly the requested item ids' }
+  }
+  return { ok: true }
+}
+
+function retryableStatus(status) {
+  return Number.isInteger(status) && (status >= 500 || status === 408 || status === 429)
+}
+
+/** Only known protocol codes may appear in durable/status text; anything else is classified. */
+const SAFE_ACK_ERROR_CODES = new Set([
+  'inbox_identity_mismatch',
+  'inbox_identity_required',
+  'inbox_identity_invalid',
+  'item_missing',
+  'item_not_pushed',
+  'revision_conflict',
+  'invalid_item_ids',
+  'item_ids_required',
+])
+
+function safeAckHttpCode(status, body) {
+  const code = typeof body?.error === 'string' ? body.error : ''
+  return SAFE_ACK_ERROR_CODES.has(code)
+    ? `ack_http_${status}_${code}`
+    : `ack_http_${status}`
 }
 
 /**
@@ -152,46 +586,116 @@ export class SseParser {
   }
 }
 
-function createState(config) {
-  const persisted = loadPersisted(config)
-  return {
+/**
+ * One inbox = one SSE stream. Source items are just panel entries; there is no per-source
+ * subscription.
+ *
+ * <p>0.0.7 adds a durable ACK state machine: an injection intent is persisted *before*
+ * `followup`, a confirmed followup atomically becomes `pendingAck` plus the injection watermark,
+ * and only a complete per-item ACK proof removes that record. If any durable step is uncertain
+ * the client fails closed instead of repeating a cross-system side effect.</p>
+ */
+export function createInboxClient(ctx, config = {}) {
+  const fetchImpl = config.fetchImpl ?? fetch
+  const paths = inboxStatePaths(config)
+  const stateFile = paths.v2
+  const persistenceEnabled = config.persistState !== false
+
+  let lock = null
+  let lockError = null
+  let stateError = null
+  let loaded = null
+  if (persistenceEnabled) {
+    try {
+      lock = acquireStateLock(paths.lock)
+    } catch (error) {
+      lockError = error?.code === 'state_lock_held'
+        ? 'state_lock_held'
+        : (error?.code === 'state_lock_ambiguous' ? 'state_lock_ambiguous' : 'state_lock_unavailable')
+    }
+    if (!lockError) {
+      const v2 = readStateFile(paths.v2)
+      if (v2.missing) {
+        const v1 = readStateFile(paths.configured)
+        if (v1.missing) {
+          loaded = null
+        } else if (v1.error) {
+          stateError = `v1 state ${v1.error}: ${paths.configured}`
+        } else if (!validV1(v1.value)) {
+          stateError = `v1 state unsupported/corrupt: ${paths.configured}`
+        } else {
+          loaded = migrateV1(v1.value)
+        }
+      } else if (v2.error) {
+        stateError = `v2 state ${v2.error}: ${paths.v2}`
+      } else if (!validV2(v2.value)) {
+        stateError = `v2 state unsupported/corrupt: ${paths.v2}`
+      } else {
+        loaded = v2.value
+      }
+    }
+  }
+
+  const initial = loaded ?? {}
+  const state = {
     connection: 'idle',
     lastRevision: 0,
     injectedRevision: 0,
-    injectedPushRevision: Number(persisted.injectedPushRevision ?? 0),
-    ackedRevision: Number(persisted.ackedRevision ?? 0),
-    lastPushRevision: Number(persisted.lastPushRevision ?? 0),
+    injectedPushRevision: Number(initial.injectedPushRevision ?? 0),
+    ackedRevision: Number(initial.ackedRevision ?? 0),
+    lastPushRevision: Number(initial.lastPushRevision ?? 0),
     pendingRevision: 0,
     lastEventAt: null,
     lastError: null,
-    targetSessionId: persisted.targetSessionId
+    targetSessionId: initial.targetSessionId
       ?? (config.sessionId ? String(config.sessionId) : null),
-    paused: Boolean(persisted.paused),
-    stopped: Boolean(persisted.stopped),
-    lastMcpStartId: String(persisted.lastMcpStartId ?? ''),
-    appliedControlId: String(persisted.appliedControlId ?? ''),
-    restoredAt: persisted.restoredAt ?? null,
+    paused: Boolean(initial.paused),
+    stopped: Boolean(initial.stopped),
+    lastMcpStartId: String(initial.lastMcpStartId ?? ''),
+    appliedControlId: String(initial.appliedControlId ?? ''),
+    restoredAt: initial.restoredAt ?? null,
+    // Durable database identity and recovery records (never message body or credentials).
+    lastSeenIdentity: initial.lastSeenIdentity ?? null,
+    pendingAck: initial.pendingAck ?? null,
+    injectionIntent: initial.injectionIntent ?? null,
+    identityMismatch: initial.identityMismatch ?? null,
+    deferredPush: initial.deferredPush ?? null,
+    freshVerification: initial.freshVerification ?? null,
+    pendingPush: initial.pendingPush ?? null,
+    // Runtime-only diagnostics.
+    lockError,
+    stateError,
+    persistenceEnabled,
+    persistenceError: null,
+    hasSnapshot: Boolean(loaded),
+    serverMissingIdentity: false,
+    ackIdentityVerified: false,
+    recentAcked: [],
+    targetError: canonicalTarget(config.baseUrl).error ?? null,
   }
-}
 
-/**
- * One inbox = one SSE stream. Source items are just panel entries; there is no per-source
- * subscription. The panel is a work signal; after a successful followup we advance the
- * server read cursor so the same panel is not injected repeatedly.
- *
- * <p>0.0.4 adds two things the 0.0.3 client lacked: a persisted binding/push watermark (so a
- * DSH restart resumes instead of waiting for a human) and a heartbeat/control channel (so the
- * BMA3 watchdog can ask the plugin to restore a session or remind the agent to reload MCP).</p>
- */
-export function createInboxClient(ctx, config = {}) {
-  const state = createState(config)
-  const fetchImpl = config.fetchImpl ?? fetch
-  const stateFile = defaultStateFile(config)
   let lastPersisted = ''
-  // `stopped` is the engine; `state.stopped` is the persisted user intent (stop/start actions).
   let stopped = true
   let abort = null
   let pending = null
+  let pendingSource = null
+  let pendingPushMismatchKey = null
+  let pendingPushMismatchCode = null
+  // Set only by an explicit `/inbox ack` (or tool ack) while a pendingPush is blocked. It lets
+  // that ONE manual recovery adopt the processId of the currently answering server as the new
+  // instance baseline, then clears immediately. It never loosens the exact identity/target/
+  // session/revision/IDs/frozen match below, and it cannot detect a same-database clone/rollback
+  // (a copied DB served by a new process is indistinguishable from a legitimate restart).
+  let pendingPushRebaseline = false
+  // Runtime-only report of what the last `ack` call actually did, so the command/tool surfaces
+  // never claim a retry that was stopped/in-flight/unpersistable.
+  let lastAckResult = null
+  // Instance proofs are runtime-only: /runtime processId changes on every server start, so it is
+  // never persisted as a durable identity. It only proves "the same server process that produced
+  // this panel/ACK is still answering" while this plugin process has that evidence in memory.
+  let connectionProcessId = null
+  let pendingAckProcessId = null
+  let pendingPushProcessId = null
   let retryTimer = null
   let pumpTimer = null
   let heartbeatTimer = null
@@ -201,38 +705,123 @@ export function createInboxClient(ctx, config = {}) {
   let retryMs = Math.max(200, Number(config.reconnectMinMs ?? 1000))
   const pumpMs = Math.max(100, Number(config.pumpMs ?? 500))
   const heartbeatMs = Math.max(1000, Number(config.heartbeatMs ?? 15000))
+  let ackTimer = null
+  let ackInFlight = false
+  let ackNextAt = 0
+  let ackRetryRequested = false
+  let ackRetryDelay = 0
+  let ackAbort = null
+  let ackCancelEpoch = 0
+  let ackSuspended = false
+  let disposed = false
+  let generation = 0
+  let controlEpoch = 0
+  let connectionEpoch = 0
+  let verifying = false
+  let verifyTimer = null
+  let verifyNextAt = 0
+  let verifyAbort = null
+  let identityAbort = null
+  let runtimeAbort = null
+  let verifyRetryRequested = false
+  let verifyRetryDelay = 0
+
+  const targetContext = () => {
+    const target = canonicalTarget(config.baseUrl)
+    state.targetError = target.error ?? null
+    return target
+  }
+
+  const requestUrl = (inboxId, suffix = '') => {
+    const target = targetContext()
+    if (target.error) return null
+    return `${target.baseUrl}/v1/inboxes/${encodeURIComponent(inboxId ?? config.inboxId ?? 'bma3')}${suffix}`
+  }
+
+  const buildSnapshot = () => ({
+    version: STATE_VERSION,
+    targetSessionId: state.targetSessionId,
+    paused: state.paused,
+    // Persist the USER INTENT, never the runtime engine flag: teardown calls stop(false),
+    // which flips the closure `stopped` but must not look like "the user pressed stop" on the
+    // next load — that silently disabled the inbox after every plugin reload.
+    stopped: state.stopped,
+    injectedPushRevision: state.injectedPushRevision,
+    lastPushRevision: state.lastPushRevision,
+    ackedRevision: state.ackedRevision,
+    lastMcpStartId: state.lastMcpStartId,
+    appliedControlId: state.appliedControlId,
+    restoredAt: state.restoredAt,
+    lastSeenIdentity: state.lastSeenIdentity,
+    pendingAck: state.pendingAck,
+    injectionIntent: state.injectionIntent,
+    identityMismatch: state.identityMismatch,
+    deferredPush: state.deferredPush,
+    freshVerification: state.freshVerification,
+    pendingPush: state.pendingPush,
+    updatedAt: new Date().toISOString(),
+  })
 
   const persist = () => {
-    if (config.persistState === false) return
-    const snapshot = {
-      version: STATE_VERSION,
-      targetSessionId: state.targetSessionId,
-      paused: state.paused,
-      // Persist the USER INTENT, never the runtime engine flag: teardown calls stop(false),
-      // which flips the closure `stopped` but must not look like "the user pressed stop" on the
-      // next load — that silently disabled the inbox after every plugin reload.
-      stopped: state.stopped,
-      injectedPushRevision: state.injectedPushRevision,
-      lastPushRevision: state.lastPushRevision,
-      ackedRevision: state.ackedRevision,
-      lastMcpStartId: state.lastMcpStartId,
-      appliedControlId: state.appliedControlId,
-      restoredAt: state.restoredAt,
-      updatedAt: new Date().toISOString(),
+    if (disposed) return false
+    if (!persistenceEnabled) return false
+    if (state.lockError || state.stateError) return false
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      state.lastError = 'state_lock_lost'
+      return false
     }
+    const snapshot = buildSnapshot()
     const serialized = JSON.stringify(snapshot)
-    if (serialized === lastPersisted) return
+    if (serialized === lastPersisted) return true
     try {
-      mkdirSync(dirname(stateFile), { recursive: true })
-      const temporary = `${stateFile}.tmp`
-      writeFileSync(temporary, serialized, { mode: 0o600 })
-      renameSync(temporary, stateFile)
+      writeSnapshot(stateFile, snapshot)
       lastPersisted = serialized
+      state.hasSnapshot = true
+      state.persistenceError = null
+      return true
     } catch (error) {
-      state.lastError = `state: ${error?.message ?? error}`
+      state.persistenceError = 'state_write_failed'
+      state.lastError = 'state_write_failed'
+      return false
     }
   }
-  persist()
+
+  const blockedReason = () => {
+    const reasons = []
+    if (!persistenceEnabled) {
+      reasons.push('persistence disabled: inbox injection and ACK are disabled')
+    }
+    if (state.lockError) reasons.push(state.lockError)
+    if (state.stateError) reasons.push(state.stateError)
+    if (persistenceEnabled && !state.hasSnapshot && !state.lockError && !state.stateError) {
+      reasons.push('state snapshot could not be persisted; refusing to inject or ACK')
+    }
+    if (state.injectionIntent) {
+      reasons.push('injection intent is uncertain (followup may have happened); manual discard required')
+    }
+    if (state.identityMismatch) {
+      reasons.push(`inbox identity changed from ${state.identityMismatch.previous ?? 'unknown'}`
+        + ` to ${state.identityMismatch.seen}; manual accept required`)
+    }
+    if (state.serverMissingIdentity) {
+      reasons.push('server panel has no inboxIdentity (old server): no followup and no ACK')
+    }
+    const currentTarget = canonicalTarget(config.baseUrl)
+    if (currentTarget.error) reasons.push(currentTarget.error)
+    return reasons.length > 0 ? reasons.join('; ') : null
+  }
+
+  // The first durable write is the initial snapshot (or the v1 -> v2 migration). A failure here
+  // means there is no durable state at all, so the client must not inject.
+  if (persistenceEnabled && !state.lockError && !state.stateError) {
+    if (!persist()) state.hasSnapshot = false
+  }
+
+  const clearAckTimer = () => {
+    if (ackTimer) clearTimeout(ackTimer)
+    ackTimer = null
+  }
 
   const status = () => ({
     ...state,
@@ -241,10 +830,21 @@ export function createInboxClient(ctx, config = {}) {
     running: !stopped,
     stopped: state.stopped,
     agentLive: Boolean(findAgent()),
+    lastAckResult,
     stateFile,
-    // 配置只报来源，不回显 token 值或文件路径。
+    stateFileV1: paths.configured,
+    lockFile: paths.lock,
+    blockedReason: blockedReason(),
+    targetError: canonicalTarget(config.baseUrl).error ?? null,
+    persistence: {
+      enabled: persistenceEnabled,
+      lockHeld: lockStillOurs(lock),
+      error: state.lockError ?? state.stateError ?? state.persistenceError,
+    },
+    // 配置只报来源，不回显 token 值或文件路径中的凭据。
     config: {
-      baseUrl: config.baseUrl ?? null,
+      baseUrl: canonicalTarget(config.baseUrl).error ? null : canonicalTarget(config.baseUrl).baseUrl,
+      targetError: canonicalTarget(config.baseUrl).error ?? null,
       inboxId: config.inboxId ?? 'bma3',
       autoStart: config.autoStart !== false,
       tokenSource: tokenSource(config),
@@ -264,6 +864,9 @@ export function createInboxClient(ctx, config = {}) {
 
   /** Resume a persisted session when it is not live yet (DSH restart). */
   const ensureAgent = async (sessionId) => {
+    if (disposed) return null
+    const operation = generation
+    const controlAtStart = controlEpoch
     const agents = ctx?.agents
     if (!agents || !sessionId) return null
     const live = agents.get?.(sessionId)
@@ -273,6 +876,10 @@ export function createInboxClient(ctx, config = {}) {
     resuming = (async () => {
       try {
         const handle = await agents.resume({ resumeSessionId: sessionId })
+        if (disposed || generation !== operation || controlEpoch !== controlAtStart) {
+          Promise.resolve(handle?.dispose?.()).catch(() => {})
+          return null
+        }
         if (handle) {
           resumeHandle = handle
           ctx?.effect?.(() => () => {
@@ -281,7 +888,7 @@ export function createInboxClient(ctx, config = {}) {
         }
         return handle?.agent ?? agents.get?.(sessionId) ?? null
       } catch (error) {
-        state.lastError = `resume: ${error?.message ?? error}`
+        if (!disposed && generation === operation) state.lastError = 'resume_failed'
         return null
       } finally {
         resuming = null
@@ -291,7 +898,8 @@ export function createInboxClient(ctx, config = {}) {
   }
 
   const remind = async (text) => {
-    if (!text) return true
+    if (!text || disposed || (persistenceEnabled && !lockStillOurs(lock))) return true
+    const operation = generation
     const agent = findAgent()
     if (!agent || agent.status !== 'idle' || typeof agent.followup !== 'function') {
       return false
@@ -303,53 +911,130 @@ export function createInboxClient(ctx, config = {}) {
         content: [{ type: 'text', text }],
         source: { kind: 'bma3-inbox', reminder: true },
       })
-      return true
+      return !(disposed || generation !== operation)
     } catch (error) {
-      state.lastError = `remind: ${error?.message ?? error}`
+      if (!disposed && generation === operation) state.lastError = 'remind_failed'
       return false
     }
   }
 
+  /** Remember the database identity; a change stops all automatic action until accepted. */
+  const noteIdentity = (panel) => {
+    const identity = typeof panel?.inboxIdentity === 'string' ? panel.inboxIdentity.trim() : ''
+    if (!identity) {
+      state.serverMissingIdentity = true
+      state.ackIdentityVerified = false
+      state.lastError = 'panel: inboxIdentity missing (old server); refusing to inject or ACK'
+      return false
+    }
+    state.serverMissingIdentity = false
+    if (!state.lastSeenIdentity) {
+      state.lastSeenIdentity = identity
+      state.ackIdentityVerified = true
+      persist()
+      return true
+    }
+    if (state.lastSeenIdentity !== identity) {
+      if (state.identityMismatch?.seen === identity) return false
+      state.identityMismatch = {
+        previous: state.lastSeenIdentity,
+        seen: identity,
+        at: new Date().toISOString(),
+      }
+      state.ackIdentityVerified = false
+      state.lastError = `inbox identity changed: ${state.lastSeenIdentity} -> ${identity};`
+        + ' automatic injection/ACK stopped until /inbox accept-identity confirm'
+      persist()
+      return false
+    }
+    state.ackIdentityVerified = true
+    return true
+  }
+
   const applyControl = async (control) => {
+    if (disposed) return false
     if (!control || !control.id || control.id === state.appliedControlId) return true
+    const operation = generation
+    let controlAtStart = controlEpoch
     let applied = true
     if (control.action === 'restore') {
       const target = String(control.sessionId ?? state.targetSessionId ?? '').trim()
       if (!target) {
-        state.lastError = 'restore: empty sessionId'
+        state.lastError = 'control_empty_session'
         return false
       }
+      const targetConfig = targetContext()
+      if (targetConfig.error) {
+        state.lastError = targetConfig.error
+        return false
+      }
+      const previous = {
+        targetSessionId: state.targetSessionId,
+        stopped: state.stopped,
+        ackSuspended,
+        pending,
+      }
       state.targetSessionId = target
+      ackSuspended = false
+      pending = null
+      if (stopped) state.stopped = false
+      if (persistenceEnabled && !persist()) {
+        state.targetSessionId = previous.targetSessionId
+        state.stopped = previous.stopped
+        ackSuspended = previous.ackSuspended
+        pending = previous.pending
+        state.lastError = `control_state_write_failed：${state.persistenceError ?? 'state_write_failed'}`
+        return false
+      }
+      controlAtStart = ++controlEpoch
       const agent = await ensureAgent(target)
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
       if (!agent) {
         // Keep the SSE up anyway: the session may become live later (e.g. the user opens it),
         // and the binding must already be attached. The control stays pending for a retry.
         applied = false
+        state.lastError = 'resume_failed'
       } else {
         state.restoredAt = new Date().toISOString()
       }
-      if (stopped) {
-        start(false)
-        state.stopped = false
-      }
-      persist()
+      startEngine()
       if (applied && control.remind) {
         applied = await remind(control.remind)
       }
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
     } else if (control.action === 'remind') {
+      // A reminder does not supersede an in-flight followup; do not advance controlEpoch.
       applied = await remind(control.remind)
+      if (disposed || generation !== operation) return false
+    } else {
+      // Unknown actions must not advance the epoch or be marked applied.
+      state.lastError = 'control_unknown'
+      return false
     }
     if (applied) {
+      const previousControl = state.appliedControlId
       state.appliedControlId = control.id
-      persist()
+      if (persistenceEnabled && !persist()) {
+        state.appliedControlId = previousControl
+        state.lastError = 'control_state_write_failed'
+        return false
+      }
     }
     return applied
   }
 
   const heartbeat = async () => {
-    if (stopped && !state.targetSessionId) return null
+    if (disposed || (stopped && !state.targetSessionId)) return null
+    if (persistenceEnabled && !lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return null
+    }
+    const operation = generation
+    const controlAtStart = controlEpoch
+    const url = requestUrl(config.inboxId, '/plugin/heartbeat')
+    if (!url) return null
     try {
-      const response = await fetchImpl(endpoint(config, '/plugin/heartbeat'), {
+      const response = await fetchImpl(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -367,6 +1052,7 @@ export function createInboxClient(ctx, config = {}) {
           tokenOk: state.lastAuthFailed !== true,
         }),
       })
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return null
       if (response.status === 401) {
         state.lastAuthFailed = true
       } else if (response.ok) {
@@ -377,6 +1063,7 @@ export function createInboxClient(ctx, config = {}) {
         return null
       }
       const body = await response.json()
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return null
       if (body?.mcpStartId && body.mcpStartId !== state.lastMcpStartId) {
         const previous = state.lastMcpStartId
         state.lastMcpStartId = String(body.mcpStartId)
@@ -384,6 +1071,7 @@ export function createInboxClient(ctx, config = {}) {
           // BMA3 restarted: the DSH MCP client may still hold the old tool list.
           await remind('BMA3 已重启。如果 qq_*/inbox_* MCP 工具不可用，请先重连 MCP'
             + '（mcp_connector_reconnect），再继续处理 inbox。')
+          if (disposed || generation !== operation || controlEpoch !== controlAtStart) return null
         }
         persist()
       }
@@ -392,93 +1080,1148 @@ export function createInboxClient(ctx, config = {}) {
       }
       return body
     } catch (error) {
-      state.lastError = `heartbeat: ${error?.message ?? error}`
+      if (!disposed && generation === operation) state.lastError = 'heartbeat_failed'
       return null
     }
   }
 
-  const wake = async (panel) => {
-    if (!panel || !Array.isArray(panel.items) || panel.items.length === 0) return false
-    const push = Number(panel.pushRevision ?? panel.revision ?? 0)
-    if (push <= state.injectedPushRevision) return false
-    const agent = findAgent()
-    if (!agent || agent.status !== 'idle' || typeof agent.followup !== 'function') return false
-    const text = renderPanel(panel)
-    await agent.followup({
-      id: `bma3-inbox-${panel.revision}-${push}`,
-      role: 'user',
-      content: [{ type: 'text', text }],
-      source: { kind: 'bma3-inbox', revision: panel.revision, pushRevision: push },
+  const timeoutError = () => Object.assign(new Error('timeout'), { name: 'TimeoutError' })
+
+  /** A timer race that never depends on the underlying promise honoring AbortSignal. */
+  const withHardTimeout = (promise, timeoutMs) => {
+    let timer = null
+    const timeout = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(timeoutError()), Math.max(1, timeoutMs))
+      timer.unref?.()
     })
-    state.injectedRevision = Math.max(state.injectedRevision, panel.revision)
-    state.injectedPushRevision = Math.max(state.injectedPushRevision, push)
-    state.lastPushRevision = Math.max(state.lastPushRevision, push)
-    state.lastError = null
-    persist()
+    promise.catch(() => {})
+    return Promise.race([promise, timeout]).finally(() => {
+      if (timer) clearTimeout(timer)
+    })
+  }
+
+  /**
+   * The timeout covers both the fetch and response.json(). A body that ignores abort cannot hang
+   * the caller: the hard timer rejects independently. The controller is kept registered until the
+   * body is read so stop/dispose can still abort the network resource.
+   */
+  const fetchJsonWithTimeout = async (url, init, timeoutMs, kind) => {
+    const controller = new AbortController()
+    if (kind === 'ack') ackAbort = controller
+    else if (kind === 'identity') identityAbort = controller
+    else if (kind === 'runtime') runtimeAbort = controller
+    else verifyAbort = controller
     try {
-      const itemIds = panel.items.map((item) => item?.id).filter(Boolean)
-      // 面板条目一定带 id；万一没有（老服务端/测试桩），退回只发 revision，
-      // 服务端现在也只会 ack 真正推送过的条目。
-      await ack(itemIds.length > 0 ? { revision: panel.revision, itemIds } : panel.revision)
+      const response = await withHardTimeout(
+        fetchImpl(url, { ...init, signal: controller.signal }),
+        timeoutMs,
+      )
+      let body = null
+      try {
+        body = await withHardTimeout(response.json(), timeoutMs)
+      } catch (error) {
+        if (error?.name === 'TimeoutError') {
+          controller.abort()
+          throw error
+        }
+        body = null
+      }
+      return { response, body }
     } catch (error) {
-      state.lastError = `ack: ${error?.message ?? error}`
+      controller.abort()
+      throw error
+    } finally {
+      if (kind === 'ack' && ackAbort === controller) ackAbort = null
+      if (kind === 'identity' && identityAbort === controller) identityAbort = null
+      if (kind === 'runtime' && runtimeAbort === controller) runtimeAbort = null
+      if (kind === 'verify' && verifyAbort === controller) verifyAbort = null
+    }
+  }
+
+  const ackRetryDelayFor = (attempts) => {
+    const base = Math.max(10, Number(config.ackRetryBaseMs ?? DEFAULT_ACK_RETRY_BASE_MS))
+    const cap = Math.max(base, Number(config.ackRetryMaxMs ?? DEFAULT_ACK_RETRY_MAX_MS))
+    return Math.min(base * (2 ** Math.max(0, attempts - 1)), cap)
+  }
+
+  const requestAckRetry = (attempts) => {
+    const delay = ackRetryDelayFor(attempts)
+    ackNextAt = Date.now() + delay
+    if (ackInFlight) {
+      ackRetryRequested = true
+      ackRetryDelay = delay
+    } else {
+      scheduleAck(delay)
+    }
+  }
+
+  const scheduleAck = (delay) => {
+    if (ackSuspended || disposed || stopped) return
+    if (ackTimer || ackInFlight) return
+    if (!state.pendingAck || state.injectionIntent) return
+    if (state.lockError || state.stateError || !persistenceEnabled) return
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return
+    }
+    if (state.identityMismatch) return
+    const pendingAck = state.pendingAck
+    if (pendingAck.retryable === false) return
+    const maxAttempts = Math.max(0, Number(config.ackMaxAttempts ?? 0))
+    if (maxAttempts > 0 && pendingAck.attempts >= maxAttempts) {
+      pendingAck.retryable = false
+      pendingAck.lastError = pendingAck.lastError ?? 'retry_budget_exhausted'
+      persist()
+      return
+    }
+    const wait = delay === undefined ? Math.max(0, ackNextAt - Date.now()) : Math.max(0, delay)
+    ackNextAt = Date.now() + wait
+    ackTimer = setTimeout(() => {
+      ackTimer = null
+      void attemptAck()
+    }, wait)
+    ackTimer.unref?.()
+  }
+
+  const resolvePendingAck = async (pendingAck, body) => {
+    const previous = {
+      pendingAck: state.pendingAck,
+      injectionIntent: state.injectionIntent,
+      injectedPushRevision: state.injectedPushRevision,
+      lastPushRevision: state.lastPushRevision,
+      ackedRevision: state.ackedRevision,
+      lastError: state.lastError,
+      freshVerification: state.freshVerification,
+      pendingPush: state.pendingPush,
+    }
+    const previousPendingPushProcessId = pendingPushProcessId
+    const previousMismatchKey = pendingPushMismatchKey
+    const previousMismatchCode = pendingPushMismatchCode
+    const acknowledgedRevision = body?.ackedRevision
+    state.pendingAck = null
+    state.injectionIntent = null
+    state.pendingPush = null
+    pendingPushProcessId = null
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    state.injectedPushRevision = Math.max(state.injectedPushRevision, pendingAck.pushRevision)
+    state.lastPushRevision = Math.max(state.lastPushRevision, pendingAck.pushRevision)
+    state.ackedRevision = isRevision(acknowledgedRevision)
+      ? acknowledgedRevision : state.ackedRevision
+    state.lastError = null
+    state.recentAcked = [...pendingAck.itemIds].slice(-200)
+    state.freshVerification = {
+      required: true,
+      attempts: 0,
+      lastError: null,
+      lastAttemptAt: null,
+      nextAt: null,
+      at: new Date().toISOString(),
+      inboxId: pendingAck.inboxId,
+      sourceTargetFingerprint: pendingAck.sourceTargetFingerprint ?? null,
+      sourceTargetFingerprintVersion: pendingAck.sourceTargetFingerprintVersion ?? null,
+    }
+    if (!persist()) {
+      Object.assign(state, previous)
+      pendingPushProcessId = previousPendingPushProcessId
+      pendingPushMismatchKey = previousMismatchKey
+      pendingPushMismatchCode = previousMismatchCode
+      state.pendingAck = {
+        ...pendingAck,
+        attempts: pendingAck.attempts + 1,
+        retryable: true,
+        lastError: state.persistenceError ?? 'state removal failed',
+      }
+      state.lastError = 'state_removal_failed'
+      requestAckRetry(state.pendingAck.attempts)
+      return false
+    }
+    scheduleVerify(0)
+    return true
+  }
+
+  const invalidateAckTarget = (pendingAck, code) => {
+    state.ackIdentityVerified = false
+    pendingAck.lastError = code
+    pendingAck.retryable = false
+    state.lastError = code
+    persist()
+    return false
+  }
+
+  /**
+   * Target configuration is part of the ACK identity. A changed inboxId/baseUrl (or an unsupported
+   * URL with userinfo/query/fragment) must never be redirected to the old or new endpoint.
+   */
+  const validateAckTarget = (pendingAck) => {
+    const target = targetContext()
+    if (target.error) return invalidateAckTarget(pendingAck, target.error)
+    if (String(config.inboxId ?? 'bma3') !== pendingAck.inboxId) {
+      return invalidateAckTarget(pendingAck, 'pending_inbox_id_mismatch')
+    }
+    if (!pendingAck.sourceTargetFingerprint) {
+      return invalidateAckTarget(pendingAck, 'pending_target_unverified')
+    }
+    if (pendingAck.sourceTargetFingerprintVersion !== TARGET_FINGERPRINT_VERSION) {
+      return invalidateAckTarget(pendingAck, 'pending_target_unverified')
+    }
+    if (target.fingerprint !== pendingAck.sourceTargetFingerprint) {
+      return invalidateAckTarget(pendingAck, 'pending_base_url_mismatch')
     }
     return true
   }
 
+  /**
+   * Before the first ACK after a restart the plugin must prove the *current* server still has the
+   * durable identity stored in the pending record. Without this, a downgraded/old server that
+   * ignores `inboxIdentity` could accept a legacy ACK. Missing identity => zero ACKs.
+   */
+  const verifyServerIdentity = async () => {
+    if (state.ackIdentityVerified) return true
+    if (disposed || stopped || ackSuspended) return false
+    const operation = generation
+    const controlAtStart = controlEpoch
+    const pendingAck = state.pendingAck
+    if (!pendingAck) return false
+    const url = requestUrl(pendingAck.inboxId, '/panel')
+    if (!url) return false
+    try {
+      const { response, body: panel } = await fetchJsonWithTimeout(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...authHeaders(config),
+        },
+      }, Number(config.panelTimeoutMs ?? 10000), 'identity')
+      if (disposed || stopped || ackSuspended || generation !== operation
+        || controlEpoch !== controlAtStart) return false
+      if (!response.ok) {
+        state.lastError = `ack_identity_http_${response.status}`
+        return false
+      }
+      if (!panel) {
+        state.lastError = 'ack_identity_invalid'
+        return false
+      }
+      if (!noteIdentity(panel)) return false
+      state.ackIdentityVerified = true
+      return true
+    } catch (error) {
+      if (!disposed && !stopped && !ackSuspended && generation === operation) {
+        state.lastError = error?.name === 'TimeoutError'
+          ? 'ack_identity_timeout' : 'ack_identity_failed'
+      }
+      return false
+    }
+  }
+
+  const attemptAck = async () => {
+    if (ackInFlight || ackSuspended || stopped || disposed) return
+    if (!state.pendingAck || state.injectionIntent) return
+    if (state.lockError || state.stateError || !persistenceEnabled) return
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return
+    }
+    if (state.identityMismatch) return
+    clearAckTimer()
+    const operation = generation
+    const controlAtStart = controlEpoch
+    const cancelAtStart = ackCancelEpoch
+    ackInFlight = true
+    const pendingAck = state.pendingAck
+    const stale = () => disposed || ackSuspended || generation !== operation
+      || controlEpoch !== controlAtStart || ackCancelEpoch !== cancelAtStart
+      || state.pendingAck !== pendingAck
+    try {
+      if (!validateAckTarget(pendingAck)) return
+      if (!state.ackIdentityVerified) {
+        const verified = await verifyServerIdentity()
+        if (stale()) return
+        if (!verified) {
+          pendingAck.attempts += 1
+          pendingAck.lastAttemptAt = new Date().toISOString()
+          pendingAck.retryable = true
+          pendingAck.lastError = state.lastError ?? 'ack_identity_unverified'
+          state.lastError = pendingAck.lastError
+          persist()
+          requestAckRetry(pendingAck.attempts)
+          return
+        }
+      }
+      if (!validateAckTarget(pendingAck)) return
+      const payload = {
+        revision: pendingAck.panelRevision,
+        itemIds: [...pendingAck.itemIds],
+        inboxIdentity: pendingAck.inboxIdentity,
+      }
+      const url = requestUrl(pendingAck.inboxId, '/ack')
+      if (!url) {
+        invalidateAckTarget(pendingAck, 'config_target_unsupported')
+        return
+      }
+      let response
+      let body
+      try {
+        ({ response, body } = await fetchJsonWithTimeout(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders(config),
+          },
+          body: JSON.stringify(payload),
+        }, Number(config.ackTimeoutMs ?? 10000), 'ack'))
+      } catch (error) {
+        if (stale()) return
+        pendingAck.attempts += 1
+        pendingAck.lastAttemptAt = new Date().toISOString()
+        pendingAck.retryable = true
+        pendingAck.lastError = error?.name === 'TimeoutError' ? 'ack_timeout' : 'ack_network'
+        state.lastError = pendingAck.lastError
+        persist()
+        requestAckRetry(pendingAck.attempts)
+        return
+      }
+      if (stale()) return
+      if (!response.ok) {
+        if (stale()) return
+        pendingAck.attempts += 1
+        pendingAck.lastAttemptAt = new Date().toISOString()
+        pendingAck.lastError = safeAckHttpCode(response.status, body)
+        pendingAck.retryable = retryableStatus(response.status)
+        state.lastError = pendingAck.lastError
+        if (response.status === 409 && body?.error === 'inbox_identity_mismatch') {
+          const seen = isNonEmptyString(body?.inboxIdentity) ? body.inboxIdentity : null
+          if (seen && seen !== pendingAck.inboxIdentity) {
+            state.identityMismatch = {
+              previous: pendingAck.inboxIdentity,
+              seen,
+              at: new Date().toISOString(),
+            }
+          }
+        }
+        persist()
+        if (pendingAck.retryable) requestAckRetry(pendingAck.attempts)
+        return
+      }
+      if (body === null) {
+        // 200 but the body was lost/unreadable: this is indistinguishable from a lost response,
+        // so retry the exact original request (already-ACKed is accepted by the server).
+        pendingAck.attempts += 1
+        pendingAck.lastAttemptAt = new Date().toISOString()
+        pendingAck.retryable = true
+        pendingAck.lastError = 'ack_response_unreadable'
+        state.lastError = pendingAck.lastError
+        persist()
+        requestAckRetry(pendingAck.attempts)
+        return
+      }
+      const proof = ackProof(body, pendingAck)
+      if (!proof.ok) {
+        pendingAck.attempts += 1
+        pendingAck.lastAttemptAt = new Date().toISOString()
+        pendingAck.retryable = false
+        pendingAck.lastError = 'ack_proof_incomplete'
+        state.lastError = pendingAck.lastError
+        persist()
+        return
+      }
+      if (!isRevision(body?.ackedRevision)) {
+        pendingAck.attempts += 1
+        pendingAck.lastAttemptAt = new Date().toISOString()
+        pendingAck.retryable = false
+        pendingAck.lastError = 'ack_revision_invalid'
+        state.lastError = pendingAck.lastError
+        persist()
+        return
+      }
+      await resolvePendingAck(pendingAck, body)
+    } finally {
+      ackInFlight = false
+      if (ackRetryRequested) {
+        const delay = ackRetryDelay
+        ackRetryRequested = false
+        ackRetryDelay = 0
+        scheduleAck(delay)
+      }
+    }
+  }
+
+  const verifyRetryDelayFor = (attempts) => {
+    const base = Math.max(10, Number(config.verifyRetryBaseMs ?? 500))
+    const cap = Math.max(base, Number(config.verifyRetryMaxMs ?? 30000))
+    return Math.min(base * (2 ** Math.max(0, attempts - 1)), cap)
+  }
+
+  const scheduleVerify = (delay) => {
+    if (disposed || stopped || verifying || verifyTimer) return
+    if (state.freshVerification?.required !== true) return
+    if (state.lockError || state.stateError || !persistenceEnabled) return
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return
+    }
+    const wait = delay === undefined ? Math.max(0, verifyNextAt - Date.now()) : Math.max(0, delay)
+    verifyNextAt = Date.now() + wait
+    verifyTimer = setTimeout(() => {
+      verifyTimer = null
+      void verifyFreshPanel()
+    }, wait)
+    verifyTimer.unref?.()
+  }
+
+  const requestVerifyRetry = (attempts) => {
+    const delay = verifyRetryDelayFor(attempts)
+    verifyNextAt = Date.now() + delay
+    if (verifying) {
+      verifyRetryRequested = true
+      verifyRetryDelay = delay
+    } else {
+      scheduleVerify(delay)
+    }
+  }
+
+  const markFreshVerificationDone = (lastError = null) => {
+    if (!state.freshVerification) return
+    state.freshVerification = {
+      ...state.freshVerification,
+      required: false,
+      lastError,
+      lastAttemptAt: new Date().toISOString(),
+      nextAt: null,
+    }
+    persist()
+  }
+
+  const pendingPushFromPanel = (panel, source) => {
+    if (!source) return null
+    if (panel?.inboxId && String(panel.inboxId) !== source.inboxId) return null
+    const shape = batchFromPanel(panel, state.targetSessionId, source.inboxId, source.fingerprint)
+    if (shape.error) return null
+    return {
+      inboxId: source.inboxId,
+      inboxIdentity: String(panel.inboxIdentity).trim(),
+      sourceTargetFingerprint: source.fingerprint,
+      sourceTargetFingerprintVersion: TARGET_FINGERPRINT_VERSION,
+      targetSessionId: state.targetSessionId ?? null,
+      panelRevision: shape.revision,
+      pushRevision: shape.push,
+      itemIds: [...shape.batch.itemIds],
+      createdAt: new Date().toISOString(),
+    }
+  }
+
+  const pendingPushKey = (pendingPush = state.pendingPush) => (pendingPush
+    ? `${pendingPush.inboxId}|${pendingPush.sourceTargetFingerprint}`
+      + `|${state.targetSessionId ?? ''}`
+    : null)
+
+  /** Persist the verified-but-not-injected push before clearing the verification diagnostic. */
+  const commitVerifiedPush = (panel, source) => {
+    if (state.pendingAck || state.injectionIntent) return false
+    const candidate = pendingPushFromPanel(panel, source)
+    if (!candidate) {
+      state.lastError = 'panel_not_injectable'
+      persist()
+      return false
+    }
+    if (state.pendingPush && !samePendingPush(state.pendingPush, candidate)) {
+      state.lastError = 'pending_push_conflict'
+      persist()
+      return false
+    }
+    const previous = {
+      pendingPush: state.pendingPush,
+      freshVerification: state.freshVerification,
+      lastError: state.lastError,
+    }
+    state.pendingPush = candidate
+    if (state.freshVerification) {
+      state.freshVerification = {
+        ...state.freshVerification,
+        required: false,
+        lastError: null,
+        lastAttemptAt: new Date().toISOString(),
+        nextAt: null,
+      }
+    }
+    if (!persist()) {
+      Object.assign(state, previous)
+      return false
+    }
+    pendingPushProcessId = source.processId ?? connectionProcessId ?? null
+    pendingPushRebaseline = false
+    pendingSource = source
+    return true
+  }
+
+  /**
+   * After a confirmed ACK the plugin must look at a fresh server panel before injecting again.
+   * A live GET is never treated as a push; it is only usable when every displayed item is frozen
+   * for the same newer push revision, preserving server batching.
+   */
+  const verifyFreshPanel = async () => {
+    if (verifying || disposed || stopped) return
+    if (state.freshVerification?.required !== true) return
+    if (state.lockError || state.stateError || !persistenceEnabled) return
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return
+    }
+    const operation = generation
+    const controlAtStart = controlEpoch
+    verifying = true
+    const current = state.freshVerification
+    current.attempts = Number(current.attempts ?? 0) + 1
+    current.lastAttemptAt = new Date().toISOString()
+    const expectedInbox = current.inboxId ?? config.inboxId
+    const expectedFingerprint = current.sourceTargetFingerprint
+    try {
+      // The fresh GET must go to the same target that the ACK resolved against. A config change
+      // (inboxId/baseUrl) or an unsupported URL is fail-closed, never redirected.
+      const target = targetContext()
+      if (target.error) {
+        current.lastError = target.error
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = target.error
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      if (!expectedFingerprint
+        || current.sourceTargetFingerprintVersion !== TARGET_FINGERPRINT_VERSION) {
+        markFreshVerificationDone('fresh_target_unverified')
+        state.lastError = 'fresh_target_unverified'
+        return
+      }
+      if (String(config.inboxId ?? 'bma3') !== expectedInbox) {
+        current.lastError = 'fresh_inbox_id_mismatch'
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      if (target.fingerprint !== expectedFingerprint) {
+        current.lastError = 'fresh_base_url_mismatch'
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      const url = requestUrl(expectedInbox, '/panel')
+      if (!url) {
+        current.lastError = 'config_target_unsupported'
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      const { response, body: panel } = await fetchJsonWithTimeout(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...authHeaders(config),
+        },
+      }, Number(config.panelTimeoutMs ?? 10000), 'verify')
+      if (disposed || stopped || generation !== operation || controlEpoch !== controlAtStart) return
+      if (state.freshVerification !== current || current.required !== true) return
+      const targetAfter = targetContext()
+      const targetAfterError = targetAfter.error
+        ?? (String(config.inboxId ?? 'bma3') !== expectedInbox
+          ? 'fresh_inbox_id_mismatch'
+          : (targetAfter.fingerprint !== expectedFingerprint ? 'fresh_base_url_mismatch' : null))
+      if (targetAfterError) {
+        current.lastError = targetAfterError
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = targetAfterError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      if (!response.ok) {
+        current.lastError = `fresh_verify_http_${response.status}`
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      if (!panel) {
+        current.lastError = 'fresh_verify_invalid'
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
+        return
+      }
+      if (!noteIdentity(panel)) {
+        // Identity mismatch/missing identity cannot be fixed by another GET. Stop the loop;
+        // a later panel/identity acceptance decides when injection may resume.
+        markFreshVerificationDone('fresh_verify_identity')
+        state.lastError = 'fresh_verify_identity'
+        return
+      }
+      const envelope = panelEnvelope(panel)
+      if (envelope.error) {
+        markFreshVerificationDone('fresh_panel_revision_invalid')
+        state.lastError = 'fresh_panel_revision_invalid'
+        return
+      }
+      const items = envelope.items
+      const ids = items.map((item) => item?.id).filter(isNonEmptyString)
+      if (state.pendingPush) {
+        const pendingPush = state.pendingPush
+        // An explicit manual retry may drop a processId that only the previous server run had
+        // (a legitimate restart changes it permanently). In that one case the baseline is
+        // re-established by wake()'s /runtime probe; every other field is still matched exactly.
+        const rebaseline = pendingPushRebaseline
+        const expectedInstance = rebaseline
+          ? null : (pendingPushProcessId ?? connectionProcessId ?? null)
+        if (!rebaseline && expectedInstance) pendingPushProcessId = expectedInstance
+        const exact = pendingPush.inboxId === expectedInbox
+          && pendingPush.sourceTargetFingerprint === expectedFingerprint
+          && pendingPush.inboxIdentity === panel.inboxIdentity
+          && pendingPush.panelRevision === envelope.revision
+          && pendingPush.pushRevision === envelope.push
+          && pendingPush.itemIds.length === ids.length
+          && pendingPush.itemIds.every((id, index) => id === ids[index])
+        const proof = exact ? provableFreshPush(panel, target.fingerprint) : { ok: false }
+        if (!exact || !proof.ok) {
+          pendingPushRebaseline = false
+          pendingPushMismatchKey = pendingPushKey()
+          pendingPushMismatchCode = 'unverified'
+          markFreshVerificationDone('pending_push_unverified')
+          state.lastError = 'pending_push_unverified'
+          return
+        }
+        pendingPushMismatchKey = null
+        pendingPushMismatchCode = null
+        markFreshVerificationDone(null)
+        pending = panel
+        pendingSource = {
+          inboxId: expectedInbox,
+          fingerprint: expectedFingerprint,
+          processId: expectedInstance,
+        }
+        return
+      }
+      const stillAcked = (state.recentAcked ?? []).filter((id) => ids.includes(id))
+      if (stillAcked.length > 0) {
+        state.deferredPush = {
+          revision: envelope.revision,
+          pushRevision: envelope.push,
+          reason: 'confirmed ACK ids are still present in the fresh panel',
+          at: new Date().toISOString(),
+        }
+        markFreshVerificationDone('fresh_verify_acked_present')
+        state.lastError = 'fresh_verify_acked_present'
+        return
+      }
+      if (items.length === 0) {
+        markFreshVerificationDone(null)
+        return
+      }
+      if (envelope.push <= state.injectedPushRevision) {
+        markFreshVerificationDone(null)
+        return
+      }
+      const proof = provableFreshPush(panel, target.fingerprint)
+      if (!proof.ok) {
+        state.deferredPush = {
+          revision: envelope.revision,
+          pushRevision: envelope.push,
+          reason: proof.reason,
+          at: new Date().toISOString(),
+        }
+        markFreshVerificationDone('fresh_verify_batch_mixed')
+        state.lastError = 'fresh_verify_batch_mixed'
+        return
+      }
+      if (!commitVerifiedPush(panel, {
+        inboxId: expectedInbox,
+        fingerprint: expectedFingerprint,
+        processId: pendingAckProcessId ?? connectionProcessId ?? null,
+      })) {
+        return
+      }
+      pending = panel
+      pendingSource = {
+        inboxId: expectedInbox,
+        fingerprint: expectedFingerprint,
+        processId: pendingPushProcessId ?? null,
+      }
+    } catch (error) {
+      if (disposed || stopped || generation !== operation || controlEpoch !== controlAtStart) return
+      if (state.freshVerification !== current || current.required !== true) return
+      current.lastError = error?.name === 'TimeoutError' ? 'fresh_verify_timeout' : 'fresh_verify_failed'
+      current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+      state.lastError = current.lastError
+      persist()
+      requestVerifyRetry(current.attempts)
+    } finally {
+      verifying = false
+      if (verifyRetryRequested) {
+        const delay = verifyRetryDelay
+        verifyRetryRequested = false
+        verifyRetryDelay = 0
+        scheduleVerify(delay)
+      }
+    }
+  }
+
+  const recoverPendingPush = () => {
+    if (disposed || stopped || state.paused) return
+    const pendingPush = state.pendingPush
+    if (!pendingPush || state.pendingAck || state.injectionIntent) return
+    const target = targetContext()
+    const mismatchKey = pendingPushKey(pendingPush)
+    if (target.error || target.fingerprint !== pendingPush.sourceTargetFingerprint
+      || String(config.inboxId ?? 'bma3') !== pendingPush.inboxId) {
+      if (pendingPushMismatchKey !== mismatchKey || pendingPushMismatchCode !== 'target') {
+        pendingPushMismatchKey = mismatchKey
+        pendingPushMismatchCode = 'target'
+        state.lastError = 'pending_push_target_mismatch'
+        persist()
+      }
+      return
+    }
+    if (pendingPushMismatchKey === mismatchKey && pendingPushMismatchCode) return
+    if (!pendingPush.targetSessionId
+      || pendingPush.targetSessionId !== state.targetSessionId) {
+      if (pendingPushMismatchKey !== mismatchKey || pendingPushMismatchCode !== 'session') {
+        pendingPushMismatchKey = mismatchKey
+        pendingPushMismatchCode = 'session'
+        state.lastError = 'pending_push_session_mismatch'
+        persist()
+      }
+      return
+    }
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    const current = state.freshVerification
+    if (!current || current.required !== true
+      || current.inboxId !== pendingPush.inboxId
+      || current.sourceTargetFingerprint !== pendingPush.sourceTargetFingerprint) {
+      const previous = state.freshVerification
+      state.freshVerification = {
+        required: true,
+        attempts: 0,
+        lastError: null,
+        lastAttemptAt: null,
+        nextAt: null,
+        at: new Date().toISOString(),
+        inboxId: pendingPush.inboxId,
+        sourceTargetFingerprint: pendingPush.sourceTargetFingerprint,
+        sourceTargetFingerprintVersion: pendingPush.sourceTargetFingerprintVersion,
+      }
+      if (!persist()) {
+        state.freshVerification = previous
+        return
+      }
+    }
+    // A transient instance-probe failure leaves `nextAt` set; respect that bounded backoff
+    // instead of forcing an immediate GET/probe loop.
+    scheduleVerify()
+  }
+
+  /**
+   * A runtime probe can fail for two very different reasons:
+   * - `transient`: timeout/network/5xx/response loss. The push stays durable and is retried with
+   *   bounded backoff; it is NOT evidence of a different instance.
+   * - `mismatch`/`unverified`: a valid response proves another process, or no longer provides a
+   *   processId we previously proved. Fail closed, retain the push, and require manual handling.
+   */
+  const handleConnectionInstanceFailure = (kind, panel) => {
+    const key = pendingPushKey()
+    pending = null
+    pendingSource = null
+    if (kind === 'transient') {
+      const attempts = Math.max(1, Number(state.freshVerification?.attempts ?? 0))
+      const delay = verifyRetryDelayFor(attempts)
+      const code = state.pendingPush
+        ? 'pending_push_instance_unverified' : 'connection_instance_unverified'
+      const pendingPush = state.pendingPush
+      const now = new Date().toISOString()
+      if (pendingPush) {
+        const base = state.freshVerification ?? {}
+        state.freshVerification = {
+          ...base,
+          required: true,
+          attempts,
+          lastError: code,
+          lastAttemptAt: now,
+          nextAt: Date.now() + delay,
+          at: base.at ?? now,
+          inboxId: base.inboxId ?? pendingPush.inboxId,
+          sourceTargetFingerprint: base.sourceTargetFingerprint
+            ?? pendingPush.sourceTargetFingerprint,
+          sourceTargetFingerprintVersion: base.sourceTargetFingerprintVersion
+            ?? pendingPush.sourceTargetFingerprintVersion,
+        }
+      }
+      state.lastError = code
+      persist()
+      if (state.freshVerification?.required === true) requestVerifyRetry(attempts)
+      return false
+    }
+    if (key) {
+      pendingPushMismatchKey = key
+      pendingPushMismatchCode = kind
+    }
+    // The explicit re-baseline did not establish a usable instance proof (a valid 200 without
+    // processId, or a non-retryable probe failure). Stop treating the next attempt as manual.
+    pendingPushRebaseline = false
+    state.lastError = kind === 'mismatch'
+      ? 'stale_connection_instance' : 'connection_instance_unverified'
+    if (state.freshVerification) {
+      state.freshVerification = {
+        ...state.freshVerification,
+        required: false,
+        lastError: state.lastError,
+        lastAttemptAt: new Date().toISOString(),
+        nextAt: null,
+      }
+    }
+    state.deferredPush = {
+      revision: Number(panel?.revision ?? 0),
+      pushRevision: Number(panel?.pushRevision ?? 0),
+      reason: state.lastError,
+      at: new Date().toISOString(),
+    }
+    persist()
+    return false
+  }
+
+  /**
+   * Persist the exact injection intent, then followup. A confirmed followup atomically becomes
+   * pendingAck + watermark; a followup error or a failed snapshot write leaves an uncertain
+   * intent and never ACKs or repeats in-process.
+   */
+  const wake = async (panel, source = pendingSource) => {
+    if (disposed) return false
+    if (!panel || !Array.isArray(panel.items) || panel.items.length === 0) return false
+    if (blockedReason()) return false
+    const operation = generation
+    const controlAtStart = controlEpoch
+    const agent = findAgent()
+    if (!agent || agent.status !== 'idle' || typeof agent.followup !== 'function') return false
+    const targetSessionId = isNonEmptyString(agent.id) ? String(agent.id) : state.targetSessionId
+    if (!isNonEmptyString(targetSessionId)) {
+      state.lastError = 'wake: target session id is missing; refusing an unattributable injection'
+      return false
+    }
+    const target = targetContext()
+    if (target.error) {
+      state.lastError = target.error
+      return false
+    }
+    if (!source || target.fingerprint !== source.fingerprint
+      || String(config.inboxId ?? 'bma3') !== source.inboxId) {
+      state.lastError = 'stale_panel_target'
+      state.deferredPush = {
+        revision: Number(panel?.revision ?? 0),
+        pushRevision: Number(panel?.pushRevision ?? 0),
+        reason: 'stale_panel_target',
+        at: new Date().toISOString(),
+      }
+      pending = null
+      pendingSource = null
+      persist()
+      return false
+    }
+    // A pendingPush that was verified while this plugin process still had the old /runtime
+    // processId can be re-baselined by one explicit manual retry; the probe below then adopts
+    // the currently answering process. A panel from a normal SSE connection always carries its
+    // own proven processId and is still compared (never adopted).
+    const rebaseline = pendingPushRebaseline && Boolean(state.pendingPush)
+    let provenInstance = source.processId ?? null
+    if (source.processId || rebaseline) {
+      const runtimeUrl = requestUrl(source.inboxId, '/runtime')
+      if (!runtimeUrl) return handleConnectionInstanceFailure('unverified', panel)
+      let response = null
+      let body = null
+      try {
+        const probed = await fetchJsonWithTimeout(
+          runtimeUrl,
+          { method: 'GET', headers: { Accept: 'application/json', ...authHeaders(config) } },
+          Number(config.panelTimeoutMs ?? 10000),
+          'runtime',
+        )
+        response = probed.response
+        body = probed.body
+      } catch {
+        if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
+        return handleConnectionInstanceFailure('transient', panel)
+      }
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
+      if (!response.ok) {
+        return handleConnectionInstanceFailure(
+          retryableStatus(response.status) ? 'transient' : 'unverified',
+          panel,
+        )
+      }
+      if (body === null) return handleConnectionInstanceFailure('transient', panel)
+      if (!isNonEmptyString(body?.processId)) {
+        return handleConnectionInstanceFailure('unverified', panel)
+      }
+      const observed = String(body.processId)
+      if (rebaseline) {
+        // Explicit manual recovery only: adopt the current instance so a legitimate server
+        // restart is not a permanent lock. The exact push match below still decides injection.
+        pendingPushProcessId = observed
+        pendingPushRebaseline = false
+        provenInstance = observed
+      } else if (observed !== source.processId) {
+        return handleConnectionInstanceFailure('mismatch', panel)
+      }
+    }
+    const shape = batchFromPanel(panel, targetSessionId,
+      source.inboxId, source.fingerprint)
+    if (shape.error) {
+      state.lastError = `panel: ${shape.error}`
+      persist()
+      return false
+    }
+    const { batch, revision, push } = shape
+    if (push <= state.injectedPushRevision) return false
+    if (state.pendingPush) {
+      const candidate = pendingPushFromPanel(panel, source)
+      if (!candidate || !samePendingPush(state.pendingPush, candidate)) {
+        state.lastError = 'pending_push_mismatch'
+        pending = null
+        pendingSource = null
+        persist()
+        return false
+      }
+    }
+    const text = renderPanel(panel)
+
+    const previousIntent = state.injectionIntent
+    const previousPendingPush = state.pendingPush
+    const previousPendingPushProcessId = pendingPushProcessId
+    const previousPendingPushRebaseline = pendingPushRebaseline
+    state.injectionIntent = batch
+    state.pendingAck = null
+    state.pendingPush = null
+    pendingPushProcessId = null
+    pendingPushRebaseline = false
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    state.deferredPush = null
+    if (!persist()) {
+      state.injectionIntent = previousIntent
+      state.pendingPush = previousPendingPush
+      pendingPushProcessId = previousPendingPushProcessId
+      pendingPushRebaseline = previousPendingPushRebaseline
+      pending = null
+      pendingSource = null
+      return false
+    }
+    try {
+      await agent.followup({
+        id: `bma3-inbox-${revision}-${push}`,
+        role: 'user',
+        content: [{ type: 'text', text }],
+        source: { kind: 'bma3-inbox', revision, pushRevision: push },
+      })
+    } catch (error) {
+      // The call may or may not have reached the session. Keep the persisted intent: it is the
+      // honest "uncertain" record and blocks both automatic reinjection and ACK.
+      if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
+      state.lastError = 'followup_failed'
+      state.injectionIntent = batch
+      pending = null
+      persist()
+      return false
+    }
+    if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
+    state.injectionIntent = null
+    state.pendingAck = {
+      ...batch,
+      status: 'pending',
+      attempts: 0,
+      lastError: null,
+      retryable: true,
+      lastAttemptAt: null,
+    }
+    pendingAckProcessId = provenInstance ?? connectionProcessId ?? null
+    pendingPushProcessId = null
+    pendingPushRebaseline = false
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    state.injectedRevision = Math.max(state.injectedRevision, revision)
+    state.injectedPushRevision = Math.max(state.injectedPushRevision, push)
+    state.lastPushRevision = Math.max(state.lastPushRevision, push)
+    state.lastError = null
+    state.freshVerification = null
+    if (!persist()) {
+      // The followup happened but the pending record did not reach disk. Downgrade to the
+      // uncertain intent: never ACK, never repeat in-process.
+      state.pendingAck = null
+      state.injectionIntent = batch
+      pendingAckProcessId = null
+      state.lastError = 'state: pending ACK snapshot failed after followup; ACK withheld (uncertain)'
+      pending = null
+      return false
+    }
+    pending = null
+    scheduleAck(0)
+    return true
+  }
+
   const pump = async () => {
-    if (stopped || state.paused || injecting || !pending) return
+    if (stopped || state.paused || disposed) return
+    const operation = generation
+    const controlAtStart = controlEpoch
+    if (state.pendingPush && !state.pendingAck && !state.injectionIntent && !pending) {
+      recoverPendingPush()
+      return
+    }
+    if (state.pendingAck) {
+      if (!ackTimer && !ackInFlight) scheduleAck(0)
+      return
+    }
+    if (state.injectionIntent) return
+    if (state.freshVerification?.required === true) {
+      scheduleVerify()
+      return
+    }
+    if (injecting || !pending) return
+    if (blockedReason()) return
     injecting = true
     try {
       const panel = pending
-      const injected = await wake(panel)
-      if (injected && pending === panel) pending = null
+      const source = pendingSource
+      const injected = await wake(panel, source)
+      if (!disposed && generation === operation && controlEpoch === controlAtStart
+        && injected && pending === panel) {
+        pending = null
+        pendingSource = null
+      }
     } catch (error) {
-      state.lastError = `wake: ${error?.message ?? error}`
+      if (!disposed && generation === operation && controlEpoch === controlAtStart) {
+        state.lastError = 'wake_failed'
+      }
     } finally {
       injecting = false
     }
   }
 
-  const ack = async (target = state.lastRevision) => {
-    // Callers may pass a revision, or {revision, itemIds} to acknowledge exactly the items that
-    // were rendered. The item list matters: a panel is capped at maxItemsPerPanel, so a
-    // revision-only ack used to acknowledge items that were never displayed.
-    const payload = target && typeof target === 'object'
-      ? { revision: target.revision, itemIds: target.itemIds }
-      : { revision: target }
-    const response = await fetchImpl(endpoint(config, '/ack'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders(config),
-      },
-      body: JSON.stringify(payload),
-    })
-    if (!response.ok) {
-      // 409 = 某条在你看到之后又被更新了（服务端按 itemId 判断，无关流量不再触发）。
-      // 不重试成"只带 itemIds"：那会把没看过的新内容一起 ack 掉。留未确认状态，
-      // 下一轮面板会带上新内容重新注入。
-      const detail = response.status === 409 ? '（条目已更新，下一轮重推）' : ''
-      throw new Error(`HTTP ${response.status}${detail}`)
+  const retryPendingPush = () => {
+    const at = new Date().toISOString()
+    if (!state.pendingPush) return { ok: false, reason: 'no_pending_push', at }
+    if (state.injectionIntent) return { ok: false, reason: 'intent_uncertain', at }
+    if (disposed) return { ok: false, reason: 'disposed', at }
+    // A stopped client issues no recovery GET. Do not record a "request" that will never run:
+    // the operator must start first, and the command/tool text says so.
+    if (stopped) return { ok: false, reason: 'stopped', at }
+    if (!persistenceEnabled || state.lockError || state.stateError) {
+      return { ok: false, reason: 'persistence_unavailable', at }
     }
-    const body = await response.json()
-    state.ackedRevision = Number(body?.ackedRevision ?? payload.revision ?? 0)
-    persist()
-    return body
+    if (!lockStillOurs(lock)) {
+      state.persistenceError = 'state_lock_lost'
+      return { ok: false, reason: 'state_lock_lost', at }
+    }
+    // Both an automatic verify GET and an in-flight wake already own the instance proof; do not
+    // overwrite their baseline or claim a second request from this call.
+    if (verifying) return { ok: false, reason: 'verify_in_flight', at }
+    if (injecting) return { ok: false, reason: 'injection_in_flight', at }
+    // Explicit manual handling resets the automatic-retry block (target/session/instance
+    // diagnostics) and performs one fresh GET + instance probe. It never changes the push IDs,
+    // revisions, target session or the exact match requirements stored in the record.
+    const previous = {
+      pendingPushProcessId,
+      pendingPushRebaseline,
+      pendingPushMismatchKey,
+      pendingPushMismatchCode,
+      freshVerification: state.freshVerification,
+      lastError: state.lastError,
+      verifyNextAt,
+    }
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    pendingPushProcessId = null
+    pendingPushRebaseline = true
+    const pendingPush = state.pendingPush
+    state.freshVerification = {
+      required: true,
+      attempts: 0,
+      lastError: null,
+      lastAttemptAt: null,
+      nextAt: null,
+      at,
+      inboxId: pendingPush.inboxId,
+      sourceTargetFingerprint: pendingPush.sourceTargetFingerprint,
+      sourceTargetFingerprintVersion: pendingPush.sourceTargetFingerprintVersion,
+    }
+    if (!persist()) {
+      pendingPushProcessId = previous.pendingPushProcessId
+      pendingPushRebaseline = previous.pendingPushRebaseline
+      pendingPushMismatchKey = previous.pendingPushMismatchKey
+      pendingPushMismatchCode = previous.pendingPushMismatchCode
+      state.freshVerification = previous.freshVerification
+      state.lastError = previous.lastError
+      verifyNextAt = previous.verifyNextAt
+      return { ok: false, reason: 'persist_failed', at }
+    }
+    verifyNextAt = 0
+    scheduleVerify(0)
+    return { ok: true, reason: 'verify_requested', at }
   }
 
-  const handleEvent = async ({ id, event, data }) => {
+  const ack = async () => {
+    lastAckResult = null
+    if (state.pendingAck) {
+      clearAckTimer()
+      ackNextAt = 0
+      const attemptsBefore = state.pendingAck.attempts ?? 0
+      await attemptAck()
+      if (!state.pendingAck) {
+        lastAckResult = { kind: 'ack', ok: true, reason: 'ack_complete', at: new Date().toISOString() }
+      } else if ((state.pendingAck.attempts ?? 0) > attemptsBefore) {
+        lastAckResult = { kind: 'ack', ok: true, reason: 'ack_requested', at: new Date().toISOString() }
+      } else {
+        lastAckResult = { kind: 'ack', ok: false, reason: 'ack_not_sent', at: new Date().toISOString() }
+      }
+    } else if (state.pendingPush) {
+      lastAckResult = {
+        kind: 'push_retry',
+        ...(state.injectionIntent
+          ? { ok: false, reason: 'intent_uncertain', at: new Date().toISOString() }
+          : retryPendingPush()),
+      }
+    } else if (state.injectionIntent) {
+      lastAckResult = {
+        kind: 'none', ok: false, reason: 'intent_uncertain', at: new Date().toISOString(),
+      }
+    } else {
+      lastAckResult = {
+        kind: 'none', ok: false, reason: 'no_pending_record', at: new Date().toISOString(),
+      }
+    }
+    return status()
+  }
+
+  const handleEvent = async ({ id, event, data }, connectionSource = null) => {
+    if (disposed || stopped) return
+    const operation = generation
+    const controlAtStart = controlEpoch
     state.lastEventAt = new Date().toISOString()
     if (event === 'heartbeat') {
-      state.lastRevision = Number(id) || state.lastRevision
+      const revision = Number(id)
+      if (isRevision(revision)) state.lastRevision = revision
       return
     }
     if (event === 'control') {
       try {
         await applyControl(JSON.parse(data))
       } catch (error) {
-        state.lastError = `control: ${error?.message ?? error}`
+        if (!disposed && generation === operation && controlEpoch === controlAtStart) {
+          state.lastError = 'control_failed'
+        }
       }
       return
     }
@@ -490,22 +2233,113 @@ export function createInboxClient(ctx, config = {}) {
       state.lastError = 'invalid panel JSON'
       return
     }
-    state.lastRevision = Number(panel?.revision ?? id ?? 0)
-    const push = Number(panel?.pushRevision ?? panel?.revision ?? 0)
-    state.lastPushRevision = Math.max(state.lastPushRevision, push)
-    persist()
-    if (Array.isArray(panel?.items) && panel.items.length === 0) {
-      pending = null
+    if (disposed || generation !== operation || controlEpoch !== controlAtStart) return
+    const target = targetContext()
+    if (target.error) return
+    const envelope = panelEnvelope(panel)
+    if (envelope.error) {
+      state.lastError = envelope.error
       return
     }
-    if (push > state.injectedPushRevision) {
-      pending = panel
-      await pump()
+    const currentSource = targetContext()
+    if (currentSource.error || !connectionSource
+      || currentSource.fingerprint !== connectionSource.fingerprint
+      || String(config.inboxId ?? 'bma3') !== connectionSource.inboxId) {
+      state.lastError = 'stale_connection_target'
+      state.deferredPush = {
+        revision: envelope.revision,
+        pushRevision: envelope.push,
+        reason: 'stale_connection_target',
+        at: new Date().toISOString(),
+      }
+      persist()
+      return
     }
+    if (state.pendingPush) {
+      state.deferredPush = {
+        revision: envelope.revision,
+        pushRevision: envelope.push,
+        reason: 'pending_push_waiting_for_recovery',
+        at: new Date().toISOString(),
+      }
+      state.lastError = 'pending_push_waiting_for_recovery'
+      persist()
+      return
+    }
+    state.lastRevision = envelope.revision
+    state.lastPushRevision = Math.max(state.lastPushRevision, envelope.push)
+    // Remember the database identity even for an empty panel (no pending ACK yet). This is what
+    // makes a later identity change observable instead of looking like a first use.
+    const identityOk = noteIdentity(panel)
+    persist()
+    if (envelope.empty) {
+      pending = null
+      pendingSource = null
+      return
+    }
+    if (!identityOk) return
+    if (envelope.push <= 0) {
+      state.lastError = 'panel_not_pushed'
+      persist()
+      return
+    }
+    if (state.injectionIntent || state.pendingAck) {
+      const shape = batchFromPanel(panel, null, connectionSource.inboxId, connectionSource.fingerprint)
+      const provable = !shape.error
+        && shape.push > state.injectedPushRevision
+        && shape.items.every((item) => Number(item.frozenRevision) === shape.push)
+      if (provable) {
+        state.deferredPush = {
+          revision: envelope.revision,
+          pushRevision: envelope.push,
+          reason: 'newer push arrived while a previous injection is unresolved',
+          at: new Date().toISOString(),
+        }
+        persist()
+      } else {
+        state.deferredPush = {
+          revision: envelope.revision,
+          pushRevision: envelope.push,
+          reason: shape.error ?? 'newer push is not safely reconstructable',
+          at: new Date().toISOString(),
+        }
+        persist()
+      }
+      return
+    }
+    const shape = batchFromPanel(panel, state.targetSessionId,
+      connectionSource.inboxId, connectionSource.fingerprint)
+    if (shape.error) {
+      state.lastError = `panel: ${shape.error}`
+      persist()
+      return
+    }
+    if (shape.push <= state.injectedPushRevision) return
+    // A panel event can be queued before a confirmed ACK and delivered after it. Never inject a
+    // queued snapshot that still contains an id this client already confirmed: that would repeat
+    // displayed content. Only a snapshot without those ids is accepted as the fresh panel.
+    const stillAcked = (state.recentAcked ?? [])
+      .filter((id) => shape.items.some((item) => item?.id === id))
+    if (stillAcked.length > 0) {
+      state.deferredPush = {
+        revision: shape.revision,
+        pushRevision: shape.push,
+        reason: 'queued panel still contains confirmed ACK ids',
+        at: new Date().toISOString(),
+      }
+      state.lastError = state.deferredPush.reason
+      persist()
+      return
+    }
+    if (!commitVerifiedPush(panel, connectionSource)) return
+    pending = panel
+    pendingSource = connectionSource
+    await pump()
+    if (disposed || generation !== operation || controlEpoch !== controlAtStart) return
   }
 
   const scheduleReconnect = () => {
-    if (stopped) return
+    if (stopped || disposed) return
     state.connection = 'retrying'
     const delay = retryMs
     retryMs = Math.min(Math.max(retryMs * 2, 1000), Number(config.reconnectMaxMs ?? 30000))
@@ -516,13 +2350,14 @@ export function createInboxClient(ctx, config = {}) {
     retryTimer.unref?.()
   }
 
-  const readStream = async (response) => {
+  const readStream = async (response, connectionAtStart, connectionSource) => {
     const reader = response.body?.getReader?.()
     if (!reader) throw new Error('SSE response body is not readable')
     const decoder = new TextDecoder()
-    const parser = new SseParser((event) => { void handleEvent(event) })
+    const parser = new SseParser((event) => { void handleEvent(event, connectionSource) })
     for (;;) {
       const { value, done } = await reader.read()
+      if (disposed || stopped || connectionEpoch !== connectionAtStart) return
       if (done) break
       parser.push(decoder.decode(value, { stream: true }))
     }
@@ -530,11 +2365,22 @@ export function createInboxClient(ctx, config = {}) {
   }
 
   const connect = async () => {
-    if (stopped) return
+    if (stopped || disposed) return
+    const operation = generation
+    const connectionAtStart = connectionEpoch
+    const connectionTarget = targetContext()
+    if (connectionTarget.error) return
+    const connectionSource = {
+      inboxId: String(config.inboxId ?? 'bma3'),
+      fingerprint: connectionTarget.fingerprint,
+      processId: null,
+    }
+    const url = requestUrl(connectionSource.inboxId, '/events')
+    if (!url) return
     state.connection = 'connecting'
     abort = new AbortController()
     try {
-      const response = await fetchImpl(endpoint(config, '/events'), {
+      const response = await fetchImpl(url, {
         method: 'GET',
         headers: {
           Accept: 'text/event-stream',
@@ -543,6 +2389,15 @@ export function createInboxClient(ctx, config = {}) {
         },
         signal: abort.signal,
       })
+      if (disposed || stopped || generation !== operation
+        || connectionEpoch !== connectionAtStart) return
+      const currentSource = targetContext()
+      if (currentSource.error || currentSource.fingerprint !== connectionSource.fingerprint
+        || String(config.inboxId ?? 'bma3') !== connectionSource.inboxId) {
+        state.lastError = 'stale_connection_target'
+        abort?.abort()
+        return
+      }
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
@@ -550,36 +2405,52 @@ export function createInboxClient(ctx, config = {}) {
       state.connection = 'open'
       state.lastError = null
       void heartbeat()
-      await readStream(response)
-      if (!stopped) throw new Error('SSE stream ended')
+      try {
+        const runtimeUrl = requestUrl(connectionSource.inboxId, '/runtime')
+        if (runtimeUrl) {
+          const { response: runtimeResponse, body: runtimeBody } = await fetchJsonWithTimeout(
+            runtimeUrl,
+            { method: 'GET', headers: { Accept: 'application/json', ...authHeaders(config) } },
+            Number(config.panelTimeoutMs ?? 10000),
+            'runtime',
+          )
+          if (runtimeResponse.ok && isNonEmptyString(runtimeBody?.processId)) {
+            connectionSource.processId = String(runtimeBody.processId)
+            connectionProcessId = connectionSource.processId
+          }
+        }
+      } catch { /* target binding still applies; panels stay conservative if runtime is absent */ }
+      if (disposed || stopped || generation !== operation
+        || connectionEpoch !== connectionAtStart) return
+      await readStream(response, connectionAtStart, connectionSource)
+      if (!stopped && !disposed) throw new Error('SSE stream ended')
     } catch (error) {
-      if (!stopped) {
-        state.lastError = error?.name === 'AbortError' ? state.lastError : (error?.message ?? String(error))
+      if (!stopped && !disposed && generation === operation
+        && connectionEpoch === connectionAtStart) {
+        state.lastError = error?.name === 'AbortError' ? state.lastError : 'sse_failed'
         scheduleReconnect()
       }
     }
   }
 
-  const start = (persistStopped = true) => {
-    if (!stopped) return
-    stopped = false
-    if (persistStopped) {
-      state.stopped = false
-    }
-    persist()
-    pumpTimer = setInterval(() => { void pump() }, pumpMs)
-    pumpTimer.unref?.()
-    if (!heartbeatTimer) {
-      heartbeatTimer = setInterval(() => { void heartbeat() }, heartbeatMs)
-      heartbeatTimer.unref?.()
-    }
-    void connect()
-  }
-
-  const stop = (persistStopped = true) => {
+  const stopEngine = () => {
     stopped = true
+    ackSuspended = true
+    ackCancelEpoch += 1
+    connectionEpoch += 1
+    clearAckTimer()
     abort?.abort()
     abort = null
+    ackAbort?.abort()
+    ackAbort = null
+    verifyAbort?.abort()
+    verifyAbort = null
+    identityAbort?.abort()
+    identityAbort = null
+    runtimeAbort?.abort()
+    runtimeAbort = null
+    if (verifyTimer) clearTimeout(verifyTimer)
+    verifyTimer = null
     if (retryTimer) clearTimeout(retryTimer)
     if (pumpTimer) clearInterval(pumpTimer)
     if (heartbeatTimer) clearInterval(heartbeatTimer)
@@ -587,47 +2458,307 @@ export function createInboxClient(ctx, config = {}) {
     pumpTimer = null
     heartbeatTimer = null
     state.connection = 'closed'
-    if (persistStopped) {
-      state.stopped = true
+  }
+
+  const startEngine = () => {
+    if (disposed || !stopped) return
+    stopped = false
+    connectionEpoch += 1
+    ackSuspended = false
+    pumpTimer = setInterval(() => { void pump() }, pumpMs)
+    pumpTimer.unref?.()
+    if (!heartbeatTimer) {
+      heartbeatTimer = setInterval(() => { void heartbeat() }, heartbeatMs)
+      heartbeatTimer.unref?.()
     }
-    persist()
+    ackNextAt = 0
+    verifyNextAt = 0
+    if (state.pendingAck) scheduleAck(0)
+    if (state.freshVerification?.required === true) scheduleVerify(0)
+    if (state.pendingPush) recoverPendingPush()
+    void connect()
+  }
+
+  const start = (persistStopped = true) => {
+    if (disposed) throw new Error('client disposed')
+    const target = targetContext()
+    if (target.error) return
+    if (!stopped) {
+      // unbind suspends ACK but leaves the SSE running; an explicit start must resume ACK
+      // recovery without opening a second stream or rebuilding timers.
+      ackSuspended = false
+      ackNextAt = 0
+      verifyNextAt = 0
+      if (state.pendingAck) scheduleAck(0)
+      if (state.freshVerification?.required === true) scheduleVerify(0)
+      if (state.pendingPush) recoverPendingPush()
+      return
+    }
+    // A corrupt/unreadable state or a foreign lock is a fail-closed mode, not a user write
+    // failure; keep `start` inert and let status report why (existing fail-closed contract).
+    if (state.lockError || state.stateError) return
+    const previousStopped = state.stopped
+    if (persistStopped) state.stopped = false
+    if (persistenceEnabled && !persist()) {
+      state.stopped = previousStopped
+      throw new Error(`无法持久化 start：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    controlEpoch += 1
+    startEngine()
+  }
+
+  const stop = (persistStopped = true) => {
+    if (disposed) throw new Error('client disposed')
+    const previousStopped = state.stopped
+    if (persistStopped) state.stopped = true
+    if (persistenceEnabled && !persist()) {
+      state.stopped = previousStopped
+      throw new Error(`无法持久化 stop：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    controlEpoch += 1
+    stopEngine()
   }
 
   if (config.sessionId) state.targetSessionId = String(config.sessionId)
   const pause = () => {
+    if (disposed) throw new Error('client disposed')
+    const previous = state.paused
+    const previousPending = pending
     state.paused = true
     pending = null
-    persist()
+    pendingSource = null
+    if (persistenceEnabled && !persist()) {
+      state.paused = previous
+      pending = previousPending
+      throw new Error(`无法持久化 pause：${state.persistenceError ?? 'state_write_failed'}`)
+    }
     return status()
   }
 
   const resume = () => {
+    if (disposed) throw new Error('client disposed')
+    const previous = state.paused
     state.paused = false
-    persist()
+    if (persistenceEnabled && !persist()) {
+      state.paused = previous
+      throw new Error(`无法持久化 resume：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    if (state.pendingPush) recoverPendingPush()
     return status()
   }
 
   /** Bind + resume (if needed) + start. Safe to call repeatedly. */
   const restore = async (sessionId = state.targetSessionId) => {
+    if (disposed) throw new Error('client disposed')
+    const operation = generation
+    const operationEpoch = controlEpoch
     const target = String(sessionId ?? '').trim()
     if (!target) return status()
+    const targetConfig = targetContext()
+    if (targetConfig.error) {
+      state.lastError = targetConfig.error
+      return status()
+    }
+    const previous = {
+      targetSessionId: state.targetSessionId,
+      stopped: state.stopped,
+      ackSuspended,
+      pending,
+    }
+    const wasStopped = stopped
     state.targetSessionId = target
-    persist()
+    ackSuspended = false
+    pending = null
+    if (stopped) state.stopped = false
+    // Binding and the "start" intent are written in ONE snapshot. A second snapshot after the
+    // async resume could fail after the new binding was already durable, which would report a
+    // failure while silently changing what the next restart binds to.
+    if (persistenceEnabled && !persist()) {
+      state.targetSessionId = previous.targetSessionId
+      state.stopped = previous.stopped
+      ackSuspended = previous.ackSuspended
+      pending = previous.pending
+      throw new Error(`无法持久化 restore：${state.persistenceError ?? 'state_write_failed'}`)
+    }
     const agent = await ensureAgent(target)
+    if (disposed || generation !== operation || controlEpoch !== operationEpoch) return status()
     if (!agent) {
-      state.lastError = state.lastError ?? 'resume: session is not live yet'
+      state.lastError = state.lastError ?? 'resume_failed'
     }
     // Start the SSE even when resume failed: the binding is durable and the session may be
     // opened later; starting now means the first push is not missed.
-    if (stopped) {
-      start(false)
-      state.stopped = false
-    }
-    persist()
+    controlEpoch += 1
+    if (wasStopped) startEngine()
+    ackNextAt = 0
+    verifyNextAt = 0
+    if (state.pendingAck) scheduleAck(0)
+    if (state.freshVerification?.required === true) scheduleVerify(0)
+    if (state.pendingPush) recoverPendingPush()
     if (!stopped) {
       void heartbeat()
     }
     return status()
+  }
+
+  const discard = (confirm = false) => {
+    if (confirm !== true) {
+      throw new Error('discard requires explicit confirmation: 这可能造成重复注入或遗留未确认条目')
+    }
+    const hadPending = Boolean(state.pendingAck)
+    const hadIntent = Boolean(state.injectionIntent)
+    const hadPush = Boolean(state.pendingPush)
+    if (!hadPending && !hadIntent && !hadPush) return '当前没有待 ACK 记录、注入意图或待注入 push。'
+    const previous = {
+      pendingAck: state.pendingAck,
+      injectionIntent: state.injectionIntent,
+      injectedPushRevision: state.injectedPushRevision,
+      injectedRevision: state.injectedRevision,
+      lastPushRevision: state.lastPushRevision,
+      lastError: state.lastError,
+      deferredPush: state.deferredPush,
+      freshVerification: state.freshVerification,
+      pendingPush: state.pendingPush,
+      pendingAckProcessId,
+      pendingPushProcessId,
+      pendingPushRebaseline,
+      pendingPushMismatchKey,
+      pendingPushMismatchCode,
+      pending,
+    }
+    const uncertain = state.injectionIntent
+    const verifiedPush = state.pendingPush
+    state.pendingAck = null
+    state.injectionIntent = null
+    state.pendingPush = null
+    pendingAckProcessId = null
+    pendingPushProcessId = null
+    pendingPushRebaseline = false
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    state.deferredPush = null
+    pending = null
+    pendingSource = null
+    if (uncertain || verifiedPush) {
+      // The followup may have happened. Advancing the old identity's watermarks is the only
+      // safe way to guarantee this same push is not replayed after the explicit discard; if the
+      // followup never happened, that one push is intentionally lost and the warning says so.
+      const lost = uncertain ?? verifiedPush
+      state.injectedPushRevision = Math.max(state.injectedPushRevision, lost.pushRevision)
+      state.injectedRevision = Math.max(state.injectedRevision, lost.panelRevision)
+      state.lastPushRevision = Math.max(state.lastPushRevision, lost.pushRevision)
+    }
+    const target = targetContext()
+    state.freshVerification = {
+      required: true,
+      attempts: 0,
+      lastError: null,
+      lastAttemptAt: null,
+      nextAt: null,
+      at: new Date().toISOString(),
+      inboxId: config.inboxId ?? 'bma3',
+      sourceTargetFingerprint: target.error ? null : target.fingerprint,
+      sourceTargetFingerprintVersion: target.error ? null : TARGET_FINGERPRINT_VERSION,
+    }
+    if (persistenceEnabled && !persist()) {
+      Object.assign(state, previous)
+      pendingAckProcessId = previous.pendingAckProcessId
+      pendingPushProcessId = previous.pendingPushProcessId
+      pendingPushRebaseline = previous.pendingPushRebaseline
+      pendingPushMismatchKey = previous.pendingPushMismatchKey
+      pendingPushMismatchCode = previous.pendingPushMismatchCode
+      throw new Error(`无法持久化放弃操作：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    controlEpoch += 1
+    if (!stopped && state.freshVerification?.required === true) scheduleVerify(0)
+    clearAckTimer()
+    return '已放弃待处理记录：服务端条目可能仍未确认，后续可能被再次推送/注入（重复风险）；'
+      + '若曾发生 followup，也可能已注入但未 ACK。'
+      + (verifiedPush ? '已验证但未注入的 push 也已放弃，可能丢失。' : '')
+      + '已推进旧 push 水位：该 push 不会自动重放；请人工核对。'
+  }
+
+  const acceptIdentity = (confirm = false) => {
+    if (confirm !== true) {
+      throw new Error('accept-identity requires explicit confirmation')
+    }
+    if (!state.identityMismatch) return '当前没有身份变化需要接受。'
+    if (state.pendingAck || state.injectionIntent || state.pendingPush) {
+      throw new Error('请先人工处置待 ACK 记录/注入意图/已验证未注入的 push，再接受新身份')
+    }
+    const previous = {
+      lastSeenIdentity: state.lastSeenIdentity,
+      identityMismatch: state.identityMismatch,
+      ackIdentityVerified: state.ackIdentityVerified,
+      injectedPushRevision: state.injectedPushRevision,
+      injectedRevision: state.injectedRevision,
+      lastPushRevision: state.lastPushRevision,
+      ackedRevision: state.ackedRevision,
+      deferredPush: state.deferredPush,
+      freshVerification: state.freshVerification,
+      lastError: state.lastError,
+      pending,
+      pendingAckProcessId,
+      pendingPushProcessId,
+      pendingPushMismatchKey,
+      pendingPushMismatchCode,
+    }
+    const target = targetContext()
+    if (target.error) throw new Error(target.error)
+    state.lastSeenIdentity = state.identityMismatch.seen
+    state.identityMismatch = null
+    state.ackIdentityVerified = true
+    // Watermarks belong to the database identity. Reusing them after an explicit accept would
+    // silently suppress every push of the new database whose revision is below the old one.
+    state.injectedPushRevision = 0
+    state.injectedRevision = 0
+    state.lastPushRevision = 0
+    state.ackedRevision = 0
+    state.deferredPush = null
+    // The new database may already have a current push that was dropped while the identity was
+    // mismatched. Re-fetch it instead of waiting for another SSE push.
+    state.freshVerification = {
+      required: true,
+      attempts: 0,
+      lastError: null,
+      lastAttemptAt: null,
+      nextAt: null,
+      at: new Date().toISOString(),
+      inboxId: config.inboxId ?? 'bma3',
+      sourceTargetFingerprint: target.fingerprint,
+      sourceTargetFingerprintVersion: TARGET_FINGERPRINT_VERSION,
+    }
+    state.lastError = null
+    pending = null
+    pendingAckProcessId = null
+    pendingPushProcessId = null
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    if (persistenceEnabled && !persist()) {
+      Object.assign(state, previous)
+      pendingAckProcessId = previous.pendingAckProcessId
+      pendingPushProcessId = previous.pendingPushProcessId
+      pendingPushMismatchKey = previous.pendingPushMismatchKey
+      pendingPushMismatchCode = previous.pendingPushMismatchCode
+      throw new Error(`无法持久化身份接受操作：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    controlEpoch += 1
+    if (!stopped) scheduleVerify(0)
+    return `已接受新的 inbox 身份 ${state.lastSeenIdentity}；旧数据库的 push/ACK 水位不可沿用，`
+      + '已重置为 0，并会重新校验当前面板。旧库未确认条目仍需人工核对。'
+  }
+
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    generation += 1
+    controlEpoch += 1
+    stopEngine()
+    pending = null
+    if (lock) {
+      const releaseError = releaseStateLock(lock)
+      lock = null
+      if (releaseError) state.lastError = releaseError
+    }
   }
 
   return {
@@ -637,21 +2768,63 @@ export function createInboxClient(ctx, config = {}) {
     status,
     heartbeat,
     restore,
-    ack: (revision) => ack(revision),
+    ack,
     pause,
     resume,
+    discard,
+    acceptIdentity,
+    dispose,
     bind: (sessionId) => {
+      if (disposed) throw new Error('client disposed')
       const target = String(sessionId ?? '').trim() || null
-      state.targetSessionId = target
-      persist()
-      if (target) {
-        void restore(target)
+      const previous = {
+        targetSessionId: state.targetSessionId,
+        ackSuspended,
+        pending,
+        deferredPush: state.deferredPush,
       }
+      state.targetSessionId = target
+      ackSuspended = false
+      pending = null
+      pendingSource = null
+      if (persistenceEnabled && !persist()) {
+        state.targetSessionId = previous.targetSessionId
+        ackSuspended = previous.ackSuspended
+        pending = previous.pending
+        throw new Error(`无法持久化 bind：${state.persistenceError ?? 'state_write_failed'}`)
+      }
+      controlEpoch += 1
+      if (target) {
+        void restore(target).catch(() => {
+          state.lastError = state.lastError ?? 'restore_failed'
+        })
+      }
+      if (state.pendingAck && !target) ackSuspended = true
       return status()
     },
     unbind: () => {
+      if (disposed) throw new Error('client disposed')
+      const previous = {
+        targetSessionId: state.targetSessionId,
+        ackSuspended,
+        pending,
+        deferredPush: state.deferredPush,
+      }
       state.targetSessionId = null
-      persist()
+      ackSuspended = true
+      pending = null
+      pendingSource = null
+      if (persistenceEnabled && !persist()) {
+        state.targetSessionId = previous.targetSessionId
+        ackSuspended = previous.ackSuspended
+        pending = previous.pending
+        throw new Error(`无法持久化 unbind：${state.persistenceError ?? 'state_write_failed'}`)
+      }
+      controlEpoch += 1
+      clearAckTimer()
+      ackCancelEpoch += 1
+      ackAbort?.abort()
+      ackAbort = null
       return status()
     },
   }
@@ -676,14 +2849,22 @@ const INBOX_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['status', 'bind', 'unbind', 'restore', 'pause', 'resume', 'start', 'stop', 'ack'],
+      enum: [
+        'status', 'bind', 'unbind', 'restore', 'pause', 'resume', 'start', 'stop', 'ack',
+        'discard', 'accept-identity',
+      ],
       description: '查看或修改本会话的 inbox 挂载：status 看状态；bind/unbind 改目标会话；'
         + 'restore 恢复持久化绑定（必要时 resume 会话）并启动 SSE；pause/resume 暂停或恢复注入；'
-        + 'start/stop 开关 SSE；ack 推进读游标。默认 status。',
+        + 'start/stop 开关 SSE；ack 重试待 ACK；discard 需 confirm=true，放弃待 ACK/注入意图；'
+        + 'accept-identity 需 confirm=true，接受变化的数据库身份。默认 status。',
     },
     sessionId: {
       type: 'string',
       description: 'bind/restore 时可指定目标 DSH 会话；省略则用调用本工具的会话或已持久化绑定。',
+    },
+    confirm: {
+      type: 'boolean',
+      description: 'discard/accept-identity 的显式确认；省略或 false 会被拒绝。',
     },
   },
   additionalProperties: false,
@@ -691,6 +2872,7 @@ const INBOX_SCHEMA = {
 
 const COMMAND_VERBS = Object.freeze([
   'status', 'bind', 'unbind', 'detach', 'restore', 'pause', 'resume', 'start', 'stop', 'ack',
+  'discard', 'accept-identity',
 ])
 
 const COMMAND_USAGE = '/inbox [' + COMMAND_VERBS.join('|') + ']'
@@ -700,6 +2882,38 @@ function shortSession(id) {
   const text = String(id ?? '')
   if (!text) return ''
   return text.length <= 10 ? text : text.slice(0, 8) + '…'
+}
+
+/**
+ * Honest wording for an explicit pendingPush recovery request. The retry only re-establishes
+ * the *instance baseline* against the currently answering server; the exact match below still
+ * decides whether anything is injected, and a 200 without processId keeps it blocked.
+ */
+const PUSH_RETRY_REQUESTED_TEXT = '已发起显式恢复校验：以当前运行实例作为新基线；'
+  + '恢复仍要求精确匹配 identity/目标/会话/revision/IDs/frozen，'
+  + '服务端不提供 processId 或匹配失败时保持阻断，不会自动重放。结果见 /inbox status。'
+
+function pushRetryFailureText(reason) {
+  switch (reason) {
+    case 'stopped':
+      return '未发出恢复校验：Inbox 已停止。先 /inbox start，再 /inbox ack；记录仍保留。'
+    case 'verify_in_flight':
+      return '已有新鲜面板校验在途；本次未发起新请求，请等结果后再 /inbox ack。'
+    case 'injection_in_flight':
+      return '注入正在进行；本次未发起恢复请求，请等结果后再 /inbox ack。'
+    case 'persistence_unavailable':
+      return '状态持久化不可用：未发起恢复校验；记录仍保留。'
+    case 'state_lock_lost':
+      return '状态文件锁不属于本实例：未发起恢复校验。'
+    case 'persist_failed':
+      return '无法持久化恢复请求：push 记录仍保留，不会自动重放。'
+    case 'intent_uncertain':
+      return '存在未确认的注入意图，不会发起恢复校验；请人工核对后用 /inbox discard confirm。'
+    case 'disposed':
+      return '客户端已销毁：未发起恢复校验。'
+    default:
+      return '未发起恢复校验；记录仍保留，详情见 /inbox status。'
+  }
 }
 
 /**
@@ -722,11 +2936,94 @@ export function renderInboxStatus(status, callingSession = null) {
     + ` ack=${status.ackedRevision ?? 0}`
     + ` 待注入=${status.pendingRevision ?? 0}`)
   lines.push(`注入:     ${status.paused ? '已暂停' : '未暂停'} · MCP ${status.lastMcpStartId ? '已连接' : '未连接'}`)
+  if (status.pendingAck) {
+    const pending = status.pendingAck
+    lines.push(`待 ACK:   rev=${pending.panelRevision} push=${pending.pushRevision}`
+      + ` items=${pending.itemIds?.length ?? 0} target=${shortSession(pending.targetSessionId) || '-'}`
+      + ` identity=${pending.inboxIdentity ?? '-'} 尝试=${pending.attempts ?? 0}`
+      + (pending.retryable === false ? ' · 自动重试已停止' : ''))
+    if (pending.lastError) lines.push(`ACK 错误: ${pending.lastError}`)
+    if (pending.lastError === 'pending_target_unverified') {
+      lines.push('  旧记录缺少目标指纹，无法安全重试原 ACK；请核对后用 /inbox discard confirm'
+        + ' 放弃并按当前目标重建，不会自动重发。')
+    } else if (/pending_(base_url|inbox_id)_mismatch/.test(String(pending.lastError))) {
+      lines.push('  恢复原目标配置后可用 /inbox ack 显式重试原记录；不会自动重发。')
+    } else if (pending.retryable === false && pending.lastError) {
+      lines.push('  自动重试已停止；请按错误码核对服务端状态后用 /inbox ack 显式重试'
+        + ' 或 /inbox discard confirm。')
+    }
+    lines.push('⚠ 新面板注入已暂停；人工核对后用 /inbox discard confirm 放弃'
+      + '（可能重复注入或遗留未确认条目）。')
+  }
+  if (status.injectionIntent) {
+    lines.push('⚠ 注入意图未确认：followup 可能已发生也可能未发生；不会自动重试或 ACK。')
+    lines.push('  人工核对目标会话与消息板后，用 /inbox discard confirm 明确处置。')
+  }
+  if (status.identityMismatch) {
+    lines.push(`⚠ Inbox 数据库身份变化: ${status.identityMismatch.previous ?? 'unknown'}`
+      + ` → ${status.identityMismatch.seen}；自动注入/ACK 已停止。`)
+    lines.push('  确认这是预期换库/轮换后，用 /inbox accept-identity confirm。')
+  }
+  if (status.deferredPush?.reason) {
+    lines.push(`⚠ 延迟/未注入的 push: rev=${status.deferredPush.revision}`
+      + ` push=${status.deferredPush.pushRevision}（${status.deferredPush.reason}）`)
+    lines.push('  不会自动重放；请人工核对消息板，确认后再处理后续 push。')
+  }
+  if (status.pendingPush) {
+    const pendingPush = status.pendingPush
+    lines.push(`已验证待注入: rev=${pendingPush.panelRevision}`
+      + ` push=${pendingPush.pushRevision} items=${pendingPush.itemIds?.length ?? 0}`
+      + ` target=${shortSession(pendingPush.targetSessionId) || '-'}`
+      + ` identity=${pendingPush.inboxIdentity ?? '-'}`)
+    const error = String(status.lastError ?? '')
+    if (!pendingPush.targetSessionId) {
+      lines.push('  ⚠ 记录没有目标会话，无法自动恢复；不会注入到别的会话。'
+        + '请人工核对后用 /inbox discard confirm 放弃。')
+    } else if (status.targetSessionId !== pendingPush.targetSessionId) {
+      lines.push(`  ⚠ 当前绑定不是原目标 ${shortSession(pendingPush.targetSessionId)}；`
+        + '请先 /inbox bind 回原会话（或 restore），再 /inbox ack 显式重试实例校验。'
+        + '不会投递到当前会话。')
+    } else if (error === 'stale_connection_instance') {
+      lines.push('  ⚠ 当前服务端实例与已证明实例不同（如服务端正常重启）：不会自动注入。'
+        + '确认是正常重启后，可 /inbox ack 显式重试一次：以当前运行实例作为新基线，'
+        + '仍精确匹配 identity/目标/会话/revision/IDs/frozen；无法识别同身份克隆/回滚，'
+        + '不匹配不会注入。也可 /inbox discard confirm 放弃（可能丢失该 push）。')
+    } else if (error === 'connection_instance_unverified') {
+      lines.push('  ⚠ 服务端不提供可验证的 processId（或无法安全判定）：不会注入；'
+        + '/inbox ack 也无法建立实例证明。需先让服务端 /runtime 提供 processId 后再 '
+        + '/inbox ack，或核对后用 /inbox discard confirm 放弃（可能丢失该 push）。')
+    } else if (error === 'pending_push_instance_unverified') {
+      lines.push('  暂时无法校验服务端实例：push 已保留，将按有界退避重试；'
+        + '也可用 /inbox ack 立即重试。')
+    } else if (/pending_push_(target|session)_mismatch/.test(error)) {
+      lines.push('  ⚠ 目标/会话与记录不一致：不会自动重放。恢复原目标配置后'
+        + '用 /inbox ack 显式重试，或 /inbox discard confirm。')
+    } else {
+      lines.push('  恢复会重新 GET 并精确匹配；不匹配需人工核对，不会自动重放。')
+    }
+  }
+  if (status.freshVerification?.required === true) {
+    lines.push(`· 新鲜面板校验待完成: 尝试=${status.freshVerification.attempts ?? 0}`
+      + (status.freshVerification.lastError ? ` 最近=${status.freshVerification.lastError}` : ''))
+  } else if (status.freshVerification?.lastError) {
+    lines.push(`· 新鲜面板校验诊断: ${status.freshVerification.lastError}`)
+  }
+  if (status.blockedReason) lines.push(`阻断:     ${status.blockedReason}`)
   if (status.stateFile) lines.push(`状态文件: ${status.stateFile}`)
   lines.push(`配置:     ${status.config?.baseUrl ?? '-'} · token 来源 ${status.config?.tokenSource ?? 'unknown'}`)
   if (status.lastError) lines.push(`最近错误: ${status.lastError}`)
   if (!target) {
-    lines.push('⚠ 未绑定状态下，新面板会注入到第一个 idle 会话；要彻底停下用 /inbox detach')
+    if (status.stopped) {
+      lines.push('已停止：不会注入。用 /inbox start 或 /inbox bind <sessionId> 恢复。')
+    } else if (status.pendingAck || status.injectionIntent || status.pendingPush
+      || status.freshVerification?.required === true) {
+      lines.push('未绑定且当前有待处理记录：新面板不会注入；先按上面的提示处置记录，'
+        + '再 /inbox bind <sessionId>。')
+    } else if (status.blockedReason) {
+      lines.push('未绑定且有阻断：当前不会注入；先解除阻断，再 /inbox bind <sessionId>。')
+    } else {
+      lines.push('⚠ 未绑定状态下，新面板会注入到第一个 idle 会话；要彻底停下用 /inbox detach')
+    }
   }
   return lines.join('\n')
 }
@@ -739,7 +3036,7 @@ export function renderInboxStatus(status, callingSession = null) {
 export function registerInboxCommand(ctx, client) {
   const definition = {
     name: 'inbox',
-    description: '查看或修改 BMA3 inbox 挂载（绑定会话 / SSE / 暂停 / 游标）',
+    description: '查看或修改 BMA3 inbox 挂载（绑定会话 / SSE / 暂停 / 待 ACK 处置）',
     input: { hint: `[${COMMAND_VERBS.join('|')}]` },
     handler: async (invocation) => {
       const raw = String(invocation?.rawInput ?? '').trim()
@@ -770,14 +3067,17 @@ export function registerInboxCommand(ctx, client) {
             client.unbind()
             return {
               kind: 'success',
-              text: '已解绑。\n'
+              text: '已解绑；自动 ACK 重试已暂停（记录仍保留，重新 bind 后恢复）。\n'
                 + '⚠ SSE 仍在运行：未绑定状态下新面板会注入到第一个 idle 会话。\n'
-                + '要彻底脱手用 /inbox detach（解绑+停止），只停轮询用 /inbox stop。',
+                + '要彻底脱手用 /inbox detach（解绑+停止）。',
             }
           case 'detach':
             client.unbind()
             client.stop()
-            return { kind: 'success', text: '已解绑并停止 SSE。要重新接入：/inbox bind' }
+            return {
+              kind: 'success',
+              text: '已解绑并停止 SSE；自动 ACK 重试已停止（记录仍保留）。要重新接入：/inbox bind',
+            }
           case 'restore':
             await client.restore(argument || client.status().targetSessionId)
             return { kind: 'success', text: `已恢复绑定\n${renderInboxStatus(client.status(), callingSession)}` }
@@ -787,15 +3087,107 @@ export function registerInboxCommand(ctx, client) {
           case 'resume':
             client.resume()
             return { kind: 'success', text: '已恢复推送注入。' }
-          case 'start':
+          case 'start': {
             client.start()
-            return { kind: 'success', text: 'SSE 已启动。' }
+            const started = client.status()
+            if (!started.running) {
+              return {
+                kind: 'error',
+                text: `未启动：${started.blockedReason ?? started.lastError ?? 'state_write_failed'}`,
+              }
+            }
+            if (started.targetError || started.config?.targetError
+              || started.persistence?.error || started.persistence?.enabled === false) {
+              return {
+                kind: 'error',
+                text: `未启动/不可安全运行：${started.targetError
+                  ?? started.config?.targetError
+                  ?? started.persistence?.error
+                  ?? 'persistence disabled'}`,
+              }
+            }
+            return {
+              kind: 'success',
+              text: started.blockedReason
+                ? `SSE 已启动，但仍有阻断：${started.blockedReason}`
+                : 'SSE 已启动。',
+            }
+          }
           case 'stop':
             client.stop()
-            return { kind: 'success', text: 'SSE 已停止（绑定保留）。' }
-          case 'ack':
+            return { kind: 'success', text: 'SSE 已停止（绑定保留；自动 ACK 重试暂停）。' }
+          case 'ack': {
+            const before = client.status()
+            const hadAck = Boolean(before.pendingAck)
+            const beforeAttempts = before.pendingAck?.attempts ?? 0
+            const hadPush = Boolean(before.pendingPush)
             await client.ack()
-            return { kind: 'success', text: `读游标已推进到 push=${client.status().ackedRevision ?? 0}` }
+            const after = client.status()
+            if (hadAck) {
+              if (!after.pendingAck) {
+                return { kind: 'success', text: 'ACK 已完成，待 ACK 记录已清除；新鲜面板校验已排队。' }
+              }
+              if ((after.pendingAck.attempts ?? 0) <= beforeAttempts) {
+                return {
+                  kind: 'error',
+                  text: `未发出 ACK 请求：${after.pendingAck.lastError ?? '当前条件不允许发送'}。`
+                    + '不会自动重发；恢复原目标配置后可用 /inbox ack 重试原记录，'
+                    + '旧记录无目标指纹时只能 /inbox discard confirm 后重建。',
+                }
+              }
+              return {
+                kind: 'success',
+                text: '已请求重试原待 ACK 记录；结果见 /inbox status。',
+              }
+            }
+            if (hadPush && after.pendingPush) {
+              const recovery = after.lastAckResult
+              if (!recovery || recovery.kind !== 'push_retry') {
+                return {
+                  kind: 'error',
+                  text: '未发起恢复校验；记录仍保留，详情见 /inbox status。',
+                }
+              }
+              if (!recovery.ok) {
+                return { kind: 'error', text: pushRetryFailureText(recovery.reason) }
+              }
+              return { kind: 'success', text: PUSH_RETRY_REQUESTED_TEXT }
+            }
+            if (hadPush && !after.pendingPush) {
+              return { kind: 'success', text: '已验证待注入的 push 已恢复处理；结果见 /inbox status。' }
+            }
+            if (after.injectionIntent) {
+              return {
+                kind: 'error',
+                text: '存在未确认的注入意图，不会发送 ACK；请人工核对后用 /inbox discard confirm。',
+              }
+            }
+            return {
+              kind: 'success',
+              text: '当前没有待 ACK 记录；不会用 revision-only 推进游标。',
+            }
+          }
+          case 'discard': {
+            if (argument !== 'confirm') {
+              return {
+                kind: 'error',
+                text: '放弃待处理记录需要显式确认：/inbox discard confirm\n'
+                  + '⚠ 可能造成重复注入，或留下未确认的服务端条目。',
+              }
+            }
+            const text = client.discard(true)
+            return { kind: 'success', text: `${text}\n${renderInboxStatus(client.status(), callingSession)}` }
+          }
+          case 'accept-identity': {
+            if (argument !== 'confirm') {
+              return {
+                kind: 'error',
+                text: '接受新的 inbox 数据库身份需要显式确认：/inbox accept-identity confirm',
+              }
+            }
+            const text = client.acceptIdentity(true)
+            return { kind: 'success', text: `${text}\n${renderInboxStatus(client.status(), callingSession)}` }
+          }
           default:
             return {
               kind: 'error',
@@ -835,15 +3227,17 @@ export function apply(ctx, config = {}) {
       name: 'bma3_inbox',
       description:
         '查看/修改当前会话的 inbox 挂载状态。action=status 返回绑定会话、SSE 连接、游标、暂停标志、'
-        + 'push 水位、心跳/MCP 状态与配置来源；bind 把面板绑到指定会话（省略则当前会话）并持久化；'
-        + 'restore 恢复持久化绑定并 resume 会话；unbind 解绑；pause/resume 暂停或恢复注入；'
-        + 'start/stop 开关 SSE；ack 推进读游标。不带参数等价 status。',
+        + 'push 水位、待 ACK 摘要、身份/阻断原因与配置来源；bind 把面板绑到指定会话（省略则当前会话）并'
+        + '持久化；restore 恢复持久化绑定并 resume 会话；unbind 解绑；pause/resume 暂停或恢复注入；'
+        + 'start/stop 开关 SSE；ack 重试待 ACK；discard（需 confirm=true）放弃待 ACK/注入意图；'
+        + 'accept-identity（需 confirm=true）接受变化的数据库身份。不带参数等价 status。',
       parameters: INBOX_SCHEMA,
       output: OUTPUT,
       execute: async (args = {}, exec = {}) => {
         const action = String(args.action ?? 'status').trim() || 'status'
         const callingSession = exec?.agent?.id ? String(exec.agent.id) : null
         let value
+        let message = null
         switch (action) {
           case 'status':
             value = client.status()
@@ -870,13 +3264,61 @@ export function apply(ctx, config = {}) {
           case 'start':
             client.start()
             value = client.status()
+            if (!value.running) {
+              message = `未启动：${value.blockedReason ?? value.lastError ?? 'state_write_failed'}`
+            } else if (value.targetError || value.config?.targetError
+              || value.persistence?.error || value.persistence?.enabled === false) {
+              message = `未启动/不可安全运行：${value.targetError
+                ?? value.config?.targetError
+                ?? value.persistence?.error
+                ?? 'persistence disabled'}`
+            } else if (value.blockedReason) {
+              message = `SSE 已启动，但仍有阻断：${value.blockedReason}`
+            } else {
+              message = 'SSE 已启动。'
+            }
             break
           case 'stop':
             client.stop()
             value = client.status()
             break
-          case 'ack':
+          case 'ack': {
+            const before = client.status()
+            const beforeAttempts = before.pendingAck?.attempts ?? 0
+            const hadAck = Boolean(before.pendingAck)
+            const hadPush = Boolean(before.pendingPush)
             value = await client.ack()
+            if (hadAck) {
+              if (!value.pendingAck) message = 'ACK 已完成，待 ACK 记录已清除。'
+              else if ((value.pendingAck.attempts ?? 0) <= beforeAttempts) {
+                message = `未发出 ACK 请求：${value.pendingAck.lastError
+                  ?? '当前条件不允许发送'}。不会自动重发。`
+              } else message = '已请求重试原待 ACK 记录；结果见 status。'
+            } else if (hadPush && value.pendingPush) {
+              const recovery = value.lastAckResult
+              if (!recovery || recovery.kind !== 'push_retry') {
+                message = '未发起恢复校验；记录仍保留，详情见 status。'
+              } else if (!recovery.ok) {
+                message = pushRetryFailureText(recovery.reason)
+              } else {
+                message = PUSH_RETRY_REQUESTED_TEXT
+              }
+            } else if (hadPush) {
+              message = '已验证待注入的 push 已恢复处理；结果见 status。'
+            } else if (value.injectionIntent) {
+              message = '存在未确认的注入意图，不会发送 ACK；请人工核对后 discard。'
+            } else {
+              message = '当前没有待 ACK 记录；不会用 revision-only 推进游标。'
+            }
+            break
+          }
+          case 'discard':
+            message = client.discard(args.confirm === true)
+            value = client.status()
+            break
+          case 'accept-identity':
+            message = client.acceptIdentity(args.confirm === true)
+            value = client.status()
             break
           default:
             throw new Error(`未知 action: ${action}`)
@@ -885,6 +3327,7 @@ export function apply(ctx, config = {}) {
           text: JSON.stringify({
             action,
             callingSession,
+            ...(message ? { message } : {}),
             thisSessionIsTarget:
               value.targetSessionId != null && value.targetSessionId === callingSession,
             ...value,
@@ -899,11 +3342,19 @@ export function apply(ctx, config = {}) {
 
   // A persisted binding wins over autoStart: "bound once, bound forever" (D-045).
   const initial = client.status()
-  if (initial.targetSessionId && !initial.stopped) {
-    void client.restore(initial.targetSessionId)
+  if (initial.lockError || initial.stateError || initial.persistence?.enabled === false) {
+    ctx?.logger?.('bma3-dsh')?.warn?.(`inbox disabled: ${initial.blockedReason}`)
+  } else if (initial.targetSessionId && !initial.stopped) {
+    void client.restore(initial.targetSessionId).catch((error) => {
+      ctx?.logger?.('bma3-dsh')?.warn?.(`inbox restore failed: ${error?.message ?? error}`)
+    })
   } else if (config.autoStart !== false && !initial.stopped) {
-    client.start()
+    try {
+      client.start()
+    } catch (error) {
+      ctx?.logger?.('bma3-dsh')?.warn?.(`inbox start failed: ${error?.message ?? error}`)
+    }
   }
-  ctx?.effect?.(() => () => client.stop(false))
+  ctx?.effect?.(() => () => client.dispose())
   return client
 }
