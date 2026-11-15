@@ -2,7 +2,11 @@
 
 ## 当前目标 / 进行中范围
 
-**用户要求停工（2026-11-15，未提交、未部署）**：本会话用户明确要求「不管你做到哪了，停下，保存当前工作状态」。已停止继续开发和验证；仅按要求记录交接，整体跨组件最终复核被中断，**尚无完整最终复核结论，不应宣称本批全部关账或可部署**。未经用户再次要求不要自动恢复。当前分支 `feat/bma3-plan-1`、HEAD `3b79518`；工作树保留大量已修改和未跟踪文件，未做 `commit`、`push`、部署或清理。
+**2026-11-15 22:33 —— 0.0.7-early 已发布，本机可调试**：tag [`v0.0.7-early`](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-early)（Pre-release）指向 `5bf33e4`；资产 `botmosire-a3-linux-x86_64.tar.gz`（sha256 `e1f498a2…`）与 `mosire-bma3-dsh-0.0.7-early.tgz`（sha256 `5f9d42df…`）。发布门禁：`./mvnw -q -o test` rc=0（276 tests / 0 fail / 1 skip）、插件 `npm test` 155 pass、`packaging/smoke.sh` PASS（app-image 启动、`/healthz` 200）。本批改动与破坏性升级顺序见 release notes；**真实 QQ/LLBot、真实 DSH 宿主、远端部署、掉电与升级/回滚仍 `NOT_RUN`**。
+
+**本机调试环境（2026-11-15 22:45 起，systemd --user 临时单元）**：`bma3-local-app.service`（jar 0.0.7-early，配置与数据在 `build/local-0.0.7/`，端口 MCP `18765` / Inbox `18766` / health `18767`）、`bma3-local-fake.service`（`tools/e2e-local/FakeOneBot`，WS `45701` / 注入 `46701`）、`dsh-bma3test.service`（DSH web host，端口 `3090`；profile `bma3test` 从 `web` 复制，`stateFile` 指向 `build/local-0.0.7/dsh-inbox-state.json` 以避开主 host 的状态锁；token 见 `journalctl --user -u dsh-bma3test`，不落库）。辅助脚本：`build/local-0.0.7/inject-test-message.py`、`build/local-0.0.7/inbox-status.sh`。**已实测**：jar `--version` = 0.0.7-early、MCP `tools/list` 52 个工具、guarded ACK 返回逐条 `complete=true`、注入假 QQ 消息后 panel/identity/processId 正常、插件 v2 快照与独占锁生成、DSH 原生 mcp-client 已连上本机 jar。**未实测**：真实 DSH 会话里的面板注入与 ACK 恢复（需在 `3090` 的 BMA3 预设会话里手动跑）、真实 QQ、远端部署。
+
+**用户要求停工（2026-11-15，未提交、未部署）**：本会话用户明确要求「不管你做到哪了，停下，保存当前工作状态」。已停止继续开发和验证；仅按要求记录交接，整体跨组件最终复核被中断，**尚无完整最终复核结论，不应宣称本批全部关账或可部署**。未经用户再次要求不要自动恢复。当前分支 `feat/bma3-plan-1`；止损批次已提交为 `d08c5b2`，版本发布提交为 `5bf33e4`（tag `v0.0.7-early`），均已推送；本机已按上文起调试环境，远端未部署。
 
 **止损批次停工快照**：[发送与 Inbox 确认止损设计](../superpowers/specs/2026-11-15-delivery-safety-design.md)、[outbound plan](../superpowers/plans/2026-11-15-outbound-delivery-safety.md)、[ACK recovery plan](../superpowers/plans/2026-11-15-inbox-ack-recovery.md)。消息板、QQ 文本/附件、出站状态读取与加锁启动恢复、Inbox 服务端和插件的计划内实现及各责任区针对性复核已完成；整体独立复核在用户停工时中断。插件实例变化后的显式人工重试仅重新建立当前实例基线，仍要求原目标、身份、会话、修订及条目精确匹配，不能证明克隆/回滚。
 
