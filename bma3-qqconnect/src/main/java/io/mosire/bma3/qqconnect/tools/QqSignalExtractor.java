@@ -26,8 +26,21 @@ public final class QqSignalExtractor {
     private QqSignalExtractor() {
     }
 
+    /** Default command prefixes when the caller has no configured list. */
+    public static final java.util.List<String> DEFAULT_COMMAND_PREFIXES = java.util.List.of("/", "!");
+
     public static PriorityAttributes attributes(OneBotEvent event, String selfName,
                                                 boolean replyToBot) {
+        return attributes(event, selfName, replyToBot, DEFAULT_COMMAND_PREFIXES);
+    }
+
+    /**
+     * Same signals, but {@code qq_command} is derived from the configured prefixes instead of being
+     * hard-coded to {@code /} and {@code !} — that is what the {@code .rd} dice command needed.
+     */
+    public static PriorityAttributes attributes(OneBotEvent event, String selfName,
+                                                boolean replyToBot,
+                                                java.util.List<String> commandPrefixes) {
         Set<String> keys = new LinkedHashSet<>();
         String self = event.selfId() > 0L ? Long.toString(event.selfId()) : "";
         boolean atBot = false;
@@ -59,7 +72,16 @@ public final class QqSignalExtractor {
             keys.add(SELF_NAME);
         }
         boolean directed = event.groupId() <= 0L || atBot;
-        if (directed && (text.startsWith("/") || text.startsWith("!"))) {
+        boolean command = false;
+        java.util.List<String> prefixes = commandPrefixes == null || commandPrefixes.isEmpty()
+                ? DEFAULT_COMMAND_PREFIXES : commandPrefixes;
+        for (String prefix : prefixes) {
+            if (prefix != null && !prefix.isEmpty() && text.startsWith(prefix)) {
+                command = true;
+                break;
+            }
+        }
+        if (directed && command) {
             keys.add(COMMAND);
         }
         return new PriorityAttributes(keys);

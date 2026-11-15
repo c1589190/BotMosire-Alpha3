@@ -33,6 +33,11 @@ public final class PriorityResolver {
         this.weighting = weighting;
     }
 
+    /** The weighting snapshot this resolver is currently scoring with (same object ingest uses). */
+    public AppConfig.Weighting weighting() {
+        return weighting.get();
+    }
+
     public PriorityDecision resolve(String sourceKey, String senderId, String senderName,
                                     PriorityAttributes attributes) {
         return resolve(sourceKey, senderId, senderName, attributes, "");
@@ -70,7 +75,7 @@ public final class PriorityResolver {
             }
         }
         delta += patternDelta(current, senderId, senderName, reasons);
-        delta += contentDelta(current, text, reasons);
+        delta += contentDelta(current, text, sourceKey, reasons);
 
         int raw = base + delta;
         int clipped = Math.min(current.maxPriority(), raw);
@@ -91,15 +96,18 @@ public final class PriorityResolver {
     }
 
     /** Adds every matching {@code weighting.rules} delta; rules stack in declared order. */
-    private static int contentDelta(AppConfig.Weighting current, String text, List<String> reasons) {
+    private static int contentDelta(AppConfig.Weighting current, String text, String sourceKey,
+                                    List<String> reasons) {
         int delta = 0;
         String body = text == null ? "" : text;
         for (AppConfig.ContentRule rule : current.rules()) {
-            if (!rule.matches(body)) {
+            if (!rule.matches(body, sourceKey)) {
                 continue;
             }
             delta += rule.delta();
-            reasons.add("rule:" + rule.match() + ":" + rule.pattern() + " " + signed(rule.delta()));
+            reasons.add("rule:" + rule.match() + ":"
+                    + (rule.source().isBlank() ? "" : rule.source() + ":")
+                    + rule.pattern() + " " + signed(rule.delta()));
         }
         return delta;
     }

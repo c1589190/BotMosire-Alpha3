@@ -34,6 +34,9 @@ public final class Bma3Env {
     /** Bearer token guarding the Inbox HTTP/SSE endpoint (independent of {@link #MCP_TOKEN}). */
     public static final String INBOX_TOKEN = "INBOX_TOKEN";
 
+    /** Bearer token guarding the {@code /debug/*} ask surface (independent of the other two). */
+    public static final String DEBUG_TOKEN = "DEBUG_TOKEN";
+
     /** Tokens are 24 random bytes rendered as 48 lowercase hex characters. */
     private static final int TOKEN_BYTES = 24;
 
@@ -81,7 +84,7 @@ public final class Bma3Env {
         Map<String, String> existing = read(file);
         Map<String, String> next = new LinkedHashMap<>(existing);
         boolean changed = false;
-        for (String key : new String[] {MCP_TOKEN, INBOX_TOKEN}) {
+        for (String key : new String[] {MCP_TOKEN, INBOX_TOKEN, DEBUG_TOKEN}) {
             String current = next.get(key);
             if (rotate || current == null || current.isBlank()) {
                 next.put(key, generate());
@@ -184,6 +187,11 @@ public final class Bma3Env {
     /** Inbox bearer token, or empty when absent. */
     public String inboxToken() {
         return values.getOrDefault(INBOX_TOKEN, "");
+    }
+
+    /** Debug-surface bearer token, or empty when absent (older files are upgraded in place). */
+    public String debugToken() {
+        return values.getOrDefault(DEBUG_TOKEN, "");
     }
 
     /** True when the write failed; the caller should surface this in {@code /healthz}. */

@@ -26,8 +26,13 @@ class Bma3EnvTest {
         assertThat(first.mcpToken()).hasSize(48).matches("[0-9a-f]{48}");
         assertThat(first.inboxToken()).hasSize(48).matches("[0-9a-f]{48}");
         assertThat(first.mcpToken()).isNotEqualTo(first.inboxToken());
+        // The debug surface has its own bearer so rotating it never disturbs MCP or the Inbox SSE.
+        assertThat(first.debugToken()).hasSize(48).matches("[0-9a-f]{48}");
+        assertThat(first.debugToken()).isNotEqualTo(first.mcpToken())
+                .isNotEqualTo(first.inboxToken());
         assertThat(second.mcpToken()).isEqualTo(first.mcpToken());
         assertThat(second.inboxToken()).isEqualTo(first.inboxToken());
+        assertThat(second.debugToken()).isEqualTo(first.debugToken());
         assertThat(second.degraded()).isFalse();
     }
 
@@ -40,7 +45,9 @@ class Bma3EnvTest {
 
         assertThat(rotated.mcpToken()).isNotEqualTo(original.mcpToken());
         assertThat(rotated.inboxToken()).isNotEqualTo(original.inboxToken());
-        assertThat(Bma3Env.read(file)).containsKeys(Bma3Env.MCP_TOKEN, Bma3Env.INBOX_TOKEN);
+        assertThat(rotated.debugToken()).isNotEqualTo(original.debugToken());
+        assertThat(Bma3Env.read(file))
+                .containsKeys(Bma3Env.MCP_TOKEN, Bma3Env.INBOX_TOKEN, Bma3Env.DEBUG_TOKEN);
     }
 
     @Test

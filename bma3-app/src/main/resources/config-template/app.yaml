@@ -77,6 +77,25 @@ weighting:
     qq_command: 100
     # qq_person_id/132843233: 50   # 稳定 QQ 号；昵称搜索用 qq_search
 
+  # qq_command 由这些前缀派生（默认只有 / 和 !）。要支持 .rd 这类命令就把 . 加进来。
+  commandPrefixes: ["/", "!"]
+
+  # 有序正文规则，每条命中都叠加 delta（不是覆盖）。
+  # match: prefix | contains | regex；source 可选，空=全来源，按 / 边界精确到来源子树。
+  # regex 的 pattern 上限 200 字符，非法正则启动即报错。
+  rules:
+    # - match: prefix
+    #   pattern: ".rd"
+    #   delta: 150            # 私聊基数 300 + 150 = 450，立即推送
+    #   source: qq_group/955432692   # 只在这个群把 .rd 当命令
+    # - match: regex
+    #   pattern: "^\\s*(抽卡|十连)\\s*$"
+    #   delta: 200
+    # - match: contains
+    #   pattern: "@bot"
+    #   delta: 350
+    #   ignoreCase: true
+
 webconnect:
   enabled: false
   binary: /snap/bin/chromium
@@ -104,6 +123,24 @@ watchdog:
   pluginHeartbeatTimeoutSeconds: 45
   diskMinFreeMb: 200
   readyzCritical: [mcp, inboxHttp, qqAccount, db]
+
+# 远程问诊面：挂在 health 端口上，Bearer 用 .bma3env 的 DEBUG_TOKEN（与 MCP/INBOX 独立）。
+# security.auth=none 时整个 /debug 面不挂载。
+debug:
+  enabled: true
+  maxPending: 32          # 同时未回答的提问上限；0 = 不限（不做单飞）
+  askTimeoutSeconds: 120
+  questionMaxBytes: 4096
+  answerMaxBytes: 16384
+  retention: 200          # 保留最近多少条请求（含正文，0600）
+  priority: 350           # 提问注入 Inbox 的优先级；>=300 立即推送
+
+# 定时任务：到点只往 Inbox 注入一条通知（source=bma3_task/<id>），不自己执行代码。
+schedule:
+  enabled: true
+  tickSeconds: 1
+  maxSchedules: 200
+  defaultMissedPolicy: skip   # 停机错过的槽：skip 跳过 / once 补一次
 
 logging:
   level: INFO

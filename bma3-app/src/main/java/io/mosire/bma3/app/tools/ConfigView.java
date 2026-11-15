@@ -58,6 +58,7 @@ final class ConfigView {
         weighting.set("sourcePriority", JSON.valueToTree(config.weighting().sourcePriority()));
         weighting.set("attributes", JSON.valueToTree(config.weighting().attributes()));
         weighting.set("rules", JSON.valueToTree(config.weighting().rules()));
+        weighting.set("commandPrefixes", JSON.valueToTree(config.weighting().commandPrefixes()));
 
         ObjectNode inbox = root.putObject("inbox");
         inbox.put("inboxId", config.inbox().inboxId());
@@ -109,6 +110,21 @@ final class ConfigView {
                 config.watchdog().pluginHeartbeatTimeoutSeconds());
         watchdog.put("diskMinFreeMb", config.watchdog().diskMinFreeMb());
         watchdog.set("readyzCritical", JSON.valueToTree(config.watchdog().readyzCritical()));
+
+        ObjectNode debug = root.putObject("debug");
+        debug.put("enabled", config.debug().enabled());
+        debug.put("maxPending", config.debug().maxPending());
+        debug.put("askTimeoutSeconds", config.debug().askTimeoutSeconds());
+        debug.put("questionMaxBytes", config.debug().questionMaxBytes());
+        debug.put("answerMaxBytes", config.debug().answerMaxBytes());
+        debug.put("retention", config.debug().retention());
+        debug.put("priority", config.debug().priority());
+
+        ObjectNode schedule = root.putObject("schedule");
+        schedule.put("enabled", config.schedule().enabled());
+        schedule.put("tickSeconds", config.schedule().tickSeconds());
+        schedule.put("maxSchedules", config.schedule().maxSchedules());
+        schedule.put("defaultMissedPolicy", config.schedule().defaultMissedPolicy());
 
         ObjectNode logging = root.putObject("logging");
         logging.put("level", config.logging().level());

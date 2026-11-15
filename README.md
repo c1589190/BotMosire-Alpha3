@@ -269,6 +269,54 @@ jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子�
 > 红线 2（D-060）：token 不得进入提交、配置样例、仓库文件与导出/快照类输出；凭据文件必须 0600。
 > 上面用 `!!js` 在组装期读文件，就是为了让 token **永远不经过对话**。
 
+### 4.1 远程问诊（debug API）与定时任务（0.0.8 批次）
+
+两个新面都挂在 **health 端口**上，所以远程调试只需要一条 SSH 隧道：
+
+```bash
+ssh -L 8766:127.0.0.1:8766 ubuntu@<host>
+# 本地拿到的是远端 jar 的 health/debug 面
+```
+
+token 还是同一个 `.bma3env`，但 debug 面用**第三条独立 token**（`DEBUG_TOKEN`）：
+
+```bash
+curl -H "Authorization: Bearer $(grep DEBUG_TOKEN .bma3env | cut -d= -f2)"      http://127.0.0.1:8766/debug/snapshot
+```
+
+| 端点 | 作用 |
+|---|---|
+| `GET /debug/snapshot` | 版本/pid/uptime + watchdog 快照 + Inbox 状态与插件心跳 + 各 DB 大小 |
+| `GET /debug/logs?since=<ISO>&limit=` | watchdog 事件尾（只有 ID/状态/耗时，没有正文） |
+| `POST /debug/ask` | `{"question":"...","timeoutSeconds":120,"wait":true}` → 提问注入被绑定会话；`wait=false` 立返回 202 + `id` |
+| `GET /debug/ask/{id}` | 拉单条结果（`PENDING`/`ANSWERED`/`EXPIRED`） |
+| `POST /debug/answer` | `{"requestId":"...","text":"..."}`，给没有 MCP 工具的调用方 |
+| `GET /debug/ask?status=pending` | 列表 |
+
+- 问题以 `source=bma3_debug/<id>`、优先级 350 **经 Inbox** 推给 Agent；Agent 用 MCP 工具
+  `bma3_debug_reply(requestId, text)` 回答，你那条 HTTP 请求就会返回答案。
+- 不做单飞：`debug.maxPending` 默认 32，`0` = 不限；超限返回 429。
+- `security.auth=none` 时整个 `/debug` 面**不挂载**（404）。这里**不能**执行命令，只能提问和看快照。
+
+定时任务（`bma3_schedule_*`）：`once`（ISO 时刻）/`interval`（秒）/`cron`（5 字段）。
+到点只往 Inbox 注入一条 `source=bma3_task/<id>` 的通知，Agent 在会话里看到后自己决定做什么；
+`skip`/`once` 决定停机错过时是跳过还是补一次，运行历史在 `data/schedule.db` 的 `run` 表。
+
+权重排查用 `bma3_priority_explain(text, source, attributes)`：它和 ingest 走同一个 resolver，
+直接告诉你「为什么这条没唤醒我」——命中了哪条来源规则、哪个属性、哪条正文规则、最后是否 ≥ 阈值。
+
+`.rd` 这类非 `/`、`!` 前缀的命令，现在只要配置：
+
+```yaml
+weighting:
+  commandPrefixes: ["/", "!", "."]      # qq_command 由这里派生
+  rules:
+    - match: prefix
+      pattern: ".rd"
+      delta: 150                        # 私聊 300 + qq_command 100 + 150 = 550
+      # source: qq_group/955432692      # 可选：只对这个来源生效
+```
+
 ### 5. 常见问题
 
 - **QQ 连不上**：先检查云端 LLBot `/get_login_info` 和 `/get_status`，再检查 `endpoint`/token env；不要把本地 LLBot 和远程配置混用。

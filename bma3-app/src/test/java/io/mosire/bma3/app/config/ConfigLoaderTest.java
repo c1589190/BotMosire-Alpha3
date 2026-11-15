@@ -36,6 +36,47 @@ class ConfigLoaderTest {
         assertThat(config.weighting().immediateThreshold()).isEqualTo(300);
         assertThat(config.weighting().dropBelow()).isEqualTo(-300);
         assertThat(config.logging().level()).isEqualTo("INFO");
+        // Debug surface defaults: mounted, capped at 32 concurrent questions, priority 350.
+        assertThat(config.debug().enabled()).isTrue();
+        assertThat(config.debug().maxPending()).isEqualTo(32);
+        assertThat(config.debug().priority()).isEqualTo(350);
+        assertThat(config.schedule().enabled()).isTrue();
+        assertThat(config.schedule().tickSeconds()).isEqualTo(1);
+        assertThat(config.schedule().maxSchedules()).isEqualTo(200);
+        assertThat(config.schedule().defaultMissedPolicy()).isEqualTo("skip");
+    }
+
+    @Test
+    void readsTheDebugSection() throws Exception {
+        writeConfig("""
+                debug:
+                  enabled: false
+                  maxPending: 0
+                  askTimeoutSeconds: 30
+                  questionMaxBytes: 512
+                  answerMaxBytes: 1024
+                  retention: 50
+                  priority: 400
+                schedule:
+                  enabled: false
+                  tickSeconds: 5
+                  maxSchedules: 7
+                  defaultMissedPolicy: once
+                """);
+
+        AppConfig config = ConfigLoader.load(tempDir);
+
+        assertThat(config.debug().enabled()).isFalse();
+        assertThat(config.debug().maxPending()).isZero();
+        assertThat(config.debug().askTimeoutSeconds()).isEqualTo(30);
+        assertThat(config.debug().questionMaxBytes()).isEqualTo(512);
+        assertThat(config.debug().answerMaxBytes()).isEqualTo(1024);
+        assertThat(config.debug().retention()).isEqualTo(50);
+        assertThat(config.debug().priority()).isEqualTo(400);
+        assertThat(config.schedule().enabled()).isFalse();
+        assertThat(config.schedule().tickSeconds()).isEqualTo(5);
+        assertThat(config.schedule().maxSchedules()).isEqualTo(7);
+        assertThat(config.schedule().defaultMissedPolicy()).isEqualTo("once");
     }
 
     @Test

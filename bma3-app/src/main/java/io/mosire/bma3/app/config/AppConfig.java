@@ -15,7 +15,9 @@ public record AppConfig(
         Deployer deployer,
         Watchdog watchdog,
         Xvfb xvfb,
-        Security security) {
+        Security security,
+        Debug debug,
+        Schedule schedule) {
 
     public AppConfig {
         dataDir = dataDir == null ? Path.of("data") : dataDir;
@@ -29,13 +31,16 @@ public record AppConfig(
         watchdog = watchdog == null ? Watchdog.defaults() : watchdog;
         xvfb = xvfb == null ? Xvfb.defaults() : xvfb;
         security = security == null ? Security.defaults() : security;
+        debug = debug == null ? Debug.defaults() : debug;
+        schedule = schedule == null ? Schedule.defaults() : schedule;
     }
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
                 new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
                 Weighting.defaults(), Logging.defaults(), Deployer.defaults(),
-                Watchdog.defaults(), Xvfb.defaults(), Security.defaults());
+                Watchdog.defaults(), Xvfb.defaults(), Security.defaults(), Debug.defaults(),
+                Schedule.defaults());
     }
 
     /**
@@ -215,6 +220,85 @@ public record AppConfig(
      * {@code auth=none} skips Bearer checks entirely and is only reachable by explicit request
      * (D-064). Loopback binding stays mandatory either way.</p>
      */
+    /**
+     * Scheduler knobs (spec 2026-11-15 §4). The scheduler never executes work itself; a due
+     * schedule only produces one Inbox notification.
+     */
+    public record Schedule(boolean enabled, int tickSeconds, int maxSchedules,
+                           String defaultMissedPolicy) {
+
+        public Schedule {
+            if (tickSeconds < 1 || tickSeconds > 60) {
+                throw new IllegalArgumentException("schedule.tickSeconds 必须在 1..60");
+            }
+            if (maxSchedules < 1 || maxSchedules > 2000) {
+                throw new IllegalArgumentException("schedule.maxSchedules 必须在 1..2000");
+            }
+            String policy = defaultMissedPolicy == null
+                    ? "skip" : defaultMissedPolicy.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!policy.equals("skip") && !policy.equals("once")) {
+                throw new IllegalArgumentException("schedule.defaultMissedPolicy 只能是 skip 或 once");
+            }
+            defaultMissedPolicy = policy;
+        }
+
+        public static Schedule defaults() {
+            return new Schedule(true, 1, 200, "skip");
+        }
+    }
+
+    /** 12-arg compatibility constructor for profiles created before the scheduler. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Weighting weighting, Logging logging,
+                     Deployer deployer, Watchdog watchdog, Xvfb xvfb, Security security,
+                     Debug debug) {
+        this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging, deployer,
+                watchdog, xvfb, security, debug, Schedule.defaults());
+    }
+
+    /**
+     * Remote ask/diagnose surface (spec 2026-11-15 §2).
+     *
+     * <p>Mounted on the health listener so an operator only needs one SSH tunnel; the bearer is a
+     * separate {@code DEBUG_TOKEN} so rotating it never disturbs MCP or the Inbox SSE.</p>
+     */
+    public record Debug(boolean enabled, int maxPending, int askTimeoutSeconds,
+                        int questionMaxBytes, int answerMaxBytes, int retention, int priority) {
+
+        public Debug {
+            if (maxPending < 0 || maxPending > 1024) {
+                throw new IllegalArgumentException("debug.maxPending 必须在 0..1024（0 = 不限）");
+            }
+            if (askTimeoutSeconds < 5 || askTimeoutSeconds > 600) {
+                throw new IllegalArgumentException("debug.askTimeoutSeconds 必须在 5..600");
+            }
+            if (questionMaxBytes < 256 || questionMaxBytes > 65_536) {
+                throw new IllegalArgumentException("debug.questionMaxBytes 必须在 256..65536");
+            }
+            if (answerMaxBytes < 256 || answerMaxBytes > 262_144) {
+                throw new IllegalArgumentException("debug.answerMaxBytes 必须在 256..262144");
+            }
+            if (retention < 10 || retention > 5000) {
+                throw new IllegalArgumentException("debug.retention 必须在 10..5000");
+            }
+            if (priority < -1000 || priority > 1000) {
+                throw new IllegalArgumentException("debug.priority 必须在 -1000..1000");
+            }
+        }
+
+        public static Debug defaults() {
+            return new Debug(true, 32, 120, 4096, 16384, 200, 350);
+        }
+    }
+
+    /** 11-arg compatibility constructor for profiles created before the debug surface. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Weighting weighting, Logging logging,
+                     Deployer deployer, Watchdog watchdog, Xvfb xvfb, Security security) {
+        this(dataDir, server, qqconnect, inbox, webconnect, weighting, logging, deployer,
+                watchdog, xvfb, security, Debug.defaults());
+    }
+
     public record Security(String auth, String envFile) {
 
         public static final String AUTH_TOKEN = "token";
@@ -281,32 +365,88 @@ public record AppConfig(
      * of truth for scores (per-source weights and user-note priorities no longer exist).</p>
      */
     /**
-     * One content rule: when the message text matches {@code pattern} the score moves by
-     * {@code delta}. All matching rules apply and stack (D-041).
+     * One content rule: the ordered rules stack, each adds {@code delta}.
      *
-     * @param pattern    literal text to look for
-     * @param match      {@code prefix} (text starts with pattern) or {@code contains} (default)
-     * @param delta      score delta; negative lowers, positive raises
-     * @param ignoreCase case-insensitive compare, default true
+     * <p>{@code match} is {@code prefix}, {@code contains} or {@code regex}; {@code source} scopes
+     * the rule to one source (same {@code /}-boundary semantics as {@code sourcePriority}); an empty
+     * {@code source} means "any source". Regex text is operator-configured, so a bad pattern is
+     * rejected at load time instead of silently never matching.</p>
      */
-    public record ContentRule(String pattern, String match, int delta, Boolean ignoreCase) {
+    public record ContentRule(String pattern, String match, int delta, Boolean ignoreCase,
+                              String source) {
+
+        /** Longest accepted pattern; keeps a typo from turning into a pathological regex. */
+        public static final int MAX_PATTERN_CHARS = 200;
 
         public ContentRule {
-            match = match == null || match.isBlank() ? "contains" : match.trim().toLowerCase(java.util.Locale.ROOT);
-            if (!match.equals("prefix") && !match.equals("contains")) {
-                throw new IllegalArgumentException("weighting.rules[].match 只能是 prefix 或 contains");
+            match = match == null || match.isBlank()
+                    ? "contains" : match.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!match.equals("prefix") && !match.equals("contains") && !match.equals("regex")) {
+                throw new IllegalArgumentException(
+                        "weighting.rules[].match 只能是 prefix、contains 或 regex");
             }
             ignoreCase = ignoreCase == null ? Boolean.TRUE : ignoreCase;
+            source = source == null ? "" : source.trim();
+            if (source.startsWith("/")) {
+                throw new IllegalArgumentException("weighting.rules[].source 不能以 / 开头");
+            }
+            if (pattern == null || pattern.isEmpty()) {
+                throw new IllegalArgumentException("weighting.rules[].pattern 不能为空");
+            }
+            if (pattern.length() > MAX_PATTERN_CHARS) {
+                throw new IllegalArgumentException(
+                        "weighting.rules[].pattern 不能超过 " + MAX_PATTERN_CHARS + " 字符");
+            }
+            if ("regex".equals(match)) {
+                try {
+                    java.util.regex.Pattern.compile(pattern, regexFlags(ignoreCase));
+                } catch (java.util.regex.PatternSyntaxException failure) {
+                    throw new IllegalArgumentException(
+                            "weighting.rules[].pattern 不是合法正则: " + pattern);
+                }
+            }
         }
 
-        /** Whether this rule matches {@code text}. */
+        /** Backwards-compatible 4-arg form: no source scope. */
+        public ContentRule(String pattern, String match, int delta, Boolean ignoreCase) {
+            this(pattern, match, delta, ignoreCase, "");
+        }
+
+        /** Whether this rule matches {@code text} on any source. */
         public boolean matches(String text) {
-            if (text == null || text.isEmpty() || pattern == null || pattern.isEmpty()) {
+            return matches(text, "");
+        }
+
+        /** Whether this rule matches {@code text} observed on {@code sourceKey}. */
+        public boolean matches(String text, String sourceKey) {
+            if (!source.isBlank() && !sourceApplies(source, sourceKey)) {
                 return false;
+            }
+            if (text == null || text.isEmpty()) {
+                return false;
+            }
+            if ("regex".equals(match)) {
+                return java.util.regex.Pattern.compile(pattern, regexFlags(ignoreCase))
+                        .matcher(text).find();
             }
             String haystack = ignoreCase ? text.toLowerCase(java.util.Locale.ROOT) : text;
             String needle = ignoreCase ? pattern.toLowerCase(java.util.Locale.ROOT) : pattern;
             return match.equals("prefix") ? haystack.startsWith(needle) : haystack.contains(needle);
+        }
+
+        private static int regexFlags(boolean ignoreCase) {
+            return ignoreCase
+                    ? java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE
+                    : 0;
+        }
+
+        private static boolean sourceApplies(String ruleSource, String sourceKey) {
+            if (sourceKey == null || sourceKey.isBlank()) {
+                return false;
+            }
+            return sourceKey.equals(ruleSource)
+                    || (sourceKey.startsWith(ruleSource)
+                        && sourceKey.charAt(ruleSource.length()) == '/');
         }
     }
 
@@ -319,10 +459,21 @@ public record AppConfig(
             java.util.Map<String, Integer> sourcePriority,
             java.util.Map<String, Integer> attributes,
             /** Ordered content rules; every matching rule adds its delta (they stack). */
-            java.util.List<ContentRule> rules) {
+            java.util.List<ContentRule> rules,
+            /** Text prefixes that raise {@code qq_command} (default {@code /} and {@code !}). */
+            java.util.List<String> commandPrefixes) {
 
         public Weighting {
             rules = rules == null ? java.util.List.of() : java.util.List.copyOf(rules);
+            commandPrefixes = commandPrefixes == null || commandPrefixes.isEmpty()
+                    ? java.util.List.of("/", "!") : java.util.List.copyOf(commandPrefixes);
+            for (String prefix : commandPrefixes) {
+                if (prefix == null || prefix.isBlank() || !prefix.equals(prefix.strip())
+                        || prefix.length() > 8) {
+                    throw new IllegalArgumentException(
+                            "weighting.commandPrefixes 必须是不含空白、长度 1..8 的字符串");
+                }
+            }
             if (maxPriority < -1000 || maxPriority > 1000) {
                 throw new IllegalArgumentException("weighting.maxPriority 必须在 -1000..1000");
             }
@@ -348,9 +499,20 @@ public record AppConfig(
             attributes = copyWeights(attributes, "weighting.attributes");
         }
 
+        /** Backwards-compatible 8-arg form (before configurable command prefixes). */
+        public Weighting(int immediateThreshold, int dropBelow, int maxPriority,
+                         long normalDelaySeconds, long importantDelaySeconds,
+                         java.util.Map<String, Integer> sourcePriority,
+                         java.util.Map<String, Integer> attributes,
+                         java.util.List<ContentRule> rules) {
+            this(immediateThreshold, dropBelow, maxPriority, normalDelaySeconds,
+                    importantDelaySeconds, sourcePriority, attributes, rules,
+                    java.util.List.of("/", "!"));
+        }
+
         public static Weighting defaults() {
             return new Weighting(300, -300, 1000, 30, 1, defaultSourcePriority(),
-                    defaultAttributes(), java.util.List.of());
+                    defaultAttributes(), java.util.List.of(), java.util.List.of("/", "!"));
         }
 
         public static java.util.Map<String, Integer> defaultSourcePriority() {

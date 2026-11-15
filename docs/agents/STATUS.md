@@ -2,6 +2,20 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-15 23:50 —— 0.0.8 批次（调试通道 / 触发规则 v2 / 定时任务）已实现，未提交未发布**。用户确认「三个都做」「不要单飞限制」。设计：[调试通道 / 触发规则 / 定时任务设计](../superpowers/specs/2026-11-15-debug-channel-schedule-triggers-design.md)（不变量 I-A1..A8 / I-B1..B6 / I-C1..C5 + 验收判据 A1..A9 / B1..B6 / C1..C6）。
+
+- **切片 A 远程问诊**：`bma3-app/.../debug/`（`DebugApi`/`DebugService`/`DebugStore`/`DebugRequest`/`DebugTools`/`DebugException`）挂在 health 端口；`GET /debug/snapshot|logs`、`POST /debug/ask|answer`、`GET /debug/ask[/{id}]`；token 为 `.bma3env` 新增的**第三条** `DEBUG_TOKEN`（与 MCP/INBOX 独立）；`security.auth=none` 时整面不挂载；问题只经 `InboxService.append` 注入（`source=bma3_debug/<id>`，优先级 350）；不做单飞，`debug.maxPending` 默认 32、0=不限；审计只记 id/字节数/状态/耗时。
+- **切片 B 触发规则 v2**：`AppConfig.ContentRule` 增 `match=regex`（pattern ≤200、非法正则启动即拒）与 `source` 作用域（`/` 边界）；新增 `weighting.commandPrefixes`（默认 `/` `!`）驱动 `qq_command`，不再写死；新工具 `bma3_priority_explain` 与 ingest 共用同一 `PriorityResolver`（`PriorityResolver.weighting()` 暴露同一快照）。**纠正一条旧结论**：正文前缀规则自 `de15ba4`（0.0.3-hotfix7）就存在，`.rd` 的权重以前就能配，缺的是可发现性/来源作用域/正则/命令前缀。
+- **切片 C 定时任务**：新模块 `bma3-scheduler`（`CronExpression` 5 字段子集、`ScheduleStore` SQLite 两表 + `(schedule_id,due_at)` 唯一索引、`ScheduleService` 先落 `run` 再注入、`ScheduleTools` 5 个工具）；到点只往 Inbox 注入 `source=bma3_task/<id>` 通知，不执行用户代码；重启 `skip`（默认）/`once` 补偿；watchdog 新增 `schedule` 探针。
+- **配置**：`debug:` 与 `schedule:` 两个新段（模板 `bma3-app/src/main/resources/config-template/app.yaml` 已补），`get_config` 可见；`AppConfig` 新增 11/12 参兼容构造。
+- **门禁（本机会话）**：`./mvnw -o test` **BUILD SUCCESS，306 tests / 0 fail / 0 err / 1 skip**（0.0.7 时 276）；新增 30 个测试（debug 12、priority 4、qq 命令前缀 2、scheduler 11、config 1）。
+- **本机真机（18765/18766/18767 + 3090 + FakeOneBot，新 app-image `dist/botmosire-a3`）**：`/tmp/verify-008.py` **20/20 PASS**——health 200；`/debug/snapshot` 用 MCP/INBOX token 401、用 DEBUG_TOKEN 200 且带 watchdog+inbox；`/debug/ask` 202 且面板出现 `bma3_debug/rq-…`（priority 350）；MCP `tools/list` **60 个工具**（新增 `bma3_debug_reply`/`bma3_debug_pending`/`bma3_priority_explain`/`bma3_schedule_*`）；`bma3_debug_reply` → `GET /debug/ask/{id}` 回传答案；重复回答 409；once 定时任务 8s 后注入面板；`priority explain` 与真 ingest 一致；审计文件不含正文；`requests.json` 0600。
+- **重启存活实测**：提问 `rq-8b5e0a23bf7c` 在 `systemctl --user restart bma3-local-app` 后仍是 `PENDING`，面板中该 request 仍**只有 1 条**（未重复注入）。
+- **热重载 + `.rd` 实测**：把本地配置改成 `commandPrefixes: ["/","!", "."]` + `.rd` prefix +150 后，无需重启，`bma3_priority_explain` 立即显示新前缀与 +150；再注入一条真实私聊 `.rd 3d6 热重载后`，面板条目 priority **550**（300 + qq_command 100 + 150）。
+- **抓到的坑（不在产品代码里）**：`build/local-0.0.7/inject-test-message.py` 把 `message_id` 写成字符串，`OneBot11Client` 的解码器会静默丢弃该帧（`onMessage` 里 `catch (Exception) {}`），表现为"注入了但面板没反应"。注入时 `message_id` 必须是数字。该脚本在 `build/`（不提交）。
+- **未验**：真实 DSH 会话里由 Agent 调 `bma3_debug_reply`（本次由 MCP 直连模拟）；真实 QQ/LLBot；远端部署；`security.auth=none` 下 404 只由单测覆盖；`inbox.js` 未改动，`dsh-plugin npm test` 本批未跑。
+- **未提交**：用户本批未授权 commit/push。
+
 **2026-11-15 22:33 —— 0.0.7-early 已发布，本机可调试**：tag [`v0.0.7-early`](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-early)（Pre-release）指向 `5bf33e4`；资产 `botmosire-a3-linux-x86_64.tar.gz`（sha256 `e1f498a2…`）与 `mosire-bma3-dsh-0.0.7-early.tgz`（sha256 `5f9d42df…`）。发布门禁：`./mvnw -q -o test` rc=0（276 tests / 0 fail / 1 skip）、插件 `npm test` 155 pass、`packaging/smoke.sh` PASS（app-image 启动、`/healthz` 200）。本批改动与破坏性升级顺序见 release notes；**真实 QQ/LLBot、真实 DSH 宿主、远端部署、掉电与升级/回滚仍 `NOT_RUN`**。
 
 **本机调试环境（2026-11-15 22:45 起，systemd --user 临时单元）**：`bma3-local-app.service`（jar 0.0.7-early，配置与数据在 `build/local-0.0.7/`，端口 MCP `18765` / Inbox `18766` / health `18767`）、`bma3-local-fake.service`（`tools/e2e-local/FakeOneBot`，WS `45701` / 注入 `46701`）、`dsh-bma3test.service`（DSH web host，端口 `3090`；profile `bma3test` 从 `web` 复制，`stateFile` 指向 `build/local-0.0.7/dsh-inbox-state.json` 以避开主 host 的状态锁；token 见 `journalctl --user -u dsh-bma3test`，不落库）。辅助脚本：`build/local-0.0.7/inject-test-message.py`、`build/local-0.0.7/inbox-status.sh`。**已实测**：jar `--version` = 0.0.7-early、MCP `tools/list` 52 个工具、guarded ACK 返回逐条 `complete=true`、注入假 QQ 消息后 panel/identity/processId 正常、插件 v2 快照与独占锁生成、DSH 原生 mcp-client 已连上本机 jar。**未实测**：真实 DSH 会话里的面板注入与 ACK 恢复（需在 `3090` 的 BMA3 预设会话里手动跑）、真实 QQ、远端部署。

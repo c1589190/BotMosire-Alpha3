@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.mosire.bma3.app.debug.DebugApi;
 import io.mosire.bma3.watchdog.spi.WatchdogSnapshot;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -24,6 +25,8 @@ import java.util.function.Supplier;
  *       restart a process merely because a dependency is down);</li>
  *   <li>{@code /readyz} — readiness, 503 when a critical watchdog component is DOWN/UNKNOWN;</li>
  *   <li>{@code /watchdog} — full watchdog snapshot, Bearer-protected.</li>
+ *   <li>{@code /debug/*} — remote ask/diagnose surface, guarded by its own token and only mounted
+ *       when {@code security.auth=token} and {@code debug.enabled=true}.</li>
  * </ul>
  */
 public final class HealthServer implements AutoCloseable {
@@ -31,18 +34,25 @@ public final class HealthServer implements AutoCloseable {
     private final HttpServer server;
     private final String token;
     private final Supplier<WatchdogSnapshot> snapshot;
+    private final DebugApi debug;
     private final ObjectMapper mapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     public HealthServer() {
-        this("127.0.0.1", 0, "", null);
+        this("127.0.0.1", 0, "", null, null);
     }
 
     public HealthServer(String host, int port, String token,
                         Supplier<WatchdogSnapshot> snapshot) {
+        this(host, port, token, snapshot, null);
+    }
+
+    public HealthServer(String host, int port, String token,
+                        Supplier<WatchdogSnapshot> snapshot, DebugApi debug) {
         this.token = token == null ? "" : token;
         this.snapshot = snapshot;
+        this.debug = debug;
         try {
             if (!InetAddress.getByName(host).isLoopbackAddress()) {
                 throw new IllegalStateException("Health 只允许回环地址");
@@ -85,6 +95,14 @@ public final class HealthServer implements AutoCloseable {
                 WatchdogSnapshot current = snapshot == null ? null : snapshot.get();
                 send(exchange, 200, mapper.writeValueAsString(
                         current == null ? Map.of("status", "unavailable") : current));
+                return;
+            }
+            if (path != null && (path.equals("/debug") || path.startsWith("/debug/"))) {
+                if (debug == null) {
+                    send(exchange, 404, "{\"error\":\"not_found\"}");
+                    return;
+                }
+                debug.handle(exchange);
                 return;
             }
             send(exchange, 404, "{\"error\":\"not_found\"}");

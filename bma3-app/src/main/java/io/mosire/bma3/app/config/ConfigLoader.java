@@ -129,6 +129,8 @@ public final class ConfigLoader {
         JsonNode deployer = node.path("deployer");
         JsonNode xvfb = node.path("xvfb");
         JsonNode security = node.path("security");
+        JsonNode debug = node.path("debug");
+        JsonNode schedule = node.path("schedule");
         List<String> readyzCritical = new ArrayList<>();
         for (JsonNode critical : watchdog.path("readyzCritical")) {
             readyzCritical.add(critical.asText());
@@ -178,7 +180,8 @@ public final class ConfigLoader {
                                 AppConfig.Weighting.defaultSourcePriority()),
                         integerMapOr(weighting.path("attributes"),
                                 AppConfig.Weighting.defaultAttributes()),
-                        contentRules(weighting.path("rules"))),
+                        contentRules(weighting.path("rules")),
+                        commandPrefixes(weighting.path("commandPrefixes"))),
                 new AppConfig.Logging(text(logging, "level", "INFO"), text(logging, "dir", "logs")),
                 new AppConfig.Deployer(
                         text(deployer, "qq", ""),
@@ -203,7 +206,20 @@ public final class ConfigLoader {
                         integer(xvfb, "depth", 24)),
                 new AppConfig.Security(
                         text(security, "auth", AppConfig.Security.AUTH_TOKEN),
-                        text(security, "envFile", "")));
+                        text(security, "envFile", "")),
+                new AppConfig.Debug(
+                        debug.path("enabled").asBoolean(true),
+                        integer(debug, "maxPending", 32),
+                        integer(debug, "askTimeoutSeconds", 120),
+                        integer(debug, "questionMaxBytes", 4096),
+                        integer(debug, "answerMaxBytes", 16384),
+                        integer(debug, "retention", 200),
+                        integer(debug, "priority", 350)),
+                new AppConfig.Schedule(
+                        schedule.path("enabled").asBoolean(true),
+                        integer(schedule, "tickSeconds", 1),
+                        integer(schedule, "maxSchedules", 200),
+                        text(schedule, "defaultMissedPolicy", "skip")));
     }
 
     private static String interpolate(String raw, Map<String, String> env) {
@@ -223,6 +239,17 @@ public final class ConfigLoader {
 
     /** Missing map falls back to the built-in defaults; an empty map stays empty on purpose. */
     /** Parses {@code weighting.rules[]}; invalid entries fail the whole config (fail-closed). */
+    private static java.util.List<String> commandPrefixes(JsonNode node) {
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return AppConfig.Weighting.defaults().commandPrefixes();
+        }
+        java.util.List<String> prefixes = new java.util.ArrayList<>();
+        for (JsonNode row : node) {
+            prefixes.add(row.asText(""));
+        }
+        return java.util.List.copyOf(prefixes);
+    }
+
     private static java.util.List<AppConfig.ContentRule> contentRules(JsonNode node) {
         if (node == null || !node.isArray()) {
             return java.util.List.of();
@@ -235,7 +262,8 @@ public final class ConfigLoader {
             }
             rules.add(new AppConfig.ContentRule(pattern, text(row, "match", "contains"),
                     integer(row, "delta", 0),
-                    row.hasNonNull("ignoreCase") ? row.path("ignoreCase").asBoolean(true) : null));
+                    row.hasNonNull("ignoreCase") ? row.path("ignoreCase").asBoolean(true) : null,
+                    text(row, "source", "")));
         }
         return java.util.List.copyOf(rules);
     }

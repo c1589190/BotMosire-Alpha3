@@ -4,8 +4,14 @@ import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
 import io.mosire.bma3.app.config.ConfigWatcher;
 import io.mosire.bma3.app.config.RuntimePolicy;
+import io.mosire.bma3.app.debug.DebugApi;
+import io.mosire.bma3.app.debug.DebugRequest;
+import io.mosire.bma3.app.debug.DebugService;
+import io.mosire.bma3.app.debug.DebugStore;
+import io.mosire.bma3.app.debug.DebugTools;
 import io.mosire.bma3.app.priority.PriorityDecision;
 import io.mosire.bma3.app.priority.PriorityResolver;
+import io.mosire.bma3.app.priority.PriorityTools;
 import io.mosire.bma3.app.tools.ConfigToolContext;
 import io.mosire.bma3.app.tools.GetConfigTool;
 import io.mosire.bma3.app.tools.SetConfigTool;
@@ -29,6 +35,11 @@ import io.mosire.bma3.inbox.core.SqliteInboxStore;
 import io.mosire.bma3.inbox.http.InboxHttpServer;
 import io.mosire.bma3.inbox.tools.InboxTools;
 import io.mosire.bma3.qqconnect.account.AccountConfig;
+import io.mosire.bma3.scheduler.ScheduleFired;
+import io.mosire.bma3.scheduler.ScheduleOptions;
+import io.mosire.bma3.scheduler.ScheduleService;
+import io.mosire.bma3.scheduler.ScheduleStore;
+import io.mosire.bma3.scheduler.ScheduleTools;
 import io.mosire.bma3.qqconnect.account.AccountEvent;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.directory.QqDirectoryStore;
@@ -91,6 +102,7 @@ public final class Bma3App implements AutoCloseable {
     private final ConfigWatcher watcher;
     private final WatchdogEngine watchdog;
     private final QqDirectoryStore directory;
+    private final ScheduleService schedule;
     private final SingleInstanceLock instanceLock;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
@@ -99,7 +111,8 @@ public final class Bma3App implements AutoCloseable {
                     AccountRegistry accounts, Bma3McpServer mcp,
                     BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
                     ConfigWatcher watcher, WatchdogEngine watchdog,
-                    QqDirectoryStore directory, SingleInstanceLock instanceLock) {
+                    QqDirectoryStore directory, ScheduleService schedule,
+                    SingleInstanceLock instanceLock) {
         this.config = config;
         this.board = board;
         this.inboxStore = inboxStore;
@@ -114,6 +127,7 @@ public final class Bma3App implements AutoCloseable {
         this.watcher = watcher;
         this.watchdog = watchdog;
         this.directory = directory;
+        this.schedule = schedule;
         this.instanceLock = instanceLock;
     }
 
@@ -217,6 +231,24 @@ public final class Bma3App implements AutoCloseable {
                     "minPriority 不再硬静音；所有未被 weighting.dropBelow 丢弃的条目都会推送");
         }
 
+        // Durable schedules (spec 2026-11-15 §4): the engine never runs user work, it only hands one
+        // Inbox notification to the composition root when a slot is due.
+        AtomicReference<ScheduleService> scheduleRef = new AtomicReference<>();
+        if (config.schedule().enabled()) {
+            ScheduleService created = new ScheduleService(
+                    new ScheduleStore(config.dataDir().resolve("schedule.db")),
+                    fire -> injectSchedule(inboxService, fire),
+                    () -> {
+                        AppConfig.Schedule limits = current.get().schedule();
+                        return new ScheduleOptions(limits.enabled(), limits.tickSeconds(),
+                                limits.maxSchedules(), limits.defaultMissedPolicy());
+                    });
+            created.start();
+            scheduleRef.set(created);
+        } else {
+            LOG.warn("event=schedule_disabled reason=schedule.enabled=false");
+        }
+
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
         AtomicReference<AccountRegistry> registry = new AtomicReference<>();
         AccountRegistry accounts = new AccountRegistry(event -> ingest(board, inboxService,
@@ -239,11 +271,29 @@ public final class Bma3App implements AutoCloseable {
                 }, directory);
 
         AtomicReference<WatchdogEngine> watchdogRef = new AtomicReference<>();
+        // Remote ask surface (spec 2026-11-15 §2). It is deliberately absent when auth is disabled:
+        // debug.maxPending caps concurrency (0 = unlimited, per user ruling: no single-flight).
+        String debugToken = authRequired ? tokenFile.debugToken() : "";
+        DebugService debugService = null;
+        DebugApi debugApi = null;
+        if (config.debug().enabled() && authRequired && !debugToken.isBlank()) {
+            debugService = new DebugService(
+                    new DebugStore(config.dataDir().resolve("debug")),
+                    () -> current.get().debug(),
+                    request -> injectDebugQuestion(inboxService, request, current.get().debug()));
+            debugApi = new DebugApi(debugService, debugToken, () -> {
+                WatchdogEngine engine = watchdogRef.get();
+                return engine == null ? null : engine.snapshot();
+            }, inboxService, config.dataDir(), Main.VERSION, Instant.now(), "token");
+        } else if (config.debug().enabled()) {
+            LOG.warn("event=debug_surface_disabled reason={}",
+                    authRequired ? "debug_token_missing" : "security.auth=none");
+        }
         HealthServer health = new HealthServer(config.server().host(),
                 config.server().healthPort(), mcpToken, () -> {
                     WatchdogEngine engine = watchdogRef.get();
                     return engine == null ? null : engine.snapshot();
-                });
+                }, debugApi);
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), inboxToken, inboxService);
@@ -274,6 +324,13 @@ public final class Bma3App implements AutoCloseable {
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
             tools.addAll(WatchdogTools.all(watchdog));
+            tools.addAll(PriorityTools.all(priorities));
+            if (scheduleRef.get() != null) {
+                tools.addAll(ScheduleTools.all(scheduleRef.get()));
+            }
+            if (debugService != null) {
+                tools.addAll(DebugTools.all(debugService));
+            }
             if (config.webconnect().enabled()) {
                 browser = new BrowserService(new BrowserOptions(
                         config.webconnect().binary(),
@@ -318,6 +375,15 @@ public final class Bma3App implements AutoCloseable {
                         }
                         return ProbeResult.up("xvfb", caps.xvfb());
                     }))
+                    .addProbe(Probes.named("schedule", () -> {
+                        ScheduleService currentSchedule = scheduleRef.get();
+                        if (currentSchedule == null) {
+                            return ProbeResult.up("schedule", "disabled");
+                        }
+                        return currentSchedule.ping()
+                                ? ProbeResult.up("schedule", "SELECT 1")
+                                : ProbeResult.down("schedule", "DB_UNAVAILABLE", "SELECT 1 failed");
+                    }))
                     .addProbe(Probes.named("config", () -> {
                         if (activeWatcher.lastReloadError().isBlank()) {
                             return ProbeResult.up("config", "reload ok",
@@ -352,8 +418,11 @@ public final class Bma3App implements AutoCloseable {
 
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
-                    directory, instanceLock);
+                    directory, scheduleRef.get(), instanceLock);
         } catch (RuntimeException failure) {
+            if (scheduleRef.get() != null) {
+                scheduleRef.get().close();
+            }
             if (watchdog != null) {
                 watchdog.close();
             }
@@ -402,6 +471,26 @@ public final class Bma3App implements AutoCloseable {
      * outright (operator ruling) and never reaches the board, so it can never be replayed or
      * counted later.
      */
+    /** Turn one fired schedule into an Inbox notification; the Agent decides what to do next. */
+    private static void injectSchedule(InboxService inboxService, ScheduleFired fire) {
+        SourceView source = SourceView.of("bma3_task/" + fire.scheduleId(), "定时任务");
+        inboxService.append(new AppendItem(source, null, fire.text(),
+                fire.priority(), Instant.now()));
+    }
+
+    /**
+     * Turn one remote question into an Inbox item. The item is the only delivery path: the bound
+     * session wakes on it exactly like any other source, and the Agent answers with
+     * {@code bma3_debug_reply} so the caller's HTTP request can return.
+     */
+    private static boolean injectDebugQuestion(InboxService inboxService, DebugRequest request,
+                                               AppConfig.Debug limits) {
+        SourceView source = SourceView.of(request.injectedSource(), "调试提问");
+        inboxService.append(new AppendItem(source, null, DebugService.inboxSummary(request),
+                limits.priority(), Instant.now()));
+        return true;
+    }
+
     private static void ingest(MessageBoardStore board, InboxService inboxService,
                                PriorityResolver priorities, SourceKeyer sourceKeyer,
                                AccountRegistry accounts, AtomicReference<AppConfig> current,
@@ -416,7 +505,8 @@ public final class Bma3App implements AutoCloseable {
         String senderId = event.userId() > 0 ? Long.toString(event.userId()) : "";
         boolean replyToBot = isReplyToBot(board, source, event.replyToMessageId());
         PriorityAttributes attributes = QqSignalExtractor.attributes(event,
-                selfName(accounts, current.get(), accountEvent.accountId()), replyToBot);
+                selfName(accounts, current.get(), accountEvent.accountId()), replyToBot,
+                current.get().weighting().commandPrefixes());
         PriorityDecision decision = priorities.resolve(sourceKey, senderId,
                 event.senderName(), attributes, event.text());
         if (LOG.isDebugEnabled()) {
@@ -586,6 +676,9 @@ public final class Bma3App implements AutoCloseable {
         }
         if (xvfb != null) {
             xvfb.close();
+        }
+        if (schedule != null) {
+            schedule.close();
         }
         if (qqExtras != null) {
             qqExtras.close();
