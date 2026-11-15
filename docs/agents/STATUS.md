@@ -2,7 +2,7 @@
 
 ## 当前目标 / 进行中范围
 
-**2026-11-15 23:50 —— 0.0.8 批次（调试通道 / 触发规则 v2 / 定时任务）已实现，未提交未发布**。用户确认「三个都做」「不要单飞限制」。设计：[调试通道 / 触发规则 / 定时任务设计](../superpowers/specs/2026-11-15-debug-channel-schedule-triggers-design.md)（不变量 I-A1..A8 / I-B1..B6 / I-C1..C5 + 验收判据 A1..A9 / B1..B6 / C1..C6）。
+**2026-11-15 23:58 —— 0.0.8 批次（调试通道 / 触发规则 v2 / 定时任务）已实现并推送，未打 tag、未发版**。用户确认「三个都做」「不要单飞限制」。设计：[调试通道 / 触发规则 / 定时任务设计](../superpowers/specs/2026-11-15-debug-channel-schedule-triggers-design.md)（不变量 I-A1..A8 / I-B1..B6 / I-C1..C5 + 验收判据 A1..A9 / B1..B6 / C1..C6）。
 
 - **切片 A 远程问诊**：`bma3-app/.../debug/`（`DebugApi`/`DebugService`/`DebugStore`/`DebugRequest`/`DebugTools`/`DebugException`）挂在 health 端口；`GET /debug/snapshot|logs`、`POST /debug/ask|answer`、`GET /debug/ask[/{id}]`；token 为 `.bma3env` 新增的**第三条** `DEBUG_TOKEN`（与 MCP/INBOX 独立）；`security.auth=none` 时整面不挂载；问题只经 `InboxService.append` 注入（`source=bma3_debug/<id>`，优先级 350）；不做单飞，`debug.maxPending` 默认 32、0=不限；审计只记 id/字节数/状态/耗时。
 - **切片 B 触发规则 v2**：`AppConfig.ContentRule` 增 `match=regex`（pattern ≤200、非法正则启动即拒）与 `source` 作用域（`/` 边界）；新增 `weighting.commandPrefixes`（默认 `/` `!`）驱动 `qq_command`，不再写死；新工具 `bma3_priority_explain` 与 ingest 共用同一 `PriorityResolver`（`PriorityResolver.weighting()` 暴露同一快照）。**纠正一条旧结论**：正文前缀规则自 `de15ba4`（0.0.3-hotfix7）就存在，`.rd` 的权重以前就能配，缺的是可发现性/来源作用域/正则/命令前缀。
@@ -14,7 +14,7 @@
 - **热重载 + `.rd` 实测**：把本地配置改成 `commandPrefixes: ["/","!", "."]` + `.rd` prefix +150 后，无需重启，`bma3_priority_explain` 立即显示新前缀与 +150；再注入一条真实私聊 `.rd 3d6 热重载后`，面板条目 priority **550**（300 + qq_command 100 + 150）。
 - **抓到的坑（不在产品代码里）**：`build/local-0.0.7/inject-test-message.py` 把 `message_id` 写成字符串，`OneBot11Client` 的解码器会静默丢弃该帧（`onMessage` 里 `catch (Exception) {}`），表现为"注入了但面板没反应"。注入时 `message_id` 必须是数字。该脚本在 `build/`（不提交）。
 - **未验**：真实 DSH 会话里由 Agent 调 `bma3_debug_reply`（本次由 MCP 直连模拟）；真实 QQ/LLBot；远端部署；`security.auth=none` 下 404 只由单测覆盖；`inbox.js` 未改动，`dsh-plugin npm test` 本批未跑。
-- **未提交**：用户本批未授权 commit/push。
+- **提交状态**：`77c3a3f`（feat(0.0.8)：远程问诊 API + 触发规则 v2 + 定时任务）已推送 `feat/bma3-plan-1`；用户明确「提交并推送，但不要发布」，因此**没有打 tag、没有创建 Release**，版本号仍是 `0.0.7-early`。
 
 **2026-11-15 22:33 —— 0.0.7-early 已发布，本机可调试**：tag [`v0.0.7-early`](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-early)（Pre-release）指向 `5bf33e4`；资产 `botmosire-a3-linux-x86_64.tar.gz`（sha256 `e1f498a2…`）与 `mosire-bma3-dsh-0.0.7-early.tgz`（sha256 `5f9d42df…`）。发布门禁：`./mvnw -q -o test` rc=0（276 tests / 0 fail / 1 skip）、插件 `npm test` 155 pass、`packaging/smoke.sh` PASS（app-image 启动、`/healthz` 200）。本批改动与破坏性升级顺序见 release notes；**真实 QQ/LLBot、真实 DSH 宿主、远端部署、掉电与升级/回滚仍 `NOT_RUN`**。
 
