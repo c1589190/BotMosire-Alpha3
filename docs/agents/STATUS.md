@@ -2,6 +2,20 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 19:41 —— 0.0.7-hotfix1 已发布（GitHub Pre-release）**。用户转述远端现场并指令「请先修复然后发布0.0.7-hotfix1」；已修复 ACK 后 fresh verification 永久冻结。
+
+- **远端根因（用户转述）**：19:04:04 ACK 后 fresh GET 的 panel item `frozenRevision` 混合/缺失，插件进入 `fresh_verify_batch_mixed` → `deferredPush`，随后错误置为 `required=false + nextAt=null`，不再重试；用户实测 `inbox_get` 当时不返回 `frozenRevision`。
+- **修复 1（插件）**：fresh verification proof 失败保留 `required=true`，写有限 `nextAt`，按 `verifyRetryBaseMs`/`verifyRetryMaxMs` 有界退避重试，不再终态 `done + nextAt=null`。
+- **修复 2（插件 live GET）**：live `/panel` 作为 coherent recovery snapshot：所有条目显式 `frozenRevision>0`（允许混合 revision）或旧服务端整批缺失该字段时可注入；显式 0、部分缺失/存在、非法 revision 仍拒绝并重试。SSE push 与 `pendingPush` 精确恢复继续要求同一 `frozenRevision=pushRevision`，guarded ACK 仍是最终权威。
+- **修复 3（服务端诊断）**：`inbox_get` JSON 增加 `frozenRevision`（未推送为 0）；`/panel` 的 `PanelItem.frozenRevision` 原本已存在，并由 HTTP 测试继续覆盖。
+- **设计与文档**：[hotfix spec](../superpowers/specs/2026-11-16-inbox-live-recovery-hotfix.md)、[plan](../superpowers/plans/2026-11-16-inbox-live-recovery-hotfix.md)；旧 delivery-safety spec/plan 已加 superseding 注记，dsh-plugin README 同步恢复语义。
+- **tag / commit / 分支**：tag `v0.0.7-hotfix1` → `acf06ff`；`feat/bma3-plan-1` 已推送。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix1>（Pre-release）。
+- **资产**：`botmosire-a3-linux-x86_64.tar.gz`（sha256 `b36f5a3d…`）、`mosire-bma3-dsh-0.0.7-hotfix1.tgz`（sha256 `b75ab0f5…`）、两个 `.sha256` 与 `SHA256SUMS`。
+- **发布门禁（本机会话）**：聚焦插件 17/17 PASS；`dsh-plugin npm test` rc=0，**157 tests / 157 pass / 0 fail**；`./mvnw -q -o test` rc=0，**306 tests / 0 failures / 0 errors / 1 skipped**；`packaging/smoke.sh` PASS（app-image 构建、启动、`/healthz` 200）；app-image `--version` 与插件包 `package.json` 均为 `0.0.7-hotfix1`。
+- **资产回下载校验**：`gh release download v0.0.7-hotfix1` + `sha256sum -c SHA256SUMS` PASS；解包 app-image/插件版本均一致，插件包内包含 `allowLiveSnapshot` 与 proof-retry 逻辑。
+- **未验证**：真实 DSH 会话中复现「40 条积压 + deferredPush + 重载恢复」、真实 QQ/LLBot、本版远端部署、真实掉电与升级/回滚均 `NOT_RUN`；0.0.7 停工时的跨组件最终复核仍无完整关账结论。
+
 **2026-11-16 19:24 —— 0.0.7-hotfix-EnableDebug 已发布（GitHub Pre-release）**。用户指令「发布0.0.7-hotfix-EnableDebug版本」；版本号按用户指定统一为 `0.0.7-hotfix-EnableDebug`，发布内容基于当前 0.0.8 批次代码。
 
 - **tag / commit / 分支**：tag `v0.0.7-hotfix-EnableDebug` → `5a41c31`；`feat/bma3-plan-1` 已推送并与 origin 同步。
