@@ -1,7 +1,7 @@
 # Binding self-heal, tool registration and diagnostics plan
 
 **Spec:** [2026-11-16-binding-tool-diagnostics-design](../specs/2026-11-16-binding-tool-diagnostics-design.md)
-**Status:** implemented in the working tree and locally gated (uncommitted); real DSH validation NOT_RUN.
+**Status:** released as test1/test2 on the dedicated test branch; real DSH validation remains NOT_RUN.
 **Release:** not authorized by this task; do not commit/push/release without a separate user instruction.
 
 ## Tasks

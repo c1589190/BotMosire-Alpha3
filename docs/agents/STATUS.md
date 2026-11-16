@@ -2,6 +2,16 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 20:40 —— 0.0.7-test2 测试 Pre-release 已发布（修复 stale pendingPush）**。远端 test1 现场确认：pendingPush 指向的 item 已被服务端 ACK（ackedRevision 已越过 panelRevision），exact proof 永远无法匹配，形成 `pending_push_unverified` / `pending_push_waiting_for_recovery` 循环。
+
+- **修复**：fresh GET 在 pendingPush 全部 item IDs 已消失且 `ackedRevision >= pendingPush.panelRevision` 时，自动清除 pendingPush/deferredPush 并继续处理当前面板；仍有 item 可见或 ackedRevision 未越过时保持 fail-closed。
+- **显式 recover**：新增 `bma3_inbox recover confirm=true`、`/inbox recover confirm`、MCP `inbox_plugin_control action=recover confirm=true`；仅在没有 pendingAck/injectionIntent、无在途 verify/inject、持久化可用且目标指纹匹配时执行，不清水位、不直接 ACK/改身份。
+- **分支/提交/tag**：测试分支 `test/inbox-binding-tools-20261116`；提交 `a623f4a`；tag `v0.0.7-test2` → `a623f4a`；已推送。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test2>（Pre-release，`[TEST]`）。
+- **资产**：`botmosire-a3-linux-x86_64.tar.gz`（sha256 `92c693be…`）、`mosire-bma3-dsh-0.0.7-test2.tgz`（sha256 `c055317f…`）、两个 `.sha256` 与 `SHA256SUMS`。
+- **门禁（按用户要求只跑聚焦）**：插件 `inbox-review-fix4.test.mjs` **15/15 PASS**；Java `InboxToolsTest`+`InboxHttpServerTest`+`PluginHeartbeatTest` rc=0；`packaging/smoke.sh` PASS；app-image/插件包版本均为 `0.0.7-test2`。**本批未重跑全量 Maven/插件套件**；test1 时的全量 309/161 结果不能代替本批验证。
+- **未验证**：真实 DSH 中 stale pendingPush 自动清除/recover 现场、`bma3_inbox` 可见性、自动 restore、真实 QQ/LLBot、远端生产部署、升级回滚与掉电均 `NOT_RUN`。正式 hotfix 基线仍为 `v0.0.7-hotfix1`。
+
 **2026-11-16 20:26 —— 0.0.7-test1 测试 Pre-release 已发布（独立测试分支）**。用户要求「先提交并推送，然后发布 0.0.7-test1；hotfix 是相对正式的版本」。
 
 - **分支 / 提交**：测试分支 `test/inbox-binding-tools-20261116`；功能提交 `6a9ba4c`，测试版本提交 `297ff54`；已推送 origin。正式分支 `feat/bma3-plan-1` 未被本次测试发布改写。
