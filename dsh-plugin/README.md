@@ -46,7 +46,7 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## 连上 bma3 jar（0.0.7-test1 测试版）
+## 连上 bma3 jar（0.0.7-test2 测试版）
 
 插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
 `@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。
@@ -301,9 +301,15 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
   - MCP 工具 `inbox_diagnose`：一屏返回版本、runtime/MCP 启动 id、inbox 状态、插件 heartbeat、
     deferredPush/freshVerification/toolRegistration 摘要和 pending control；只读，不含正文/凭据。
   - MCP 工具 `inbox_plugin_control`：`status` 查看心跳；`restore` 排队让插件恢复已保存的会话；
-    `remind` 排队发送短提醒。只操作既有 control 通道，不直接 ACK、改身份或写消息。
+    `remind` 排队发送短提醒；`recover confirm=true` 清除 stale pendingPush/deferredPush 并重试当前面板。
+    只操作既有 control 通道，不直接 ACK、改身份或写消息。
   - 插件 heartbeat 的 `diagnostics` 字段只带版本、注册状态、deferred/fresh 元数据与计数，服务端可在
     `/plugin` 与诊断工具中读取。
+- **stale pendingPush 自愈**：fresh GET 若发现 pendingPush 的 item 已全部从面板消失，且服务端
+  `ackedRevision` 已越过该 pendingPush 的 panelRevision，会清除 pendingPush/deferredPush 并继续
+  处理当前面板。若仍有 item 可见或 ackedRevision 未越过，保持 exact proof/fail-closed。
+  人工可在确认服务端条目不存在后使用 `/inbox recover confirm` 或 MCP
+  `inbox_plugin_control {action:"recover",confirm:true}`。
 
 ## 装到 profile
 

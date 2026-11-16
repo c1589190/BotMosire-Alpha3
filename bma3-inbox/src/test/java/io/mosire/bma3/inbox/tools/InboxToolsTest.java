@@ -209,6 +209,18 @@ class InboxToolsTest {
             assertThat(control.path("control").path("sessionId").asText()).isEqualTo("session-9");
             assertThat(service.pendingControl().action()).isEqualTo("restore");
             assertThat(service.pendingControl().sessionId()).isEqualTo("session-9");
+
+            ToolResult noConfirm = tool(tools, "inbox_plugin_control")
+                    .execute(call(Map.of("action", "recover")));
+            assertThat(noConfirm.success()).isFalse();
+            assertThat(noConfirm.message()).contains("confirm");
+
+            ToolResult recover = tool(tools, "inbox_plugin_control")
+                    .execute(call(Map.of("action", "recover", "confirm", true)));
+            assertThat(recover.success()).as(recover.message()).isTrue();
+            JsonNode recoverBody = mapper.readTree(recover.message());
+            assertThat(recoverBody.path("control").path("action").asText()).isEqualTo("recover");
+            assertThat(service.pendingControl().action()).isEqualTo("recover");
         }
     }
 

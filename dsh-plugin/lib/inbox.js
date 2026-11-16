@@ -409,11 +409,12 @@ function writeSnapshot(path, snapshot) {
 function panelEnvelope(panel) {
   const revision = Number(panel?.revision)
   const push = Number(panel?.pushRevision ?? revision)
+  const ackedRevision = Number(panel?.ackedRevision ?? 0)
   const items = Array.isArray(panel?.items) ? panel.items : []
-  if (!isRevision(revision) || !isRevision(push)) {
+  if (!isRevision(revision) || !isRevision(push) || !isRevision(ackedRevision)) {
     return { error: 'panel_revision_invalid' }
   }
-  return { revision, push, items, empty: items.length === 0 }
+  return { revision, push, ackedRevision, items, empty: items.length === 0 }
 }
 
 function batchFromPanel(panel, targetSessionId, inboxId, targetFingerprint = null, {
@@ -1083,6 +1084,14 @@ export function createInboxClient(ctx, config = {}) {
         applied = await remind(control.remind)
       }
       if (disposed || generation !== operation || controlEpoch !== controlAtStart) return false
+    } else if (control.action === 'recover') {
+      try {
+        recoverFromPendingPush(true)
+        applied = true
+      } catch (error) {
+        state.lastError = `control_recover_failed: ${error?.message ?? error}`
+        applied = false
+      }
     } else if (control.action === 'remind') {
       // A reminder does not supersede an in-flight followup; do not advance controlEpoch.
       applied = await remind(control.remind)
@@ -1810,39 +1819,77 @@ export function createInboxClient(ctx, config = {}) {
       const ids = items.map((item) => item?.id).filter(isNonEmptyString)
       if (state.pendingPush) {
         const pendingPush = state.pendingPush
-        // An explicit manual retry may drop a processId that only the previous server run had
-        // (a legitimate restart changes it permanently). In that one case the baseline is
-        // re-established by wake()'s /runtime probe; every other field is still matched exactly.
-        const rebaseline = pendingPushRebaseline
-        const expectedInstance = rebaseline
-          ? null : (pendingPushProcessId ?? connectionProcessId ?? null)
-        if (!rebaseline && expectedInstance) pendingPushProcessId = expectedInstance
-        const exact = pendingPush.inboxId === expectedInbox
-          && pendingPush.sourceTargetFingerprint === expectedFingerprint
-          && pendingPush.inboxIdentity === panel.inboxIdentity
-          && pendingPush.panelRevision === envelope.revision
-          && pendingPush.pushRevision === envelope.push
-          && pendingPush.itemIds.length === ids.length
-          && pendingPush.itemIds.every((id, index) => id === ids[index])
-        const proof = exact ? provableFreshPush(panel, target.fingerprint) : { ok: false }
-        if (!exact || !proof.ok) {
+        const pendingStillVisible = pendingPush.itemIds.some((id) => ids.includes(id))
+        // The operator or another client may ACK the item while this plugin was recovering.
+        // Once the server has acked past the panel that produced the pendingPush and none of
+        // its IDs remain visible, the old record is proving a state that no longer exists. Clear
+        // it and continue with the same fresh panel instead of retrying a forever-stale match.
+        if (!pendingStillVisible && envelope.ackedRevision >= pendingPush.panelRevision) {
+          const previous = {
+            pendingPush: state.pendingPush,
+            deferredPush: state.deferredPush,
+            lastError: state.lastError,
+            lastPushRevision: state.lastPushRevision,
+            pendingPushProcessId,
+            pendingPushRebaseline,
+            pendingPushMismatchKey,
+            pendingPushMismatchCode,
+          }
+          state.pendingPush = null
+          state.deferredPush = null
+          state.lastError = null
+          state.lastPushRevision = Math.max(state.lastPushRevision, pendingPush.pushRevision)
+          pendingPushProcessId = null
           pendingPushRebaseline = false
-          pendingPushMismatchKey = pendingPushKey()
-          pendingPushMismatchCode = 'unverified'
-          markFreshVerificationDone('pending_push_unverified')
-          state.lastError = 'pending_push_unverified'
+          pendingPushMismatchKey = null
+          pendingPushMismatchCode = null
+          if (!persist()) {
+            Object.assign(state, previous)
+            pendingPushProcessId = previous.pendingPushProcessId
+            pendingPushRebaseline = previous.pendingPushRebaseline
+            pendingPushMismatchKey = previous.pendingPushMismatchKey
+            pendingPushMismatchCode = previous.pendingPushMismatchCode
+            current.lastError = 'pending_push_clear_persist_failed'
+            state.lastError = current.lastError
+            return
+          }
+          // Fall through to normal fresh-panel handling. If the operator acked the old push and
+          // a newer push is present, it can be injected now; an empty panel simply completes.
+        } else {
+          // An explicit manual retry may drop a processId that only the previous server run had
+          // (a legitimate restart changes it permanently). In that one case the baseline is
+          // re-established by wake()'s /runtime probe; every other field is still matched exactly.
+          const rebaseline = pendingPushRebaseline
+          const expectedInstance = rebaseline
+            ? null : (pendingPushProcessId ?? connectionProcessId ?? null)
+          if (!rebaseline && expectedInstance) pendingPushProcessId = expectedInstance
+          const exact = pendingPush.inboxId === expectedInbox
+            && pendingPush.sourceTargetFingerprint === expectedFingerprint
+            && pendingPush.inboxIdentity === panel.inboxIdentity
+            && pendingPush.panelRevision === envelope.revision
+            && pendingPush.pushRevision === envelope.push
+            && pendingPush.itemIds.length === ids.length
+            && pendingPush.itemIds.every((id, index) => id === ids[index])
+          const proof = exact ? provableFreshPush(panel, target.fingerprint) : { ok: false }
+          if (!exact || !proof.ok) {
+            pendingPushRebaseline = false
+            pendingPushMismatchKey = pendingPushKey()
+            pendingPushMismatchCode = 'unverified'
+            markFreshVerificationDone('pending_push_unverified')
+            state.lastError = 'pending_push_unverified'
+            return
+          }
+          pendingPushMismatchKey = null
+          pendingPushMismatchCode = null
+          markFreshVerificationDone(null)
+          pending = panel
+          pendingSource = {
+            inboxId: expectedInbox,
+            fingerprint: expectedFingerprint,
+            processId: expectedInstance,
+          }
           return
         }
-        pendingPushMismatchKey = null
-        pendingPushMismatchCode = null
-        markFreshVerificationDone(null)
-        pending = panel
-        pendingSource = {
-          inboxId: expectedInbox,
-          fingerprint: expectedFingerprint,
-          processId: expectedInstance,
-        }
-        return
       }
       const stillAcked = (state.recentAcked ?? []).filter((id) => ids.includes(id))
       if (stillAcked.length > 0) {
@@ -2762,6 +2809,86 @@ export function createInboxClient(ctx, config = {}) {
     return status()
   }
 
+  /**
+   * Explicit operator recovery for a stale verified-push record. This is intentionally not
+   * silent: it clears pendingPush/deferredPush, then re-fetches the current panel. It refuses if
+   * an ACK or injection intent is unresolved, and it does not advance push watermarks, so a still
+   * server-visible item can be injected once from the fresh snapshot.
+   */
+  const recoverFromPendingPush = (confirm = false) => {
+    if (confirm !== true) {
+      throw new Error('recover requires explicit confirmation: 可能重复注入/丢失旧 pendingPush')
+    }
+    if (disposed) throw new Error('client disposed')
+    if (stopped) throw new Error('Inbox 已停止：先 /inbox start，再 recover')
+    if (state.pendingAck || state.injectionIntent) {
+      throw new Error('存在待 ACK/注入意图，不能强制 recover；先按现有流程处置')
+    }
+    if (verifying || injecting) throw new Error('校验/注入在途，稍后重试 recover')
+    if (state.lockError || state.stateError || !persistenceEnabled) {
+      throw new Error('状态持久化不可用，拒绝 recover')
+    }
+    const target = targetContext()
+    if (target.error) throw new Error(target.error)
+    const pendingPush = state.pendingPush
+    const fingerprint = pendingPush?.sourceTargetFingerprint ?? target.fingerprint
+    if (!fingerprint) throw new Error('没有可验证的目标指纹，拒绝 recover')
+    if (pendingPush?.sourceTargetFingerprint
+      && pendingPush.sourceTargetFingerprint !== target.fingerprint) {
+      throw new Error('pendingPush 目标与当前 baseUrl 不一致，拒绝 recover')
+    }
+    if (!pendingPush && !state.deferredPush && state.freshVerification?.required !== true) {
+      return status()
+    }
+    const previous = {
+      pendingPush: state.pendingPush,
+      deferredPush: state.deferredPush,
+      freshVerification: state.freshVerification,
+      lastError: state.lastError,
+      pending,
+      pendingSource,
+      pendingPushProcessId,
+      pendingPushRebaseline,
+      pendingPushMismatchKey,
+      pendingPushMismatchCode,
+    }
+    state.pendingPush = null
+    state.deferredPush = null
+    state.lastError = null
+    pending = null
+    pendingSource = null
+    pendingPushProcessId = null
+    pendingPushRebaseline = false
+    pendingPushMismatchKey = null
+    pendingPushMismatchCode = null
+    state.freshVerification = {
+      required: true,
+      attempts: 0,
+      lastError: null,
+      lastAttemptAt: null,
+      nextAt: null,
+      at: new Date().toISOString(),
+      inboxId: pendingPush?.inboxId ?? config.inboxId ?? 'bma3',
+      sourceTargetFingerprint: fingerprint,
+      sourceTargetFingerprintVersion: pendingPush?.sourceTargetFingerprintVersion
+        ?? TARGET_FINGERPRINT_VERSION,
+    }
+    if (!persist()) {
+      Object.assign(state, previous)
+      pending = previous.pending
+      pendingSource = previous.pendingSource
+      pendingPushProcessId = previous.pendingPushProcessId
+      pendingPushRebaseline = previous.pendingPushRebaseline
+      pendingPushMismatchKey = previous.pendingPushMismatchKey
+      pendingPushMismatchCode = previous.pendingPushMismatchCode
+      throw new Error(`无法持久化 recover：${state.persistenceError ?? 'state_write_failed'}`)
+    }
+    controlEpoch += 1
+    verifyNextAt = 0
+    scheduleVerify(0)
+    return status()
+  }
+
   const discard = (confirm = false) => {
     if (confirm !== true) {
       throw new Error('discard requires explicit confirmation: 这可能造成重复注入或遗留未确认条目')
@@ -2933,6 +3060,7 @@ export function createInboxClient(ctx, config = {}) {
     ack,
     pause,
     resume,
+    recover: (confirm = false) => recoverFromPendingPush(confirm),
     discard,
     acceptIdentity,
     dispose,
@@ -3032,11 +3160,12 @@ const INBOX_SCHEMA = {
       type: 'string',
       enum: [
         'status', 'bind', 'unbind', 'restore', 'pause', 'resume', 'start', 'stop', 'ack',
-        'discard', 'accept-identity',
+        'recover', 'discard', 'accept-identity',
       ],
       description: '查看或修改本会话的 inbox 挂载：status 看状态；bind/unbind 改目标会话；'
         + 'restore 恢复持久化绑定（必要时 resume 会话）并启动 SSE；pause/resume 暂停或恢复注入；'
-        + 'start/stop 开关 SSE；ack 重试待 ACK；discard 需 confirm=true，放弃待 ACK/注入意图；'
+        + 'start/stop 开关 SSE；ack 重试待 ACK；recover 需 confirm=true，清除 stale '
+        + 'pendingPush/deferredPush 并从当前面板重试；discard 需 confirm=true，放弃待 ACK/注入意图；'
         + 'accept-identity 需 confirm=true，接受变化的数据库身份。默认 status。',
     },
     sessionId: {
@@ -3053,7 +3182,7 @@ const INBOX_SCHEMA = {
 
 const COMMAND_VERBS = Object.freeze([
   'status', 'bind', 'unbind', 'detach', 'restore', 'pause', 'resume', 'start', 'stop', 'ack',
-  'discard', 'accept-identity',
+  'recover', 'discard', 'accept-identity',
 ])
 
 const COMMAND_USAGE = '/inbox [' + COMMAND_VERBS.join('|') + ']'
@@ -3176,11 +3305,15 @@ export function renderInboxStatus(status, callingSession = null) {
     } else if (error === 'pending_push_instance_unverified') {
       lines.push('  暂时无法校验服务端实例：push 已保留，将按有界退避重试；'
         + '也可用 /inbox ack 立即重试。')
+    } else if (error === 'pending_push_unverified') {
+      lines.push('  ⚠ 服务端已越过该 pendingPush（条目可能已被外部 ACK）或面板不再匹配；'
+        + '自动恢复会清除 stale 记录并重试当前面板。也可执行 /inbox recover confirm。')
     } else if (/pending_push_(target|session)_mismatch/.test(error)) {
       lines.push('  ⚠ 目标/会话与记录不一致：不会自动重放。恢复原目标配置后'
         + '用 /inbox ack 显式重试，或 /inbox discard confirm。')
     } else {
       lines.push('  恢复会重新 GET 并精确匹配；不匹配需人工核对，不会自动重放。')
+      lines.push('  已确认服务端条目不存在/已 ACK 时，可用 /inbox recover confirm 强制清除 stale 记录。')
     }
   }
   if (status.freshVerification?.required === true) {
@@ -3348,6 +3481,17 @@ export function registerInboxCommand(ctx, client) {
               text: '当前没有待 ACK 记录；不会用 revision-only 推进游标。',
             }
           }
+          case 'recover': {
+            if (argument !== 'confirm') {
+              return {
+                kind: 'error',
+                text: 'usage: /inbox recover confirm\n'
+                  + '会清除 stale pendingPush/deferredPush 并重试当前面板；可能重复注入，先核对消息板。',
+              }
+            }
+            client.recover(true)
+            return { kind: 'success', text: '已清除 stale pendingPush/deferredPush，正在重新校验当前面板。' }
+          }
           case 'discard': {
             if (argument !== 'confirm') {
               return {
@@ -3489,6 +3633,10 @@ function inboxToolDefinition(client) {
             }
             break
           }
+          case 'recover':
+            value = client.recover(args.confirm === true)
+            message = '已清除 stale pendingPush/deferredPush，并排队从当前面板重新校验；不会直接注入或 ACK。'
+            break
           case 'discard':
             message = client.discard(args.confirm === true)
             value = client.status()

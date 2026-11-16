@@ -51,12 +51,14 @@ function item(id, { frozenRevision = 1, body = `body-${id}` } = {}) {
 }
 
 function panel({
-  revision = 1, pushRevision = revision, identity = IDENTITY, inboxId = 'bma3', items = [],
+  revision = 1, pushRevision = revision, ackedRevision = 0, identity = IDENTITY,
+  inboxId = 'bma3', items = [],
 } = {}) {
   return {
     inboxId,
     revision,
     pushRevision,
+    ackedRevision,
     totalItems: items.length,
     omittedItems: 0,
     includeOmittedCount: true,
@@ -209,6 +211,105 @@ function bootstrapWithPendingPush(stateFile, paths) {
   bootstrap.dispose()
   seedPendingPush(paths.v2, pendingPushFor())
 }
+
+test('a server-acked stale pendingPush is cleared and the current panel is retried', async () => {
+  const { stateFile, paths } = tempState()
+  bootstrapWithPendingPush(stateFile, paths)
+  const messages = []
+  const server = fakeInbox({
+    livePanel: panel({
+      revision: 3,
+      pushRevision: 3,
+      ackedRevision: 3,
+      items: [],
+    }),
+  })
+  const client = createInboxClient(
+    ctxFor(agentRecorder('session-1', messages)),
+    config(server, stateFile),
+  )
+  try {
+    client.start()
+    await waitFor(() => client.status().pendingPush === null,
+      'stale pendingPush cleared after server ACK')
+    await waitFor(() => client.status().freshVerification?.required === false,
+      'fresh panel verification completed')
+    assert.equal(client.status().deferredPush, null)
+    assert.equal(client.status().lastError, null)
+    assert.equal(messages.length, 0)
+    const disk = JSON.parse(readFileSync(paths.v2, 'utf8'))
+    assert.equal(disk.pendingPush, null)
+    assert.equal(disk.deferredPush, null)
+  } finally {
+    client.dispose()
+  }
+})
+
+test('explicit recover clears a stale pendingPush and retries the current panel', async () => {
+  const { stateFile, paths } = tempState()
+  bootstrapWithPendingPush(stateFile, paths)
+  const messages = []
+  const server = fakeInbox({
+    livePanel: panel({ revision: 3, pushRevision: 3, ackedRevision: 0, items: [] }),
+  })
+  const client = createInboxClient(
+    ctxFor(agentRecorder('session-1', messages)),
+    config(server, stateFile),
+  )
+  try {
+    client.start()
+    await waitFor(() => client.status().lastError === 'pending_push_unverified',
+      'stale pendingPush observed')
+    assert.ok(client.status().pendingPush)
+    const recovered = client.recover(true)
+    assert.equal(recovered.pendingPush, null)
+    assert.equal(recovered.deferredPush, null)
+    await waitFor(() => client.status().freshVerification?.required === false,
+      'explicit recovery fresh verification')
+    assert.equal(client.status().pendingPush, null)
+    assert.equal(messages.length, 0)
+    const disk = JSON.parse(readFileSync(paths.v2, 'utf8'))
+    assert.equal(disk.pendingPush, null)
+    assert.equal(disk.deferredPush, null)
+  } finally {
+    client.dispose()
+  }
+})
+
+test('a heartbeat recover control clears the stale pendingPush', async () => {
+  const { stateFile, paths } = tempState()
+  bootstrapWithPendingPush(stateFile, paths)
+  const messages = []
+  const control = {
+    id: 'ctl-recover-test',
+    action: 'recover',
+    sessionId: '',
+    remind: '',
+    createdAt: new Date().toISOString(),
+  }
+  const server = fakeInbox({
+    livePanel: panel({ revision: 3, pushRevision: 3, ackedRevision: 0, items: [] }),
+    heartbeat: async () => json({ mcpStartId: 'mcp-1', control }),
+  })
+  const client = createInboxClient(
+    ctxFor(agentRecorder('session-1', messages)),
+    config(server, stateFile),
+  )
+  try {
+    client.start()
+    await waitFor(() => client.status().pendingPush,
+      'stale pendingPush observed')
+    await client.heartbeat()
+    await waitFor(() => client.status().pendingPush === null,
+      'heartbeat recover control cleared pendingPush')
+    assert.equal(client.status().appliedControlId, 'ctl-recover-test')
+    await waitFor(() => client.status().freshVerification?.required === false,
+      'recover control fresh verification')
+    assert.equal(messages.length, 0)
+  } finally {
+    client.dispose()
+  }
+})
 
 // ---------------------------------------------------------------------------
 // I1: GET-derived recovery/injection must carry the proven connection instance.

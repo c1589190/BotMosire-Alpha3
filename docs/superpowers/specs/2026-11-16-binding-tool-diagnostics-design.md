@@ -54,3 +54,24 @@
 - `dsh-plugin/index.js`：如需要，保持 package-level inject 只包含必要服务；工具注册失败不阻断 inbox。
 - `bma3-inbox`：扩展 `PluginHeartbeat` 保存插件诊断摘要；新增只读 `inbox_diagnose` 和受控 `inbox_plugin_control` MCP 工具。
 - 测试：插件状态/注册/心跳，Java tools/heartbeat，真实 DSH 仍需单列 `NOT_RUN`。
+
+
+## 6. 2026-11-16 test2 增量：stale pendingPush 自愈与显式 recover
+
+远端 0.0.7-test1 实测发现：`pendingPush` 指向的 item 已被服务端 ACK（`ackedRevision` 已越过该 push），但插件仍反复要求 exact frozen proof，导致 `pending_push_unverified` 循环和 `deferredPush=pending_push_waiting_for_recovery`。
+
+新增不变量：
+
+- **I-R1**：fresh GET 中若 pendingPush 的所有 item IDs 已不在面板，且服务端 `ackedRevision >= pendingPush.panelRevision`，该 pendingPush 已被外部/服务端事实推进；插件必须清除 `pendingPush`、`deferredPush` 和相关 mismatch，持久化后继续处理当前面板，不能继续等一个不存在的 panelRevision。
+- **I-R2**：清除 stale pendingPush 不得误清仍有 item visible、或 `ackedRevision` 尚未越过的记录；这些仍走 exact proof/fail-closed。
+- **I-R3**：显式 `recover` 只在无 pendingAck/injectionIntent、无在途 verify/inject、持久化可用且目标指纹匹配时执行；它清除 pendingPush/deferredPush、保留注入水位并从当前面板重试。必须 `confirm=true`。
+- **I-R4**：`recover` 可通过 native `bma3_inbox`、`/inbox recover confirm`、MCP `inbox_plugin_control action=recover confirm=true` 排队；控制通道仍只排既有 control，不直接 ACK/改身份/写消息。
+
+验收：
+
+| # | 场景 | 判据 |
+|---|---|---|
+| R1 | pendingPush item 已 ACK、面板为空且 ackedRevision 越过 panelRevision | pendingPush/deferredPush 清除，freshVerification 完成，不注入 |
+| R2 | pendingPush item 仍可见 / ackedRevision 未越过 | 不清除，不误注入，保持 fail-closed |
+| R3 | 显式 recover | 清除 stale 状态并重新 GET 当前面板；无 pendingAck/intent 才允许 |
+| R4 | MCP control recover | confirm=false 拒绝；confirm=true 排队 action=recover，plugin appliedControlId 更新 |

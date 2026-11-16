@@ -31,7 +31,8 @@ public final class InboxPluginControlTool implements AgentTool {
     @Override
     public String description() {
         return "MCP 兜底查看/触发 DSH 插件绑定：action=status 返回心跳和 pending control；"
-                + "restore 请求插件恢复已保存的会话（可选 sessionId）；remind 向已绑定会话发送短提醒。"
+                + "restore 请求插件恢复已保存的会话（可选 sessionId）；remind 向已绑定会话发送短提醒；"
+                + "recover 需 confirm=true，清除 stale pendingPush/deferredPush 并重试当前面板。"
                 + "只排队控制命令，不直接 ACK、改身份或写消息。";
     }
 
@@ -39,12 +40,14 @@ public final class InboxPluginControlTool implements AgentTool {
     public Map<String, Object> jsonSchema() {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("action", Map.of("type", "string",
-                "enum", List.of("status", "restore", "remind"),
+                "enum", List.of("status", "restore", "remind", "recover"),
                 "description", "默认 status"));
         properties.put("sessionId", Map.of("type", "string",
                 "description", "restore 可选；省略时使用服务端保存的 pluginSessionId"));
         properties.put("text", Map.of("type", "string",
                 "description", "remind 的短文本，最多 500 字符"));
+        properties.put("confirm", Map.of("type", "boolean",
+                "description", "recover 必须为 true；会清除 stale pendingPush/deferredPush"));
         return Map.of("type", "object", "properties", properties,
                 "required", List.of("action"));
     }
@@ -72,8 +75,17 @@ public final class InboxPluginControlTool implements AgentTool {
                 }
                 command = service.requestControl("remind", "", reminder);
                 message = "已排队 remind；插件下一次心跳会应用。";
+            } else if ("recover".equals(action)) {
+                if (!Boolean.TRUE.equals(args.get("confirm"))) {
+                    return ToolResult.error("CONFIRM_REQUIRED",
+                            "recover 需要 confirm=true：会清除 pendingPush/deferredPush 并重新校验面板");
+                }
+                command = service.requestControl("recover", "",
+                        "MCP operator requested stale pendingPush recovery");
+                message = "已排队 recover；插件下一次心跳会清除 stale 状态并重新校验当前面板。";
             } else {
-                return ToolResult.error("INVALID_ARGUMENT", "action 只能是 status/restore/remind");
+                return ToolResult.error("INVALID_ARGUMENT",
+                        "action 只能是 status/restore/remind/recover");
             }
             Map<String, Object> body = statusBody();
             body.put("message", message);
