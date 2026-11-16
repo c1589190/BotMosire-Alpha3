@@ -68,6 +68,21 @@ final class ConfigView {
         display.put("maxItemsPerPanel", config.inbox().display().maxItemsPerPanel());
         display.put("includeOmittedCount", config.inbox().display().includeOmittedCount());
         display.put("maxCharsPerItem", config.inbox().display().maxCharsPerItem());
+        display.put("mode", config.inbox().display().mode());
+        display.put("summaryMaxCharsPerItem",
+                config.inbox().display().summaryMaxCharsPerItem());
+        display.put("summaryAboveItems", config.inbox().display().summaryAboveItems());
+        ObjectNode wait = inbox.putObject("wait");
+        wait.put("enabled", config.inbox().waitPolicy().enabled());
+        wait.put("defaultQuietSeconds", config.inbox().waitPolicy().defaultQuietSeconds());
+        wait.put("defaultMaxWaitSeconds", config.inbox().waitPolicy().defaultMaxWaitSeconds());
+        ArrayNode waitSources = wait.putArray("sources");
+        for (AppConfig.Inbox.Wait.SourceRule rule : config.inbox().waitPolicy().sources()) {
+            ObjectNode row = waitSources.addObject();
+            row.put("source", rule.source());
+            row.put("quietSeconds", rule.quietSeconds());
+            row.put("maxWaitSeconds", rule.maxWaitSeconds());
+        }
         ObjectNode push = inbox.putObject("push");
         push.put("minPriority", config.inbox().push().minPriority());
         push.put("minPriorityIgnored", true);

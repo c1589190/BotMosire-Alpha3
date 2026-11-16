@@ -1,8 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-test2`（Pre-release，用于远端验证，不替代正式 hotfix）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**开发版本 `0.0.7-hotfix2-earlytest`（尚未发布；上一测试版为 `0.0.7-test2`）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-> 测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test2>。本版在 test1 基础上增加 stale pendingPush 自愈和显式 `recover` control；正式 hotfix 仍以 `v0.0.7-hotfix1` 为基线，不应把本测试包当作正式发布。
+> 上一测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test2>。当前 `0.0.7-hotfix2-earlytest` 已加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；尚未打 tag 或发布。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -22,7 +22,7 @@ DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-test2`（Pre-release�
 
 ### 1. 下载或编译
 
-测试 Release 资产（对应 tag `v0.0.7-test2`）：
+上一测试 Release 资产（对应 tag `v0.0.7-test2`；hotfix2 发布后以新 Release 为准）：
 
 - app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test2/botmosire-a3-linux-x86_64.tar.gz>
 - DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test2/mosire-bma3-dsh-0.0.7-test2.tgz>
@@ -90,6 +90,17 @@ inbox:
     maxItemsPerPanel: 6     # 1..50
     includeOmittedCount: true
     maxCharsPerItem: 1200   # 单条目字符上限；0=不限（不设总字符上限）
+    mode: auto              # full | summary | auto
+    summaryMaxCharsPerItem: 200
+    summaryAboveItems: 8
+  wait:                     # 硬静默只修改现有注入调度；默认来源 0 秒
+    enabled: true
+    defaultQuietSeconds: 0
+    defaultMaxWaitSeconds: 20
+    sources: []
+      # - source: qq_private
+      #   quietSeconds: 8
+      #   maxWaitSeconds: 20
   push:
     minPriority: -1000      # 已废弃/忽略：所有未被 dropBelow 丢弃的条目都会推送
     maxFirstPushDelaySeconds: 60
@@ -163,7 +174,7 @@ export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium 
 
 - MCP：`http://127.0.0.1:8765/mcp`
 - Inbox HTTP：`http://127.0.0.1:46500`
-- health：`http://127.0.0.1:8766/healthz`（liveness）、`/readyz`（readiness）、`/watchdog`（Bearer）
+- health：`http://127.0.0.1:8766/healthz`（liveness）、`/readyz`（readiness）、`/watchdog` 与 `/watchdog/diagnostics`（Bearer）
 
 验证 Inbox（Bearer 用 `.bma3env` 里的 `INBOX_TOKEN`）：
 
@@ -226,7 +237,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**`0.0.7-test2` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
+**`0.0.7-hotfix2-earlytest` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
 
 jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 
@@ -253,8 +264,17 @@ jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子�
         reconnect: { initialDelayMs: 1000, maxDelayMs: 30000, maxAttempts: 1000 }
 ```
 
-连上后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
-`bma3_watchdog_*`），最快的自检是调一次 `mcp__bma3__inbox_status`。
+连上后工具以 `mcp__bma3__*` 出现（当前约 68 个：`inbox_*`、`qq_*`、`xvfb_*`、
+`get_config`/`set_config`、`bma3_watchdog_*`），最快的自检是调一次
+`mcp__bma3__inbox_status` 或 `mcp__bma3__bma3_watchdog_diagnose`。
+
+- `inbox_wait_quiet(source/sourcePrefix, quietMs=2000, maxWaitMs=20000)` 是 Agent 主动的只读来源等待；
+  不会 ACK/冻结，也不改变 Inbox 推送节奏。
+- `bma3_media(filePath)` 把 `qq_media_view` 返回的本地 path 按类型路由到 OCR/ASR；无 OCR key 时返回
+  `MEDIA_FAILED`，不会假装识别成功。
+- `qq_friend(operation=info|remark|delete|like|poke|request_decide)` 和 `qq_provider_action` 覆盖尚未 typed
+  的好友/provider 动作；发送类 action 永久禁止绕过消息板。
+- `xvfb_open_browser`/`xvfb_wait` 把“开浏览器 + 等窗口”缩短为两步；B 站仍走 xvfb + 截图/OCR + Computer Use。
 
 要点与坑：
 

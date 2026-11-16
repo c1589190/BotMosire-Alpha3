@@ -32,7 +32,8 @@ public record PanelItem(
         Instant lastAt,
         boolean continued,
         int truncatedChars,
-        long frozenRevision) {
+        long frozenRevision,
+        boolean waitingForQuiet) {
 
     public PanelItem {
         source = source == null ? "" : source;
@@ -49,7 +50,7 @@ public record PanelItem(
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt) {
         this(0, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, false, 0, 0L);
+                status, lastAt, false, 0, 0L, false);
     }
 
     /** Compatibility constructor: no truncation/push metadata. */
@@ -57,11 +58,12 @@ public record PanelItem(
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt, boolean continued) {
         this(index, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, continued, 0, 0L);
+                status, lastAt, continued, 0, 0L, false);
     }
 
     public PanelItem withIndex(int newIndex) {
         return new PanelItem(newIndex, id, source, sourceLabel, priority, entries, totalMessages,
-                omittedMessages, status, lastAt, continued, truncatedChars, frozenRevision);
+                omittedMessages, status, lastAt, continued, truncatedChars, frozenRevision,
+                waitingForQuiet);
     }
 }

@@ -1815,8 +1815,14 @@ export function createInboxClient(ctx, config = {}) {
         state.lastError = 'fresh_panel_revision_invalid'
         return
       }
-      const items = envelope.items
-      const ids = items.map((item) => item?.id).filter(isNonEmptyString)
+      // A live GET may include items still held by a source quiet window
+      // (frozenRevision=0). They are visible to the Agent, but they are not part of
+      // any push batch yet; proof/recovery must ignore them or every later ACK
+      // would see a mixed panel and stop.
+      const proofItems = envelope.items
+        .filter((item) => item?.waitingForQuiet !== true)
+      const ids = proofItems.map((item) => item?.id).filter(isNonEmptyString)
+      const proofPanel = { ...panel, items: proofItems }
       if (state.pendingPush) {
         const pendingPush = state.pendingPush
         const pendingStillVisible = pendingPush.itemIds.some((id) => ids.includes(id))
@@ -1870,7 +1876,7 @@ export function createInboxClient(ctx, config = {}) {
             && pendingPush.pushRevision === envelope.push
             && pendingPush.itemIds.length === ids.length
             && pendingPush.itemIds.every((id, index) => id === ids[index])
-          const proof = exact ? provableFreshPush(panel, target.fingerprint) : { ok: false }
+          const proof = exact ? provableFreshPush(proofPanel, target.fingerprint) : { ok: false }
           if (!exact || !proof.ok) {
             pendingPushRebaseline = false
             pendingPushMismatchKey = pendingPushKey()
@@ -1882,7 +1888,7 @@ export function createInboxClient(ctx, config = {}) {
           pendingPushMismatchKey = null
           pendingPushMismatchCode = null
           markFreshVerificationDone(null)
-          pending = panel
+          pending = proofPanel
           pendingSource = {
             inboxId: expectedInbox,
             fingerprint: expectedFingerprint,
@@ -1903,7 +1909,7 @@ export function createInboxClient(ctx, config = {}) {
         state.lastError = 'fresh_verify_acked_present'
         return
       }
-      if (items.length === 0) {
+      if (proofItems.length === 0) {
         markFreshVerificationDone(null)
         return
       }
@@ -1911,7 +1917,7 @@ export function createInboxClient(ctx, config = {}) {
         markFreshVerificationDone(null)
         return
       }
-      const proof = provableLiveSnapshot(panel, target.fingerprint)
+      const proof = provableLiveSnapshot(proofPanel, target.fingerprint)
       if (!proof.ok) {
         state.deferredPush = {
           revision: envelope.revision,
@@ -1929,14 +1935,14 @@ export function createInboxClient(ctx, config = {}) {
         requestVerifyRetry(current.attempts)
         return
       }
-      if (!commitVerifiedPush(panel, {
+      if (!commitVerifiedPush(proofPanel, {
         inboxId: expectedInbox,
         fingerprint: expectedFingerprint,
         processId: pendingAckProcessId ?? connectionProcessId ?? null,
       }, { allowLiveSnapshot: true })) {
         return
       }
-      pending = panel
+      pending = proofPanel
       pendingSource = {
         inboxId: expectedInbox,
         fingerprint: expectedFingerprint,

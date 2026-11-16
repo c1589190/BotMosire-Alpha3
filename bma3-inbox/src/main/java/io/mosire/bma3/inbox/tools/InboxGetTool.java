@@ -27,24 +27,44 @@ public final class InboxGetTool implements AgentTool {
 
     @Override
     public String description() {
-        return "按 itemId 取一个 inbox 条目的完整窗口（≤ maxMessagesPerItem 条 entries，含 sender/时间/"
-                + "序号/markers/渲染行）、totalMessages、priority、status、revision、continued"
-                + "（true=这条在被推送过之后又续上了新消息，行尾带「续」标）。"
-                + "已 ack 的条目仍可取（status=ACKED），但不再出现在面板里。";
+        return "按 itemId 或当前 panel index 取一个 inbox 条目的完整窗口（≤ maxMessagesPerItem 条 entries，"
+                + "含 sender/时间/序号/markers/渲染行）、totalMessages、priority、status、revision、"
+                + "continued（true=这条在被推送过之后又续上了新消息，行尾带「续」标）。"
+                + "index 可带 revision 防漂移；已 ack 的条目仍可按 itemId 取，但不再出现在面板里。";
     }
 
     @Override
     public Map<String, Object> jsonSchema() {
-        return Map.of("type", "object", "properties", Map.of(
-                "itemId", Map.of("type", "string")),
-                "required", List.of("itemId"));
+        Map<String, Object> props = new LinkedHashMap<>();
+        props.put("itemId", Map.of("type", "string"));
+        props.put("index", Map.of("type", "integer", "minimum", 1,
+                "description", "当前 panel 的 1-based 序号；与 itemId 二选一"));
+        props.put("revision", Map.of("type", "integer", "minimum", 0,
+                "description", "使用 index 时建议带当前 panel revision"));
+        return Map.of("type", "object", "properties", props);
     }
 
     @Override
     public ToolResult execute(ToolContext context) {
         Object raw = context.arguments().get("itemId");
-        if (!(raw instanceof String itemId) || itemId.isBlank()) {
-            return ToolResult.error("INVALID_ARGUMENT", "itemId 不能为空");
+        String itemId = raw instanceof String text && !text.isBlank() ? text : "";
+        if (itemId.isEmpty()) {
+            Object indexRaw = context.arguments().get("index");
+            if (!(indexRaw instanceof Number number)) {
+                return ToolResult.error("INVALID_ARGUMENT", "itemId 或 index 至少提供一个");
+            }
+            var panel = service.panel();
+            long expected = context.arguments().get("revision") instanceof Number revisionNumber
+                    ? revisionNumber.longValue() : panel.revision();
+            if (expected != panel.revision()) {
+                return ToolResult.error("REVISION_CONFLICT",
+                        "panel revision 已变化；请重新读取 panel 后重试");
+            }
+            int index = number.intValue();
+            if (index < 1 || index > panel.items().size()) {
+                return ToolResult.error("ITEM_NOT_FOUND", "panel index 越界: " + index);
+            }
+            itemId = panel.items().get(index - 1).id();
         }
         try {
             InboxItem item = service.item(itemId);

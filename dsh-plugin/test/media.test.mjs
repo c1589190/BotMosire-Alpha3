@@ -11,6 +11,7 @@ import {
   apply,
   callAsr,
   callOcr,
+  classifyMedia,
   readUpload,
   resolveApiKey,
 } from '../lib/media.js'
@@ -68,10 +69,10 @@ test('readUpload enforces the size ceiling and rejects directories', () => {
   assert.throws(() => readUpload(path.dirname(file), 1024), /不是文件/)
 })
 
-test('apply registers exactly the two paid tools', () => {
+test('apply registers OCR, ASR and the unified media tool', () => {
   const ctx = fakeCtx()
   apply(ctx, { fetch: fakeFetch({}) })
-  assert.deepEqual(ctx.registered.map((definition) => definition.name), ['bma3_ocr', 'bma3_asr'])
+  assert.deepEqual(ctx.registered.map((definition) => definition.name), ['bma3_ocr', 'bma3_asr', 'bma3_media'])
   const ocr = ctx.registered[0]
   assert.deepEqual(ocr.parameters.required, ['filePath'])
   assert.deepEqual(ocr.parameters.properties.purpose.enum, [...OCR_PURPOSES])
@@ -134,6 +135,31 @@ test('the OCR tool reports a missing key instead of calling out', async () => {
   assert.equal(fetchImpl.calls.length, 0)
 })
 
+test('bma3_media routes images through OCR and reports a missing key', async () => {
+  const missingCtx = fakeCtx()
+  apply(missingCtx, { fetch: fakeFetch({}) })
+  const missing = missingCtx.registered.find((definition) => definition.name === 'bma3_media')
+  const missingResult = await missing.execute({ filePath: tempFile('a.png', 'x') })
+  assert.equal(JSON.parse(missingResult.text).code, 'MEDIA_FAILED')
+  assert.match(JSON.parse(missingResult.text).error, /DEEPSEEK_API_KEY 未配置/u)
+
+  const fetchImpl = fakeFetch({ page_count: 1, pages: [{ index: 0, text: '图片标题' }] })
+  const ctx = fakeCtx({ credentials: { resolve: async () => ({ key: 'sk-test' }) } })
+  apply(ctx, { fetch: fetchImpl })
+  const media = ctx.registered.find((definition) => definition.name === 'bma3_media')
+  const result = await media.execute({ filePath: tempFile('b.png', 'bytes') })
+  const payload = JSON.parse(result.text)
+  assert.equal(payload.ok, true)
+  assert.equal(payload.text, '图片标题')
+  assert.match(fetchImpl.calls[0].url, /\/v1\/tools\/ocr$/u)
+})
+
+test('classifyMedia routes by extension and rejects unknown kinds', () => {
+  assert.equal(classifyMedia('a.png'), 'image')
+  assert.equal(classifyMedia('a.pdf'), 'document')
+  assert.equal(classifyMedia('a.wav'), 'audio')
+  assert.throws(() => classifyMedia('a.bin'), /无法按扩展名/u)
+})
 test('the OCR tool uploads the file and returns page text', async () => {
   const fetchImpl = fakeFetch({ page_count: 1, pages: [{ index: 0, text: '标题', finish_reason: 'stop' }] })
   const ctx = fakeCtx({ credentials: { resolve: async () => ({ key: 'sk-test' }) } })

@@ -2,6 +2,34 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 21:45 —— 0.0.7-hotfix2 第一批实现完成（未提交、未发布）**。用户确认 D-069/D-070 后要求持续实现，不再逐项确认。当前分支 `feat/0.0.7-hotfix2`，基线为 test2 工作树。
+
+- **Inbox 硬等待**：新增 `InboxWaitPolicy`，所有 source 按最长前缀匹配；`inbox.wait` 默认 `enabled=true/defaultQuietSeconds=0/defaultMaxWaitSeconds=20`，可由 Agent 用 `set_config` 热重载。`dueFor`/`heldForQuiet` 修改现有唯一注入调度；quiet item 不会被其他 source 的 flush 带走。`PanelItem.waitingForQuiet` 供插件识别 live GET 中的未推送 hold。
+- **Agent 自主等待**：新增 MCP `inbox_wait_quiet(source/sourcePrefix, quietMs=2000, maxWaitMs=20000)`；只读，不 ACK/冻结/创建 item；硬上限返回 `settled=false/stillActive=true`。
+- **面板摘要**：`inbox.display.mode=full|summary|auto`，新增 `summaryMaxCharsPerItem=200`、`summaryAboveItems=8`；summary 每 item 只给最新 1 entry，`inbox_get` 支持 itemId 或 panel index 展开（带 revision 校验）。
+- **watchdog 诊断**：新增受 Bearer 保护的 `GET /watchdog/diagnostics` 与 MCP `bma3_watchdog_diagnose`；包含 watchdog、Inbox/心跳、媒体计数、DB 文件大小；媒体新增 `QqMediaDiagnostics` + `media` probe。
+- **媒体流水线**：插件新增 `bma3_media(filePath, kind=auto)`，按 image/document/audio 路由 OCR/ASR；无 key 明确 `MEDIA_FAILED`，不伪造成功。
+- **xvfb**：新增 `xvfb_open_browser`（workspace-local Chromium profile、http(s) URL）与 `xvfb_wait`（窗口/超时）；工具面 12→14。
+- **QQ 面**：新增 `qq_friend`（info/remark/delete/like/poke/request_decide）与 `qq_provider_action`（get_*/ocr_* 等只读；写操作需 confirm；发送/上传 action 永久拒绝，必须走消息板）。
+- **门禁（本机会话）**：`./mvnw -q -o test` rc=0，**326 tests / 0 failures / 0 errors / 1 skipped**；`dsh-plugin npm test` rc=0，**167 pass / 0 fail**；`packaging/smoke.sh` PASS（app-image 启动 + `/healthz` 200）；MCP 工具 **68**。
+- **版本/发布**：版本文件已统一为 `0.0.7-hotfix2-earlytest`；**未 commit、未 push、未打 tag、未发布**。
+- **未验证 / NOT_RUN**：真实 DSH 中 `inbox_wait_quiet`/summary 注入、LLBot `input_status`、LLBot/provider OCR 与好友写动作、B 站 xvfb 登录态复用、真实远端诊断包、真实 QQ/LLBot、systemd、掉电/升级回滚均 `NOT_RUN`。正式基线仍为 `v0.0.7-hotfix1`。
+- **调查/设计/计划**：[hotfix2 survey](../superpowers/reports/2026-11-16-hotfix2-feature-survey.md)、[Inbox spec](../superpowers/specs/2026-11-16-inbox-source-wait-summary-design.md)、[diagnostics/media/QQ/xvfb spec](../superpowers/specs/2026-11-16-hotfix2-diagnostics-media-qq-xvfb-design.md)、[plan](../superpowers/plans/2026-11-16-inbox-source-wait-summary-implementation.md)。
+
+**2026-11-16 21:00 —— 0.0.7-hotfix2 新功能调查已完成（只读，未改产品代码）**。用户要求把「硬静默等待 + Agent 自主按来源等待、面板摘要、watchdog/媒体诊断包、媒体流水线与无视觉模型适配、xvfb/B 站易用性、QQ 全面好友/群/协议动作、通用配置」列入 0.0.7-hotfix2，先调查定位。
+
+- **调查报告**：[hotfix2 feature survey](../superpowers/reports/2026-11-16-hotfix2-feature-survey.md)。
+- **关键定位**：当前同源消息只在 3s/60s 延迟内合并，间隔超过 3s 就冻结第一条并推送；DSH 插件只对 idle Agent `followup`，不打断在途回合，因此 Agent 会针对第一条先回复。新增硬静默窗口时必须同时修 `flushPending()` 的「一条到期冻结全窗口」行为，否则 quiet item 会被其他紧急项顺带推走。
+- **D-069/D-070 两种等待分开**：① Inbox 注入调度仍只有一套统一机制；来源规则只修改它，硬等待出厂默认 **0 秒**，由 Agent 按 source 前缀显式配置。② Agent 主动调用独立 `inbox_wait_quiet(source, quietMs, maxWaitMs)`，默认 `quietMs=2000`、支持任意 source/sourcePrefix；只读、不 ACK/冻结、不改 Inbox 推送节奏，返回 settled/stillActive。
+- **面板摘要**：现有 `inbox_items`/`inbox_get` 可做展开，但 `panel()` 与 `dsh-plugin/lib/inbox.js:renderPanel()` 必须同批改；首版建议 `auto` 阈值 8，保持 `full` 兼容，不引入总字符硬上限（D-044）。
+- **watchdog/媒体**：当前 `/watchdog` 只有 snapshot，`/debug/snapshot` 与 Inbox 诊断分散；没有媒体探针/计数/导出。建议新增 `GET /watchdog/diagnostics` 与 `bma3_watchdog_diagnose`，只输出版本、组件、计数、错误码、DB 健康、媒体统计、xvfb/QQ provider 能力，不输出正文/token/路径。
+- **媒体流水线**：`qq_media_view`（下载/切长图）+ 插件 `bma3_ocr`/`bma3_asr` 已有零件，但没有统一 fileId→文本工具；建议先验证 LLBot provider `ocr_image`/语音转文字，失败再回退插件 DeepSeek OCR/ASR；都不可用时明确 `vision_required`，不假装识别成功。
+- **xvfb/B 站**：用户已确认走 `xvfb + 图片 + computer use`，不再先做 B 站专用适配；建议增强 `xvfb_workspace_open/launch/wait/screenshot` 的高层组合、浏览器 profile 复用、截图 OCR 与无视觉模型适配。
+- **QQ 全面性**：当前好友只有 `qq_friend_list`，群/资料/申请/备注/删除/点赞/戳一戳/公告/文件等大量 action 未适配；`AccountConfig` 无 protocol/provider 字段，`llonebot_debug` 已硬编码进工具。建议抽 `QqActionTransport` + capability/profile + typed 高频工具 + 只读通用 `qq_provider_action`；发送类不得绕过消息板与 `UNKNOWN` 不重发。
+- **基线风险**：当前工作树在 `test/inbox-binding-tools-20261116`，test2 未合回 `feat/bma3-plan-1`；hotfix2 开工前必须先定基线。
+- **未验证 / NOT_RUN**：LLBot `input_status` 上报、LLBot `ocr_image`/语音转文字载荷、真实好友/群写操作、B 站 xvfb 登录态复用、watchdog 诊断导出、媒体流水线、任意构建/测试/远端 DSH 均 `NOT_RUN`。
+- **本轮无产品代码改动、无测试、无提交。**
+
 **2026-11-16 20:40 —— 0.0.7-test2 测试 Pre-release 已发布（修复 stale pendingPush）**。远端 test1 现场确认：pendingPush 指向的 item 已被服务端 ACK（ackedRevision 已越过 panelRevision），exact proof 永远无法匹配，形成 `pending_push_unverified` / `pending_push_waiting_for_recovery` 循环。
 
 - **修复**：fresh GET 在 pendingPush 全部 item IDs 已消失且 `ackedRevision >= pendingPush.panelRevision` 时，自动清除 pendingPush/deferredPush 并继续处理当前面板；仍有 item 可见或 ackedRevision 未越过时保持 fail-closed。

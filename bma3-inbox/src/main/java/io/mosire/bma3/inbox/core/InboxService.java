@@ -172,15 +172,45 @@ public final class InboxService {
         boolean includeOmitted = current.includeOmittedCount();
         List<InboxItem> eligible = visibleItems();
         int maxItems = Math.max(1, current.maxItemsPerPanel());
+        boolean summarized = switch (current.displayMode()) {
+            case "summary" -> true;
+            case "full" -> false;
+            default -> eligible.size() > current.summaryAboveItems();
+        };
+        int maxEntries = summarized ? 1 : current.maxMessagesPerItem();
+        int maxChars = summarized ? current.summaryMaxCharsPerItem()
+                : current.maxCharsPerItem();
+        Instant panelNow = Instant.now();
         List<PanelItem> items = new ArrayList<>();
         for (int index = 0; index < Math.min(maxItems, eligible.size()); index++) {
-            items.add(panelItem(eligible.get(index), current.maxMessagesPerItem(),
-                    current.maxCharsPerItem(), includeOmitted, index + 1));
+            InboxItem item = eligible.get(index);
+            items.add(panelItem(item, maxEntries, maxChars, includeOmitted, index + 1,
+                    heldForQuiet(item, panelNow)));
         }
         return new InboxPanel(inboxId, panelRevision, pushRevision, ackedRevision, Instant.now(),
                 items, eligible.size(),
                 includeOmitted ? Math.max(0, eligible.size() - items.size()) : 0, includeOmitted,
                 store.identity());
+    }
+
+    /**
+     * Panel shape for a push/SSE frame: only items frozen by the current push revision.
+     * A full {@link #panel()} may legitimately contain items still held by a source quiet window
+     * (frozenRevision=0); those must not poison a push batch's exact frozen proof.
+     */
+    public synchronized InboxPanel pushPanel() {
+        InboxPanel full = panel();
+        if (pushRevision <= 0) {
+            return full;
+        }
+        List<PanelItem> items = full.items().stream()
+                .filter(item -> item.frozenRevision() == pushRevision)
+                .toList();
+        int omitted = full.includeOmittedCount()
+                ? Math.max(0, full.totalItems() - items.size()) : 0;
+        return new InboxPanel(full.inboxId(), full.revision(), full.pushRevision(),
+                full.ackedRevision(), full.generatedAt(), items, full.totalItems(), omitted,
+                full.includeOmittedCount(), full.inboxIdentity());
     }
 
     /** Durable identity of the inbox database; stable across ordinary restarts. */
@@ -631,8 +661,8 @@ public final class InboxService {
                 }
                 continue;
             }
-            flushPending();
-            return panel();
+            flushPending(Instant.now());
+            return pushPanel();
         }
         return null;
     }
@@ -661,19 +691,85 @@ public final class InboxService {
             if (!window.contains(item.id())) {
                 continue;                       // no slot until something is acked
             }
-            Instant first = pendingFirstSeen.computeIfAbsent(item.id(), id -> item.updatedAt());
-            Instant anchor = pendingSince.computeIfAbsent(item.id(), id -> item.updatedAt());
-            Duration delay = item.priority() >= policy().importantThreshold()
-                    ? policy().importantDelay() : policy().normalDelay();
-            Instant due = anchor.plus(delay);
-            if (current.maxFirstPushDelaySeconds() > 0) {
-                Instant hard = first.plusSeconds(current.maxFirstPushDelaySeconds());
-                if (hard.isBefore(due)) {
-                    due = hard;
-                }
-            }
+            Instant due = dueFor(item);
             if (earliest == null || due.isBefore(earliest)) {
                 earliest = due;
+            }
+        }
+        return earliest;
+    }
+
+    /** The item's first observed pending time; kept only in memory, as before. */
+    private Instant firstSeen(InboxItem item) {
+        return pendingFirstSeen.computeIfAbsent(item.id(), id -> item.updatedAt());
+    }
+
+    /** The last append/reset time for this item; same-source appends move this forward. */
+    private Instant lastActivity(InboxItem item) {
+        return pendingSince.computeIfAbsent(item.id(), id -> item.updatedAt());
+    }
+
+    private InboxWaitPolicy.Resolution waitFor(InboxItem item) {
+        return runtime.get().waitPolicy().resolve(item.source());
+    }
+
+    /**
+     * Effective due instant for one item. The existing important/normal delay remains the base;
+     * a configured source quiet window can only hold it later, never earlier, until the per-source
+     * hard cap releases it.
+     */
+    private Instant dueFor(InboxItem item) {
+        InboxRuntime current = runtime.get();
+        Instant first = firstSeen(item);
+        Instant anchor = lastActivity(item);
+        Duration delay = item.priority() >= policy().importantThreshold()
+                ? policy().importantDelay() : policy().normalDelay();
+        Instant due = anchor.plus(delay);
+        InboxWaitPolicy.Resolution wait = waitFor(item);
+        if (wait.waiting()) {
+            Instant quietDue = anchor.plusSeconds(wait.quietSeconds());
+            if (quietDue.isAfter(due)) {
+                due = quietDue;
+            }
+            Instant waitHard = first.plusSeconds(wait.maxWaitSeconds());
+            if (waitHard.isBefore(due)) {
+                due = waitHard;
+            }
+        }
+        if (current.maxFirstPushDelaySeconds() > 0) {
+            Instant hard = first.plusSeconds(current.maxFirstPushDelaySeconds());
+            if (hard.isBefore(due)) {
+                due = hard;
+            }
+        }
+        return due;
+    }
+
+    /** True while this item is intentionally held by its source quiet window. */
+    private boolean heldForQuiet(InboxItem item, Instant now) {
+        if (item.frozen()) {
+            return false;
+        }
+        InboxWaitPolicy.Resolution wait = waitFor(item);
+        if (!wait.waiting()) {
+            return false;
+        }
+        Instant quietDue = lastActivity(item).plusSeconds(wait.quietSeconds());
+        Instant waitHard = firstSeen(item).plusSeconds(wait.maxWaitSeconds());
+        return quietDue.isAfter(now) && waitHard.isAfter(now);
+    }
+
+    private Instant nextQuietAt() {
+        Instant earliest = null;
+        Instant now = Instant.now();
+        for (InboxItem item : visibleItems()) {
+            if (item.frozen() || !heldForQuiet(item, now)) {
+                continue;
+            }
+            InboxWaitPolicy.Resolution wait = waitFor(item);
+            Instant quietDue = lastActivity(item).plusSeconds(wait.quietSeconds());
+            if (earliest == null || quietDue.isBefore(earliest)) {
+                earliest = quietDue;
             }
         }
         return earliest;
@@ -682,9 +778,10 @@ public final class InboxService {
     /**
      * Hands every pending item in the current window to one push and advances the durable push
      * revision. Only items that this panel actually renders are frozen; window-overflow items keep
-     * their pending state and are pushed in a later round.
+     * their pending state and are pushed in a later round. Items still held by a source quiet
+     * window are deliberately excluded even when another item triggers the batch.
      */
-    private void flushPending() {
+    private void flushPending(Instant now) {
         InboxRuntime current = runtime.get();
         List<InboxItem> visible = visibleItems();
         int capacity = Math.max(1, current.maxItemsPerPanel());
@@ -692,7 +789,7 @@ public final class InboxService {
         int repushCount = 0;
         for (int index = 0; index < Math.min(capacity, visible.size()); index++) {
             InboxItem item = visible.get(index);
-            if (item.frozen()) {
+            if (item.frozen() || heldForQuiet(item, now)) {
                 continue;
             }
             frozen.add(item.id());
@@ -715,6 +812,125 @@ public final class InboxService {
 
     public synchronized long pushRevision() {
         return pushRevision;
+    }
+
+    /**
+     * Wait until all matching source items have been quiet for {@code quiet}, or until
+     * {@code maxWait} expires. This is a read-only observer: it never ACKs or freezes an item.
+     */
+    public synchronized WaitQuietResult awaitQuiet(String source, String sourcePrefix,
+                                                   Duration quiet, Duration maxWait) {
+        String exact = source == null ? "" : source.trim();
+        String prefix = sourcePrefix == null ? "" : sourcePrefix.trim();
+        if (exact.isEmpty() && prefix.isEmpty()) {
+            throw new IllegalArgumentException("SOURCE_REQUIRED");
+        }
+        String matchedBy = exact.isEmpty() ? "sourcePrefix" : "source";
+        String selector = exact.isEmpty() ? prefix : exact;
+        Duration quietDuration = quiet == null ? Duration.ofSeconds(2) : quiet;
+        Duration maxDuration = maxWait == null ? Duration.ofSeconds(20) : maxWait;
+        if (quietDuration.isNegative() || quietDuration.compareTo(Duration.ofSeconds(60)) > 0) {
+            throw new IllegalArgumentException("quietMs 必须在 0..60000");
+        }
+        if (maxDuration.isNegative() || maxDuration.isZero()
+                || maxDuration.compareTo(Duration.ofSeconds(120)) > 0) {
+            throw new IllegalArgumentException("maxWaitMs 必须在 1..120000");
+        }
+        if (quietDuration.compareTo(maxDuration) > 0) {
+            throw new IllegalArgumentException("quietMs 不能大于 maxWaitMs");
+        }
+        Instant started = Instant.now();
+        Instant deadline = started.plus(maxDuration);
+        List<InboxItem> matching = matchingItems(exact, prefix);
+        Instant lastActivity = latestActivity(matching, started);
+        while (!closed) {
+            Instant now = Instant.now();
+            matching = matchingItems(exact, prefix);
+            // A new message can have updated or created an item since the previous iteration.
+            // An empty source uses the call start as its anchor, so quiet=2s still waits once.
+            lastActivity = latestActivity(matching, started);
+            if (!now.isBefore(lastActivity.plus(quietDuration))) {
+                return new WaitQuietResult(true, "quiet", selector, matchedBy,
+                        Duration.between(started, now).toMillis(), lastActivity,
+                        newestFirst(matching));
+            }
+            if (!now.isBefore(deadline)) {
+                return new WaitQuietResult(false, "max_wait", selector, matchedBy,
+                        Duration.between(started, now).toMillis(), lastActivity,
+                        newestFirst(matching));
+            }
+            Instant next = lastActivity.plus(quietDuration);
+            if (next.isAfter(deadline)) {
+                next = deadline;
+            }
+            long millis = Math.max(1, Duration.between(now, next).toMillis());
+            try {
+                wait(Math.min(millis, 1000));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return new WaitQuietResult(false, "interrupted", selector, matchedBy,
+                        Duration.between(started, Instant.now()).toMillis(), lastActivity,
+                        newestFirst(matching));
+            }
+        }
+        return new WaitQuietResult(false, "interrupted", selector, matchedBy,
+                Duration.between(started, Instant.now()).toMillis(), lastActivity,
+                newestFirst(matching));
+    }
+
+    private List<InboxItem> matchingItems(String exact, String prefix) {
+        return store.items().stream()
+                .filter(item -> exact.isEmpty()
+                        ? InboxWaitPolicy.applies(prefix, item.source())
+                        : item.source().equals(exact))
+                .toList();
+    }
+
+    private static Instant latestActivity(List<InboxItem> items, Instant fallback) {
+        Instant latest = fallback;
+        for (InboxItem item : items) {
+            if (item.updatedAt().isAfter(latest)) {
+                latest = item.updatedAt();
+            }
+        }
+        return latest;
+    }
+
+    private static List<InboxItem> newestFirst(List<InboxItem> items) {
+        return items.stream()
+                .sorted(Comparator.comparing(InboxItem::updatedAt).reversed())
+                .limit(20)
+                .toList();
+    }
+
+    /** Content-free view of the effective source-wait policy and current held items. */
+    public synchronized Map<String, Object> waitPolicyView() {
+        InboxRuntime current = runtime.get();
+        InboxWaitPolicy policy = current.waitPolicy();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("enabled", policy.enabled());
+        body.put("defaultQuietSeconds", policy.defaultQuietSeconds());
+        body.put("defaultMaxWaitSeconds", policy.defaultMaxWaitSeconds());
+        List<Map<String, Object>> rules = new ArrayList<>();
+        for (InboxWaitPolicy.Rule rule : policy.rules()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("source", rule.source());
+            row.put("quietSeconds", rule.quietSeconds());
+            row.put("maxWaitSeconds", rule.maxWaitSeconds());
+            rules.add(row);
+        }
+        body.put("rules", rules);
+        Instant now = Instant.now();
+        int waiting = 0;
+        for (InboxItem item : visibleItems()) {
+            if (!item.frozen() && heldForQuiet(item, now)) {
+                waiting++;
+            }
+        }
+        body.put("waitingForQuiet", waiting);
+        Instant next = nextQuietAt();
+        body.put("nextQuietAt", next == null ? "" : next.toString());
+        return body;
     }
 
     public synchronized InboxStatus status() {
@@ -758,12 +974,21 @@ public final class InboxService {
                 }
             }
         }
+        Instant now = Instant.now();
+        int waitingForQuiet = 0;
+        for (InboxItem item : visible) {
+            if (!item.frozen() && heldForQuiet(item, now)) {
+                waitingForQuiet++;
+            }
+        }
         Instant next = nextDue();
+        Instant nextQuiet = nextQuietAt();
         return new InboxStatus(available, acked, remainingImportant, pending,
                 next == null ? "" : next.toString(), panelRevision, ackedRevision, unread,
                 pushRevision, ackConflicts.get(), pushes.get(), repushes.get(), dismissed.get(),
                 List.copyOf(recentErrors), frozenInWindow, pendingBlockedByFrozen > 0,
-                pendingBlockedByFrozen);
+                pendingBlockedByFrozen, waitingForQuiet,
+                nextQuiet == null ? "" : nextQuiet.toString());
     }
 
     public synchronized List<ItemSummary> list() {
@@ -913,7 +1138,8 @@ public final class InboxService {
     }
 
     private static PanelItem panelItem(InboxItem item, int maxMessages, int maxChars,
-                                       boolean includeOmitted, int index) {
+                                       boolean includeOmitted, int index,
+                                       boolean waitingForQuiet) {
         List<InboxEntry> entries = item.entries();
         if (entries.isEmpty() && !item.summary().isBlank()) {
             entries = List.of(new InboxEntry(0, item.updatedAt(), "", item.summary(), List.of()));
@@ -931,7 +1157,7 @@ public final class InboxService {
         int omitted = includeOmitted ? Math.max(0, item.totalMessages() - entries.size()) : 0;
         return new PanelItem(index, item.id(), item.source(), item.sourceLabel(), item.priority(),
                 entries, item.totalMessages(), omitted, item.status(), item.updatedAt(),
-                item.continued(), truncatedChars, item.frozenRevision());
+                item.continued(), truncatedChars, item.frozenRevision(), waitingForQuiet);
     }
 
     /** Keeps the newest entries that fit; a single over-long entry is truncated. */

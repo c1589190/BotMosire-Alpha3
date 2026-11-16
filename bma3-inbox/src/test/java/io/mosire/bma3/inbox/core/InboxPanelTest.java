@@ -16,9 +16,16 @@ class InboxPanelTest {
     Path tempDir;
 
     private static InboxService service(SqliteInboxStore store, int maxMessages, int maxItems) {
+        return service(store, maxMessages, maxItems, "auto", 200, 8);
+    }
+
+    private static InboxService service(SqliteInboxStore store, int maxMessages, int maxItems,
+                                        String mode, int summaryMaxChars, int summaryAbove) {
         return new InboxService(store,
                 new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)),
-                "bma3", () -> new InboxRuntime(maxMessages, maxItems, true));
+                "bma3", () -> new InboxRuntime(maxMessages, maxItems, true, -1000, 30, 5000,
+                        1200, 60, Integer.MIN_VALUE, 1800, 200, mode, summaryMaxChars,
+                        summaryAbove, InboxWaitPolicy.defaults()));
     }
 
     @Test
@@ -94,6 +101,66 @@ class InboxPanelTest {
             assertThat(ack.ackedRevision()).isEqualTo(seen);
             assertThat(service.panel().items()).hasSize(1);
             assertThat(service.panel().items().getFirst().source()).isEqualTo(second.raw());
+        }
+    }
+
+    @Test
+    void summaryModeKeepsOnlyTheNewestEntryAndPreservesExpansion() {
+        Instant t0 = Instant.parse("2026-11-10T00:00:00Z");
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("summary.db"))) {
+            InboxService service = service(store, 6, 6, "summary", 200, 8);
+            SourceView source = SourceView.of("qq_group/bot-1/1", "QQ群 1");
+            for (int i = 1; i <= 6; i++) {
+                service.appendOrMerge(AppendItem.of(source,
+                        new InboxEntry(i, t0.plusSeconds(i), "u", "m" + i, List.of()),
+                        300, t0.plusSeconds(i)));
+            }
+
+            PanelItem panelItem = service.panel().items().getFirst();
+            assertThat(panelItem.entries()).hasSize(1);
+            assertThat(panelItem.entries().getFirst().text()).isEqualTo("m6");
+            assertThat(panelItem.omittedMessages()).isEqualTo(5);
+            assertThat(panelItem.entries().getFirst().line()).isNotBlank();
+
+            String itemId = service.items().getFirst().id();
+            assertThat(service.items().getFirst().entries()).hasSize(6);
+            assertThat(service.item(itemId).entries()).hasSize(6);
+        }
+    }
+
+    @Test
+    void autoModeSwitchesToSummaryAboveThresholdAndHonorsHotReload() {
+        Instant t0 = Instant.parse("2026-11-10T00:00:00Z");
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("auto.db"))) {
+            java.util.concurrent.atomic.AtomicReference<String> mode =
+                    new java.util.concurrent.atomic.AtomicReference<>("auto");
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)),
+                    "bma3", () -> new InboxRuntime(6, 6, true, -1000, 30, 5000, 1200, 60,
+                            Integer.MIN_VALUE, 1800, 200, mode.get(), 200, 2,
+                            InboxWaitPolicy.defaults()));
+            SourceView first = SourceView.of("bma3_task/one", "任务 1");
+            for (int i = 0; i < 3; i++) {
+                service.appendOrMerge(AppendItem.of(first,
+                        new InboxEntry(i, t0.plusSeconds(i), "u", "m" + i, List.of()),
+                        300, t0.plusSeconds(i)));
+            }
+            for (int i = 0; i < 2; i++) {
+                SourceView other = SourceView.of("bma3_task/" + (i + 2), "任务 " + (i + 2));
+                service.appendOrMerge(AppendItem.of(other,
+                        new InboxEntry(i, t0.plusSeconds(10 + i), "u", "x" + i, List.of()),
+                        250, t0.plusSeconds(10 + i)));
+            }
+            PanelItem autoFirst = service.panel().items().stream()
+                    .filter(item -> item.source().equals(first.raw())).findFirst().orElseThrow();
+            assertThat(autoFirst.entries()).hasSize(1);
+            assertThat(autoFirst.omittedMessages()).isEqualTo(2);
+
+            mode.set("full");
+            PanelItem fullFirst = service.panel().items().stream()
+                    .filter(item -> item.source().equals(first.raw())).findFirst().orElseThrow();
+            assertThat(fullFirst.entries()).hasSize(3);
+            assertThat(fullFirst.omittedMessages()).isZero();
         }
     }
 

@@ -54,6 +54,14 @@ class XvfbServiceTest {
     }
 
     @Test
+    void browserBinaryDefaultsAndCanBeOverridden(@TempDir Path root) {
+        assertThat(new XvfbService(root.resolve(".xvfb")).browserBinary())
+                .isEqualTo("/snap/bin/chromium");
+        assertThat(new XvfbService(root.resolve(".xvfb"), null, "/usr/bin/chromium")
+                .browserBinary()).isEqualTo("/usr/bin/chromium");
+    }
+
+    @Test
     void statusNeverExposesAnIsolationVerdict(@TempDir Path root) {
         XvfbService service = new XvfbService(root.resolve(".xvfb"), noXvfb());
 

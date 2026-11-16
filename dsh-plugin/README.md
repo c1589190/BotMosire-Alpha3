@@ -46,7 +46,7 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## 连上 bma3 jar（0.0.7-test2 测试版）
+## 连上 bma3 jar（0.0.7-hotfix2-earlytest 开发版）
 
 插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
 `@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。
@@ -125,17 +125,19 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 
 ## 媒体：OCR / ASR（DeepSeek 官方接口）
 
-预设里挂了一行 `media`（`lib/media.js`），只给 BMA3 会话两个工具：
+预设里挂了一行 `media`（`lib/media.js`），给 BMA3 会话三个工具：
 
 | 工具 | 端点 | 说明 |
 |---|---|---|
+| `bma3_media` | 本地路由 | 把 `qq_media_view` 的 path 按 auto/image/document/audio 路由到 OCR/ASR；无 key 返回结构化失败 |
 | `bma3_ocr` | `POST https://api.deepseek.com/v1/tools/ocr` | PDF/DOC/DOCX/PPT/PPTX/PNG/JPEG/WebP/GIF/BMP/TIFF，按页返回文本；`purpose` 默认 `text_recognition` |
 | `bma3_asr` | `POST https://api.deepseek.com/v1/tools/asr` | 音频转写；先用 ffmpeg 转 16 kHz 单声道 16 位 PCM WAV，最长 120 秒 / 8 MiB |
 
 - key 从 DSH `credentials` 的 `DEEPSEEK_API_KEY` 取（缺省退回同名环境变量），缺了就返回结构化错误、**不发起请求、不回显密钥**。
-- 语音文件本身由 jar 下载：`qq_media_view` 对 `record` 段调用即落到 downloads（`.amr`/`.mp3`/`.ogg`/`.wav`/`.silk`），再把返回的 `path` 交给 `bma3_asr`。
+- 语音文件本身由 jar 下载：`qq_media_view` 对 `record` 段调用即落到 downloads（`.amr`/`.mp3`/`.ogg`/`.wav`/`.silk`），再把返回的 `path` 交给 `bma3_media`（音频会自动转 ASR）。
+- 纯文本模型没有视觉能力时，先 `qq_media_view` 落盘，再 `bma3_media(filePath)`；没有 OCR key 就明确返回失败，不要根据文件名猜内容。
 - 计费随 DeepSeek 官方：OCR 1.5 元/1000 页、ASR 0.78 元/小时（限时 5 折）。
-- 出境边界：**只有 Agent 显式调这两个工具时，被指定的那一个文件才发往 `api.deepseek.com`**；插件不批量、不缓存。
+- 出境边界：**只有 Agent 显式调这些工具时，被指定的那一个文件才发往 `api.deepseek.com`**；插件不批量、不缓存。
 - TTS 不做（D-068）。
 
 ## Inbox

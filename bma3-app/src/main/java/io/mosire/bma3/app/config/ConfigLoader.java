@@ -116,6 +116,7 @@ public final class ConfigLoader {
         JsonNode inboxPush = inbox.path("push");
         JsonNode inboxRetention = inbox.path("retention");
         JsonNode inboxDismiss = inbox.path("dismiss");
+        JsonNode inboxWait = inbox.path("wait");
         JsonNode send = node.path("qqconnect").path("send");
         JsonNode media = node.path("qqconnect").path("media");
         JsonNode webconnect = node.path("webconnect");
@@ -154,7 +155,10 @@ public final class ConfigLoader {
                                 integer(inboxDisplay, "maxMessagesPerItem", 6),
                                 integer(inboxDisplay, "maxItemsPerPanel", 6),
                                 inboxDisplay.path("includeOmittedCount").asBoolean(true),
-                                integer(inboxDisplay, "maxCharsPerItem", 1200)),
+                                integer(inboxDisplay, "maxCharsPerItem", 1200),
+                                text(inboxDisplay, "mode", "auto"),
+                                integer(inboxDisplay, "summaryMaxCharsPerItem", 200),
+                                integer(inboxDisplay, "summaryAboveItems", 8)),
                         new AppConfig.Inbox.Push(
                                 integer(inboxPush, "minPriority", -1000),
                                 integer(inboxPush, "maxFirstPushDelaySeconds", 60)),
@@ -165,7 +169,12 @@ public final class ConfigLoader {
                                 inboxDismiss.path("autoEnabled").asBoolean(false),
                                 integer(inboxDismiss, "autoBelowPriority", 0),
                                 integer(inboxDismiss, "autoAfterSeconds", 1800),
-                                integer(inboxDismiss, "autoMaxPerRound", 200))),
+                                integer(inboxDismiss, "autoMaxPerRound", 200)),
+                        new AppConfig.Inbox.Wait(
+                                inboxWait.path("enabled").asBoolean(true),
+                                integer(inboxWait, "defaultQuietSeconds", 0),
+                                integer(inboxWait, "defaultMaxWaitSeconds", 20),
+                                waitSources(inboxWait.path("sources")))),
                 new AppConfig.Webconnect(webconnect.path("enabled").asBoolean(false),
                         text(webconnect, "binary", "/snap/bin/chromium"),
                         webconnect.path("headless").asBoolean(true),
@@ -235,6 +244,21 @@ public final class ConfigLoader {
         }
         matcher.appendTail(output);
         return output.toString();
+    }
+
+    /** Parses {@code inbox.wait.sources[]}; an absent/empty array means no overrides. */
+    private static java.util.List<AppConfig.Inbox.Wait.SourceRule> waitSources(JsonNode node) {
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<AppConfig.Inbox.Wait.SourceRule> rules = new java.util.ArrayList<>();
+        for (JsonNode row : node) {
+            rules.add(new AppConfig.Inbox.Wait.SourceRule(
+                    text(row, "source", ""),
+                    integer(row, "quietSeconds", 0),
+                    integer(row, "maxWaitSeconds", 20)));
+        }
+        return java.util.List.copyOf(rules);
     }
 
     /** Missing map falls back to the built-in defaults; an empty map stays empty on purpose. */

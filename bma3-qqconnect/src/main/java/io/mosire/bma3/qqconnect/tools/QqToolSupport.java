@@ -30,6 +30,8 @@ final class QqToolSupport {
                         "列出 Bot 账号已加入的 QQ 群（OneBot get_group_list）；只读。"),
                 new QqContactListTool(context, "qq_friend_list", "get_friend_list",
                         "列出 Bot 账号的 QQ 好友（OneBot get_friend_list）；只读。"),
+                new QqFriendTool(context),
+                new QqProviderActionTool(context),
                 new QqThreadListTool(context),
                 new QqConversationHistoryTool(context),
                 new QqGroupMembersTool(context),

@@ -36,6 +36,7 @@ public final class QqMediaViewTool implements AgentTool {
                 + "图片和其他类型下载到 downloads 目录并返回本地 path（图片可再用 read_image 看）；"
                 + "**超长图会自动切成多段**（每段 ≤2048 高、相邻重叠 64px）并在 parts[] 里给出各自 path，"
                 + "避免 read_image 把 1080×18000 压成 4096 高看不清。"
+                + "无视觉模型可把返回的 path 交给 bma3_media / bma3_ocr / bma3_asr；"
                 + "fileId 来自 qq_conversation_history / qq_message_get 的 includeSegments=true。";
     }
 
@@ -85,6 +86,7 @@ public final class QqMediaViewTool implements AgentTool {
             MediaId media = MediaId.decode(fileId)
                     .orElseThrow(() -> new IllegalArgumentException("INVALID_FILE_ID: " + fileId));
             var resolved = QqMediaSupport.resolve(context, fileId).orElseThrow();
+            context.mediaDiagnostics().attempt(resolved.segment().type());
             String url = QqMediaSupport.freshUrl(context, media, resolved.segment());
             var fetched = QqMediaSupport.fetch(url, policy);
 
@@ -101,6 +103,7 @@ public final class QqMediaViewTool implements AgentTool {
             if (text && fetched.bytes().length <= policy.maxInlineBytes()) {
                 root.put("inline", true);
                 root.put("text", new String(fetched.bytes(), StandardCharsets.UTF_8));
+                context.mediaDiagnostics().success(fetched.bytes().length, false);
                 return ToolResult.ok(root.toString());
             }
 
@@ -145,7 +148,8 @@ public final class QqMediaViewTool implements AgentTool {
                 } else {
                     root.put("hint", switch (longImage.reason()) {
                         case "SHORT_ENOUGH" -> "图片已落盘（" + longImage.width() + "×"
-                                + longImage.height() + "，无需切段）；用 read_image 打开该 path";
+                                + longImage.height() + "，无需切段）；用 read_image 打开该 path"
+                                + "；无视觉模型交给 bma3_media/bma3_ocr";
                         case "TOO_MANY_PIXELS" -> "图片像素数过大（" + longImage.width() + "×"
                                 + longImage.height() + "），解码有 OOM 风险，未切段；"
                                 + "请先用其他方式缩小或只取局部";
@@ -162,10 +166,16 @@ public final class QqMediaViewTool implements AgentTool {
             } else if (text) {
                 root.put("hint", "文本超过内联上限，已落盘；用文件工具读取该 path");
             } else {
-                root.put("hint", "非图文内容已落盘；用相应工具读取该 path");
+                root.put("hint", "非图文内容已落盘；音频用 bma3_media/bma3_asr，"
+                        + "其他文件用相应工具读取该 path");
             }
+            boolean split = root.path("split").asBoolean(false);
+            context.mediaDiagnostics().success(fetched.bytes().length, split);
             return ToolResult.ok(root.toString());
         } catch (IllegalArgumentException failure) {
+            String code = failure.getMessage() == null ? "MEDIA_ERROR" : failure.getMessage();
+            int split = code.indexOf(':');
+            context.mediaDiagnostics().failure(split > 0 ? code.substring(0, split) : code);
             return QqToolSupport.invalid(failure);
         }
     }

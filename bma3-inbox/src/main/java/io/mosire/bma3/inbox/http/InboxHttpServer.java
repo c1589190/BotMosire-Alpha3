@@ -169,7 +169,7 @@ public final class InboxHttpServer implements AutoCloseable {
         OutputStream output = exchange.getResponseBody();
         long last = parseRevision(exchange.getRequestHeaders().getFirst("Last-Event-ID"));
         try {
-            InboxPanel snapshot = service.panel();
+            InboxPanel snapshot = service.pushPanel();
             writeEvent(output, "panel", snapshot.revision(), mapper.writeValueAsString(snapshot));
             last = Math.max(last, snapshot.revision());
             long pushed = snapshot.pushRevision();

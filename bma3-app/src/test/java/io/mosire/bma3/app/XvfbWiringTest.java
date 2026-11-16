@@ -53,7 +53,7 @@ class XvfbWiringTest {
     }
 
     @Test
-    void theToolSurfaceIsExactlyTheTwelveContractedTools(@TempDir Path root) {
+    void theToolSurfaceIsExactlyTheContractedTools(@TempDir Path root) {
         XvfbService service = new XvfbService(root.resolve(".xvfb"));
         Set<String> names = XvfbTools.all(service).stream()
                 .map(tool -> tool.name())
@@ -65,6 +65,8 @@ class XvfbWiringTest {
                 "xvfb_workspace_close",
                 "xvfb_workspace_list",
                 "xvfb_launch",
+                "xvfb_open_browser",
+                "xvfb_wait",
                 "xvfb_screenshot",
                 "xvfb_windows",
                 "xvfb_exec",

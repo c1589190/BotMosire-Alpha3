@@ -46,6 +46,7 @@ import io.mosire.bma3.qqconnect.directory.QqDirectoryStore;
 import io.mosire.bma3.qqconnect.onebot.OneBotEvent;
 import io.mosire.bma3.qqconnect.tools.QqDeployerNotifier;
 import io.mosire.bma3.qqconnect.tools.QqExtrasStore;
+import io.mosire.bma3.qqconnect.tools.QqMediaDiagnostics;
 import io.mosire.bma3.qqconnect.tools.QqSendPolicy;
 import io.mosire.bma3.qqconnect.tools.QqSignalExtractor;
 import io.mosire.bma3.qqconnect.tools.QqSourceKeyer;
@@ -73,6 +74,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -222,7 +224,21 @@ public final class Bma3App implements AutoCloseable {
                             dismiss.autoEnabled() ? dismiss.autoBelowPriority()
                                     : Integer.MIN_VALUE,
                             dismiss.autoAfterSeconds(),
-                            dismiss.autoMaxPerRound());
+                            dismiss.autoMaxPerRound(),
+                            policy.display().mode(),
+                            policy.display().summaryMaxCharsPerItem(),
+                            policy.display().summaryAboveItems(),
+                            new io.mosire.bma3.inbox.core.InboxWaitPolicy(
+                                    policy.waitPolicy().enabled(),
+                                    policy.waitPolicy().defaultQuietSeconds(),
+                                    policy.waitPolicy().defaultMaxWaitSeconds(),
+                                    policy.waitPolicy().sources().stream()
+                                            .map(rule -> new io.mosire.bma3.inbox.core
+                                                    .InboxWaitPolicy.Rule(
+                                                            rule.source(),
+                                                            rule.quietSeconds(),
+                                                            rule.maxWaitSeconds()))
+                                            .toList()));
                 });
         inboxService.setMcpStartId("mcp-" + UUID.randomUUID().toString().substring(0, 8));
         if (config.inbox().push().minPriority() > -1000) {
@@ -250,6 +266,7 @@ public final class Bma3App implements AutoCloseable {
         }
 
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
+        QqMediaDiagnostics mediaDiagnostics = new QqMediaDiagnostics();
         AtomicReference<AccountRegistry> registry = new AtomicReference<>();
         AccountRegistry accounts = new AccountRegistry(event -> ingest(board, inboxService,
                 priorities, sourceKeyer, registry.get(), current, qqExtras, sourceLabels,
@@ -268,7 +285,7 @@ public final class Bma3App implements AutoCloseable {
                     return new io.mosire.bma3.qqconnect.tools.QqMediaPolicy(dir,
                             media.maxInlineBytes(), media.maxDownloadBytes(),
                             Duration.ofSeconds(media.timeoutSeconds()));
-                }, directory);
+                }, directory, mediaDiagnostics);
 
         AtomicReference<WatchdogEngine> watchdogRef = new AtomicReference<>();
         // Remote ask surface (spec 2026-11-15 §2). It is deliberately absent when auth is disabled:
@@ -289,11 +306,37 @@ public final class Bma3App implements AutoCloseable {
             LOG.warn("event=debug_surface_disabled reason={}",
                     authRequired ? "debug_token_missing" : "security.auth=none");
         }
+        Supplier<Map<String, Object>> watchdogDiagnostics = () -> {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("version", Main.VERSION);
+            body.put("now", Instant.now().toString());
+            WatchdogEngine engine = watchdogRef.get();
+            body.put("watchdog", engine == null ? Map.of("status", "unavailable")
+                    : engine.snapshot());
+            Map<String, Object> inboxView = new LinkedHashMap<>();
+            inboxView.put("status", inboxService.status());
+            inboxView.put("heartbeat", inboxService.lastHeartbeat());
+            body.put("inbox", inboxView);
+            body.put("media", mediaDiagnostics.snapshot(qqContext.media().dir()));
+            Map<String, Long> fileSizes = new LinkedHashMap<>();
+            for (String name : new String[]{"bot.db", "inbox.db", "schedule.db",
+                    "qq-directory.db", "qq-extras.db", "debug/requests.json"}) {
+                Path file = config.dataDir().resolve(name);
+                try {
+                    fileSizes.put(name, Files.isRegularFile(file) ? Files.size(file) : -1L);
+                } catch (IOException failure) {
+                    fileSizes.put(name, -1L);
+                }
+            }
+            body.put("files", fileSizes);
+            body.put("security", Map.of("auth", authRequired ? "token" : "none"));
+            return body;
+        };
         HealthServer health = new HealthServer(config.server().host(),
                 config.server().healthPort(), mcpToken, () -> {
                     WatchdogEngine engine = watchdogRef.get();
                     return engine == null ? null : engine.snapshot();
-                }, debugApi);
+                }, debugApi, watchdogDiagnostics);
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
                 config.inbox().inboxId(), inboxToken, inboxService);
@@ -323,7 +366,7 @@ public final class Bma3App implements AutoCloseable {
             tools.addAll(InboxTools.all(inboxService, Main.VERSION));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
-            tools.addAll(WatchdogTools.all(watchdog));
+            tools.addAll(WatchdogTools.all(watchdog, watchdogDiagnostics));
             tools.addAll(PriorityTools.all(priorities));
             if (scheduleRef.get() != null) {
                 tools.addAll(ScheduleTools.all(scheduleRef.get()));
@@ -343,7 +386,7 @@ public final class Bma3App implements AutoCloseable {
             }
             if (config.xvfb().enabled()) {
                 xvfb = new XvfbService(config.xvfb().root(),
-                        config.dataDir().resolve("downloads"));
+                        config.dataDir().resolve("downloads"), config.webconnect().binary());
                 tools.addAll(XvfbTools.all(xvfb));
             }
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
@@ -375,6 +418,7 @@ public final class Bma3App implements AutoCloseable {
                         }
                         return ProbeResult.up("xvfb", caps.xvfb());
                     }))
+                    .addProbe(Probes.media(mediaDiagnostics, qqContext.media().dir()))
                     .addProbe(Probes.named("schedule", () -> {
                         ScheduleService currentSchedule = scheduleRef.get();
                         if (currentSchedule == null) {

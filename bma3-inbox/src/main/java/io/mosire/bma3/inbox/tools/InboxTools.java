@@ -26,7 +26,8 @@ public final class InboxTools {
         return List.of(new InboxStatusTool(service), new InboxListTool(service),
                 new InboxItemsTool(service), new InboxGetTool(service),
                 new InboxAckTool(service), new InboxDismissTool(service),
-                new InboxWaitTool(service), new InboxDiagnoseTool(service, version),
+                new InboxWaitTool(service), new InboxWaitQuietTool(service),
+                new InboxDiagnoseTool(service, version),
                 new InboxPluginControlTool(service));
     }
 

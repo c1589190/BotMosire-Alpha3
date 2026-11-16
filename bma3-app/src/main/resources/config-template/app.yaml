@@ -40,6 +40,20 @@ inbox:
     maxItemsPerPanel: 6     # 1..50
     includeOmittedCount: true
     maxCharsPerItem: 1200   # 单条目注入字符上限；0=不限（不设总字符上限）
+    mode: auto              # full | summary | auto
+    summaryMaxCharsPerItem: 200  # summary 模式下每条上限
+    summaryAboveItems: 8    # auto：可见条目超过此值切 summary
+  wait:
+    enabled: true
+    defaultQuietSeconds: 0  # 未配置来源默认不额外等待；Agent 可按来源打开
+    defaultMaxWaitSeconds: 20
+    sources:                # 来源前缀，最长匹配优先
+      # - source: qq_private
+      #   quietSeconds: 8
+      #   maxWaitSeconds: 20
+      # - source: qq_group
+      #   quietSeconds: 4
+      #   maxWaitSeconds: 15
   push:
     # minPriority 已废弃/忽略：所有未被 weighting.dropBelow 丢弃的条目都会推送；
     # 低于 immediateThreshold 的走 normalDelaySeconds（默认 60s）批次。

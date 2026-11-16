@@ -63,6 +63,42 @@ class QqToolsTest {
                             "qq_user_note_list", "qq_user_note_upsert",
                             "qq_conversation_ack");
 
+            client.response = mapper.readTree(
+                    "{\"status\":\"ok\",\"retcode\":0,\"data\":{\"user_id\":20002}}");
+            ToolResult noConfirm = tool(tools, "qq_provider_action").execute(call(Map.of(
+                    "action", "set_friend_remark",
+                    "params", Map.of("user_id", "20002", "remark", "Alice"))));
+            assertThat(noConfirm.success()).isFalse();
+            assertThat(noConfirm.message()).contains("confirm=true");
+
+            ToolResult genericWrite = tool(tools, "qq_provider_action").execute(call(Map.of(
+                    "action", "set_friend_remark", "confirm", true,
+                    "params", Map.of("user_id", "20002", "remark", "Alice"))));
+            assertThat(genericWrite.success()).as(genericWrite.message()).isTrue();
+            assertThat(client.sentAction).isEqualTo("set_friend_remark");
+
+            ToolResult blocked = tool(tools, "qq_provider_action").execute(call(Map.of(
+                    "action", "send_private_msg", "confirm", true,
+                    "params", Map.of("user_id", "20002", "message", "x"))));
+            assertThat(blocked.success()).isFalse();
+            assertThat(blocked.message()).contains("禁止").contains("消息板");
+
+            client.response = mapper.readTree(
+                    "{\"status\":\"ok\",\"retcode\":0,\"data\":{\"user_id\":20002}}");
+            ToolResult friendInfo = tool(tools, "qq_friend").execute(call(Map.of(
+                    "operation", "info", "userId", "20002")));
+            assertThat(friendInfo.success()).as(friendInfo.message()).isTrue();
+            assertThat(client.sentAction).isEqualTo("get_stranger_info");
+
+            ToolResult friendDeleteNoConfirm = tool(tools, "qq_friend").execute(call(Map.of(
+                    "operation", "delete", "userId", "20002")));
+            assertThat(friendDeleteNoConfirm.success()).isFalse();
+            assertThat(friendDeleteNoConfirm.message()).contains("confirm=true");
+
+            ToolResult friendDelete = tool(tools, "qq_friend").execute(call(Map.of(
+                    "operation", "delete", "userId", "20002", "confirm", true)));
+            assertThat(friendDelete.success()).as(friendDelete.message()).isTrue();
+            assertThat(client.sentAction).isEqualTo("delete_friend");
             ToolResult threads = tool(tools, "qq_thread_list").execute(call(Map.of()));
             assertThat(threads.success()).isTrue();
             assertThat(mapper.readTree(threads.message()).path("threads")).hasSize(1);

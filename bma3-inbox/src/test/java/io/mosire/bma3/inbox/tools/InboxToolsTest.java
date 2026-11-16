@@ -56,8 +56,8 @@ class InboxToolsTest {
             List<AgentTool> tools = InboxTools.all(service(store));
             assertThat(tools).extracting(AgentTool::name).containsExactly(
                     "inbox_status", "inbox_list", "inbox_items", "inbox_get",
-                    "inbox_ack", "inbox_dismiss", "inbox_wait", "inbox_diagnose",
-                    "inbox_plugin_control");
+                    "inbox_ack", "inbox_dismiss", "inbox_wait", "inbox_wait_quiet",
+                    "inbox_diagnose", "inbox_plugin_control");
         }
     }
 
@@ -85,6 +85,12 @@ class InboxToolsTest {
                     .as("inbox_get must expose push eligibility for diagnostics")
                     .isTrue();
             assertThat(detail.path("frozenRevision").asLong()).isZero();
+
+            JsonNode byIndex = mapper.readTree(tool(tools, "inbox_get")
+                    .execute(call(Map.of("index", 1,
+                            "revision", service.panel().revision()))).message());
+            assertThat(byIndex.path("id").asText())
+                    .isEqualTo(items.path("items").get(0).path("id").asText());
         }
     }
 
@@ -181,6 +187,61 @@ class InboxToolsTest {
     }
 
     @Test
+    void waitQuietWaitsForTheSourceToSettleAndIsReadOnly() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-quiet.db"))) {
+            InboxService service = service(store, Duration.ofSeconds(30));
+            append(service, "qq_private/bot-1/2", 300, "第一句");
+            long revision = service.panel().revision();
+            List<AgentTool> tools = InboxTools.all(service);
+
+            ToolResult waited = tool(tools, "inbox_wait_quiet").execute(call(Map.of(
+                    "source", "qq_private/bot-1/2", "quietMs", 50, "maxWaitMs", 1000)));
+            assertThat(waited.success()).as(waited.message()).isTrue();
+            JsonNode body = mapper.readTree(waited.message());
+            assertThat(body.path("settled").asBoolean()).isTrue();
+            assertThat(body.path("reason").asText()).isEqualTo("quiet");
+            assertThat(body.path("source").asText()).isEqualTo("qq_private/bot-1/2");
+            assertThat(body.path("items")).hasSize(1);
+            assertThat(service.panel().revision()).isEqualTo(revision);
+            assertThat(service.panel().items()).hasSize(1);
+        }
+    }
+
+    @Test
+    void waitQuietSupportsAnySourcePrefixAndReportsActiveAtMaxWait() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-prefix.db"))) {
+            InboxService service = service(store, Duration.ofSeconds(30));
+            append(service, "bma3_task/example", 300, "任务");
+            List<AgentTool> tools = InboxTools.all(service);
+
+            ToolResult waited = tool(tools, "inbox_wait_quiet").execute(call(Map.of(
+                    "sourcePrefix", "bma3_task", "quietMs", 10, "maxWaitMs", 50)));
+            assertThat(waited.success()).as(waited.message()).isTrue();
+            JsonNode body = mapper.readTree(waited.message());
+            assertThat(body.path("matchedBy").asText()).isEqualTo("sourcePrefix");
+            assertThat(body.path("items")).hasSize(1);
+            assertThat(body.path("reason").asText()).isIn("quiet", "max_wait");
+        }
+    }
+
+    @Test
+    void waitQuietRejectsMissingSourceAndInvalidRange() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-invalid.db"))) {
+            InboxService service = service(store);
+            List<AgentTool> tools = InboxTools.all(service);
+
+            ToolResult missing = tool(tools, "inbox_wait_quiet").execute(call(Map.of()));
+            assertThat(missing.success()).isFalse();
+            assertThat(missing.message()).contains("source");
+
+            ToolResult invalid = tool(tools, "inbox_wait_quiet").execute(call(Map.of(
+                    "source", "qq_private/bot-1/2", "quietMs", 100, "maxWaitMs", 50)));
+            assertThat(invalid.success()).isFalse();
+            assertThat(invalid.message()).contains("maxWaitMs");
+        }
+    }
+
+    @Test
     void diagnoseAndPluginControlExposeHeartbeatWithoutBodyOrCredentials() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("diagnose.db"))) {
             InboxService service = service(store);
@@ -199,6 +260,10 @@ class InboxToolsTest {
                     .isEqualTo("session-1");
             assertThat(diagnose.path("heartbeat").path("diagnostics").path("version").asText())
                     .isEqualTo("0.0.7-hotfix1");
+            assertThat(diagnose.path("waitQuiet").path("defaultQuietMs").asInt())
+                    .isEqualTo(2000);
+            assertThat(diagnose.path("waitPolicy").path("defaultQuietSeconds").asInt())
+                    .isZero();
             assertThat(diagnose.toString()).doesNotContain("SECRET_BODY", "Bearer", "Cookie");
 
             ToolResult controlResult = tool(tools, "inbox_plugin_control")

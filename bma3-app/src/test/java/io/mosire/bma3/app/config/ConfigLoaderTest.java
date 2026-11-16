@@ -26,6 +26,13 @@ class ConfigLoaderTest {
         assertThat(config.inbox().inboxId()).isEqualTo("bma3");
         assertThat(config.inbox().display().maxMessagesPerItem()).isEqualTo(6);
         assertThat(config.inbox().display().maxItemsPerPanel()).isEqualTo(6);
+        assertThat(config.inbox().display().mode()).isEqualTo("auto");
+        assertThat(config.inbox().display().summaryMaxCharsPerItem()).isEqualTo(200);
+        assertThat(config.inbox().display().summaryAboveItems()).isEqualTo(8);
+        assertThat(config.inbox().waitPolicy().enabled()).isTrue();
+        assertThat(config.inbox().waitPolicy().defaultQuietSeconds()).isZero();
+        assertThat(config.inbox().waitPolicy().defaultMaxWaitSeconds()).isEqualTo(20);
+        assertThat(config.inbox().waitPolicy().sources()).isEmpty();
         assertThat(config.qqconnect().send().maxTextChars()).isEqualTo(3000);
         assertThat(config.qqconnect().media().dir()).isEmpty();
         assertThat(config.qqconnect().media().maxInlineBytes()).isEqualTo(65536L);
@@ -126,6 +133,58 @@ class ConfigLoaderTest {
         assertThat(config.weighting().sourcePriority()).containsEntry("bilibili", 120);
         assertThat(config.weighting().attribute("qq_at_bot")).isEqualTo(250);
         assertThat(config.weighting().immediateThreshold()).isEqualTo(400);
+    }
+
+    @Test
+    void parsesInboxWaitRulesAndSummaryDisplay() throws Exception {
+        writeConfig("""
+                inbox:
+                  display:
+                    mode: summary
+                    summaryMaxCharsPerItem: 160
+                    summaryAboveItems: 4
+                  wait:
+                    enabled: true
+                    defaultQuietSeconds: 0
+                    defaultMaxWaitSeconds: 25
+                    sources:
+                      - source: qq_private
+                        quietSeconds: 8
+                        maxWaitSeconds: 20
+                      - source: bma3_debug
+                        quietSeconds: 0
+                        maxWaitSeconds: 5
+                """);
+
+        AppConfig config = ConfigLoader.load(tempDir);
+
+        assertThat(config.inbox().display().mode()).isEqualTo("summary");
+        assertThat(config.inbox().display().summaryMaxCharsPerItem()).isEqualTo(160);
+        assertThat(config.inbox().display().summaryAboveItems()).isEqualTo(4);
+        assertThat(config.inbox().waitPolicy().enabled()).isTrue();
+        assertThat(config.inbox().waitPolicy().defaultQuietSeconds()).isZero();
+        assertThat(config.inbox().waitPolicy().defaultMaxWaitSeconds()).isEqualTo(25);
+        assertThat(config.inbox().waitPolicy().sources()).hasSize(2);
+        assertThat(config.inbox().waitPolicy().sources().getFirst().source())
+                .isEqualTo("qq_private");
+        assertThat(config.inbox().waitPolicy().sources().getFirst().quietSeconds())
+                .isEqualTo(8);
+    }
+
+    @Test
+    void rejectsInvalidInboxWaitRule() throws Exception {
+        writeConfig("""
+                inbox:
+                  wait:
+                    sources:
+                      - source: qq_private
+                        quietSeconds: 9
+                        maxWaitSeconds: 8
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(tempDir))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("maxWaitSeconds");
     }
 
     @Test

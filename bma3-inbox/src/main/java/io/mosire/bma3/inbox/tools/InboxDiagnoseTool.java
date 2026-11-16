@@ -28,6 +28,7 @@ public final class InboxDiagnoseTool implements AgentTool {
     public String description() {
         return "一屏只读诊断：jar 版本、runtime/MCP 启动 id、Inbox 计数与错误、DSH 插件心跳、"
                 + "deferredPush/freshVerification/toolRegistration 摘要、待应用控制命令。"
+                + "另含来源等待策略，以及 Agent 自主 inbox_wait_quiet 的默认值。"
                 + "不返回消息正文、token 或凭据。";
     }
 
@@ -47,6 +48,9 @@ public final class InboxDiagnoseTool implements AgentTool {
         body.put("heartbeat", heartbeat);
         body.put("healthy", heartbeat != null && heartbeat.healthy());
         body.put("pendingControl", service.pendingControl());
+        body.put("waitPolicy", service.waitPolicyView());
+        body.put("waitQuiet", Map.of("defaultQuietMs", InboxWaitQuietTool.DEFAULT_QUIET_MS,
+                "defaultMaxWaitMs", InboxWaitQuietTool.DEFAULT_MAX_WAIT_MS));
         return InboxTools.json(body);
     }
 }

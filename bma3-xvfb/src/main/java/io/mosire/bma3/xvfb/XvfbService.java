@@ -38,24 +38,41 @@ public final class XvfbService implements AutoCloseable {
     private final PlatformProbe.Capabilities caps;
     /** 截图额外落一份的地方（通常是 {@code <dataDir>/downloads}）；null = 不额外落。 */
     private final Path artifactDir;
+    /** Default browser for the one-call convenience tool; still overridable per call. */
+    private final String browserBinary;
     private final Set<Integer> claimedDisplays = ConcurrentHashMap.newKeySet();
 
     public XvfbService(Path workspaceRoot) {
-        this(workspaceRoot, null, PlatformProbe.probe());
+        this(workspaceRoot, null, PlatformProbe.probe(), "/snap/bin/chromium");
     }
 
     public XvfbService(Path workspaceRoot, Path artifactDir) {
-        this(workspaceRoot, artifactDir, PlatformProbe.probe());
+        this(workspaceRoot, artifactDir, PlatformProbe.probe(), "/snap/bin/chromium");
     }
 
     public XvfbService(Path workspaceRoot, PlatformProbe.Capabilities caps) {
-        this(workspaceRoot, null, caps);
+        this(workspaceRoot, null, caps, "/snap/bin/chromium");
     }
 
     public XvfbService(Path workspaceRoot, Path artifactDir, PlatformProbe.Capabilities caps) {
+        this(workspaceRoot, artifactDir, caps, "/snap/bin/chromium");
+    }
+
+    public XvfbService(Path workspaceRoot, Path artifactDir, String browserBinary) {
+        this(workspaceRoot, artifactDir, PlatformProbe.probe(), browserBinary);
+    }
+
+    public XvfbService(Path workspaceRoot, Path artifactDir, PlatformProbe.Capabilities caps,
+                       String browserBinary) {
         this.store = new WorkspaceStore(workspaceRoot);
         this.artifactDir = artifactDir == null ? null : artifactDir.toAbsolutePath().normalize();
         this.caps = caps;
+        this.browserBinary = browserBinary == null || browserBinary.isBlank()
+                ? "/snap/bin/chromium" : browserBinary.trim();
+    }
+
+    public String browserBinary() {
+        return browserBinary;
     }
 
     /** 截图额外落盘的目录；{@code null} 表示只留在工作区。 */
@@ -284,6 +301,76 @@ public final class XvfbService implements AutoCloseable {
             throw new XvfbException("LAUNCH_FAILED",
                     "启动失败: " + failure.getMessage() + "；日志 " + log);
         }
+    }
+
+    /**
+     * One-call browser launch for the common B站/Computer Use path: workspace-local profile
+     * keeps login state, no-sandbox is required by the packaged Chromium on many hosts, and the
+     * URL is validated before it reaches argv.
+     */
+    public Map<String, Object> launchBrowser(String requested, String url, String binary) {
+        Workspace workspace = requireRunning(requested);
+        String target = url == null ? "" : url.trim();
+        if (!target.isEmpty()
+                && !target.startsWith("http://") && !target.startsWith("https://")) {
+            throw new XvfbException("INVALID_URL", "browser url 必须是 http(s)");
+        }
+        String executable = binary == null || binary.isBlank() ? browserBinary : binary.trim();
+        Path profile = workspace.dir().resolve("home").resolve("chromium-profile");
+        try {
+            Files.createDirectories(profile);
+        } catch (IOException failure) {
+            throw new XvfbException("BROWSER_PROFILE_FAILED",
+                    "创建浏览器 profile 失败: " + failure.getMessage());
+        }
+        List<String> argv = new ArrayList<>(List.of(
+                executable, "--no-sandbox", "--disable-dev-shm-usage",
+                "--user-data-dir=" + profile));
+        if (!target.isEmpty()) {
+            argv.add(target);
+        }
+        long pid = launch(requested, argv);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("pid", pid);
+        view.put("browser", executable);
+        view.put("profile", profile.toString());
+        view.put("url", target);
+        view.put("workspace", workspace.id());
+        view.put("display", workspace.displayName());
+        return view;
+    }
+
+    /** Wait until a window whose title contains {@code titleContains} appears. */
+    public Map<String, Object> waitForWindow(String requested, String titleContains,
+                                             long timeoutMs) {
+        Workspace workspace = requireRunning(requested);
+        long started = System.currentTimeMillis();
+        long timeout = Math.max(500, Math.min(timeoutMs, 60_000));
+        String needle = titleContains == null ? "" : titleContains;
+        while (System.currentTimeMillis() - started <= timeout) {
+            for (Map<String, Object> row : windows(requested)) {
+                String title = String.valueOf(row.getOrDefault("title", ""));
+                int width = row.get("width") instanceof Number number ? number.intValue() : 0;
+                int height = row.get("height") instanceof Number number ? number.intValue() : 0;
+                boolean titleMatch = !needle.isBlank() && title.contains(needle);
+                boolean anyRealWindow = needle.isBlank() && width > 10 && height > 10;
+                if (titleMatch || anyRealWindow) {
+                    Map<String, Object> view = new LinkedHashMap<>(row);
+                    view.put("workspace", workspace.id());
+                    view.put("display", workspace.displayName());
+                    view.put("waitedMs", System.currentTimeMillis() - started);
+                    return view;
+                }
+            }
+            try {
+                Thread.sleep(100L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new XvfbException("WAIT_INTERRUPTED", "等待窗口被中断");
+            }
+        }
+        throw new XvfbException("WAIT_TIMEOUT",
+                "等待窗口超时（" + timeout + "ms）：" + (needle.isBlank() ? "任意窗口" : needle));
     }
 
     public CommandRunner.Result exec(String requested, List<String> argv, long timeoutMs) {

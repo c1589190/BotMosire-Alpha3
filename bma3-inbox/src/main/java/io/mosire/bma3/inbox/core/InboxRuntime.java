@@ -16,6 +16,10 @@ package io.mosire.bma3.inbox.core;
  *                                 {@link Integer#MIN_VALUE} disables the policy
  * @param autoDismissAfterSeconds  auto-dismiss only items older than this
  * @param autoDismissMaxPerRound   max rows auto-dismissed per watchdog round
+ * @param displayMode        {@code full}, {@code summary}, or {@code auto}
+ * @param summaryMaxCharsPerItem per-item character cap in summary mode
+ * @param summaryAboveItems  auto mode switches to summary above this visible-item count
+ * @param waitPolicy         source-prefix quiet policy used by the one push scheduler
  */
 public record InboxRuntime(
         int maxMessagesPerItem,
@@ -28,7 +32,11 @@ public record InboxRuntime(
         int maxFirstPushDelaySeconds,
         int autoDismissBelowPriority,
         int autoDismissAfterSeconds,
-        int autoDismissMaxPerRound) {
+        int autoDismissMaxPerRound,
+        String displayMode,
+        int summaryMaxCharsPerItem,
+        int summaryAboveItems,
+        InboxWaitPolicy waitPolicy) {
 
     public InboxRuntime {
         maxMessagesPerItem = Math.max(1, maxMessagesPerItem);
@@ -39,27 +47,54 @@ public record InboxRuntime(
         maxFirstPushDelaySeconds = Math.max(0, maxFirstPushDelaySeconds);
         autoDismissAfterSeconds = Math.max(0, autoDismissAfterSeconds);
         autoDismissMaxPerRound = Math.max(1, autoDismissMaxPerRound);
+        displayMode = normalizeMode(displayMode);
+        summaryMaxCharsPerItem = Math.max(0, summaryMaxCharsPerItem);
+        summaryAboveItems = Math.max(1, summaryAboveItems);
+        waitPolicy = waitPolicy == null ? InboxWaitPolicy.defaults() : waitPolicy;
+    }
+
+    /** Old 11-arg shape retained for tests and external callers. */
+    public InboxRuntime(int maxMessagesPerItem, int maxItemsPerPanel,
+                        boolean includeOmittedCount, int pushMinPriority,
+                        int retentionMaxAgeDays, int retentionMaxItems, int maxCharsPerItem,
+                        int maxFirstPushDelaySeconds, int autoDismissBelowPriority,
+                        int autoDismissAfterSeconds, int autoDismissMaxPerRound) {
+        this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, pushMinPriority,
+                retentionMaxAgeDays, retentionMaxItems, maxCharsPerItem,
+                maxFirstPushDelaySeconds, autoDismissBelowPriority, autoDismissAfterSeconds,
+                autoDismissMaxPerRound, "auto", 200, 8, InboxWaitPolicy.defaults());
     }
 
     public static InboxRuntime defaults() {
         return new InboxRuntime(6, 6, true, -1000, 30, 5000, 1200, 60,
-                Integer.MIN_VALUE, 1800, 200);
+                Integer.MIN_VALUE, 1800, 200, "auto", 200, 8,
+                InboxWaitPolicy.defaults());
     }
 
     public InboxRuntime(int maxMessagesPerItem, int maxItemsPerPanel,
                         boolean includeOmittedCount) {
         this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, -1000, 30, 5000,
-                1200, 60, Integer.MIN_VALUE, 1800, 200);
+                1200, 60, Integer.MIN_VALUE, 1800, 200, "auto", 200, 8,
+                InboxWaitPolicy.defaults());
     }
 
     public InboxRuntime(int maxMessagesPerItem, int maxItemsPerPanel, boolean includeOmittedCount,
                         int pushMinPriority, int retentionMaxAgeDays, int retentionMaxItems) {
         this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, pushMinPriority,
                 retentionMaxAgeDays, retentionMaxItems, 1200, 60,
-                Integer.MIN_VALUE, 1800, 200);
+                Integer.MIN_VALUE, 1800, 200, "auto", 200, 8,
+                InboxWaitPolicy.defaults());
     }
 
     public boolean autoDismissEnabled() {
         return autoDismissBelowPriority != Integer.MIN_VALUE;
+    }
+
+    private static String normalizeMode(String mode) {
+        String value = mode == null ? "auto" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (value) {
+            case "full", "summary", "auto" -> value;
+            default -> "auto";
+        };
     }
 }

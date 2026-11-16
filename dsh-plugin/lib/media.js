@@ -145,8 +145,20 @@ export async function callAsr({ fetchImpl, baseURL, apiKey, file, timeoutMs }) {
 }
 
 /** 工具失败统一成结构化结果，永不带出密钥。 */
-function failure(error) {
-  return { text: JSON.stringify({ ok: false, error: String(error?.message ?? error) }, null, 2) }
+function failure(error, code = 'MEDIA_FAILED') {
+  return { text: JSON.stringify({ ok: false, code, error: String(error?.message ?? error) }, null, 2) }
+}
+
+/** 只按扩展名做低风险路由；实际 OCR/ASR 仍由各自工具再校验文件大小和格式。 */
+export function classifyMedia(filePath, requested = 'auto') {
+  const kind = String(requested ?? 'auto').trim().toLowerCase()
+  if (kind === 'image' || kind === 'audio' || kind === 'document') return kind
+  if (kind !== 'auto' && kind !== '') throw new Error(`未知 media kind: ${kind}`)
+  const ext = path.extname(String(filePath ?? '')).toLowerCase()
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tif', '.tiff'].includes(ext)) return 'image'
+  if (['.pdf', '.doc', '.docx', '.ppt', '.pptx'].includes(ext)) return 'document'
+  if (['.mp3', '.amr', '.ogg', '.opus', '.wav', '.m4a', '.flac', '.silk'].includes(ext)) return 'audio'
+  throw new Error(`无法按扩展名判断媒体类型: ${ext || '(无扩展名)'}`)
 }
 
 /**
@@ -231,7 +243,37 @@ export function apply(ctx, config = {}) {
     },
   }
 
-  for (const definition of [ocr, asr]) {
+  const media = {
+    name: 'bma3_media',
+    description: '媒体流水线入口：给本地文件路径，按 auto/image/document/audio 自动选择 OCR 或 ASR；'
+      + '无 OCR key / 无法识别时返回结构化 vision_required/OCR_UNAVAILABLE，不会假装成功。'
+      + '通常先把 qq_media_view 返回的 path 传进来。',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: '本地文件绝对路径（例如 qq_media_view 返回的 path）' },
+        kind: { type: 'string', enum: ['auto', 'image', 'document', 'audio'], description: '默认 auto' },
+        purpose: { type: 'string', enum: [...OCR_PURPOSES], description: 'OCR 用途，默认 text_recognition' },
+      },
+      required: ['filePath'],
+      additionalProperties: false,
+    },
+    output: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    execute: async (args = {}) => {
+      let kind
+      try {
+        const source = path.resolve(String(args.filePath ?? ''))
+        if (!fs.existsSync(source)) throw new Error(`文件不存在：${source}`)
+        kind = classifyMedia(source, args.kind)
+        if (kind === 'audio') return asr.execute({ filePath: source })
+        return ocr.execute({ filePath: source, purpose: args.purpose })
+      } catch (error) {
+        return failure(error, kind ? 'MEDIA_UNAVAILABLE' : 'MEDIA_KIND_UNAVAILABLE')
+      }
+    },
+  }
+
+  for (const definition of [ocr, asr, media]) {
     try {
       if (typeof ctx.effect === 'function') ctx.effect(() => tools.register(definition), `bma3-media.${definition.name}`)
       else tools.register(definition)

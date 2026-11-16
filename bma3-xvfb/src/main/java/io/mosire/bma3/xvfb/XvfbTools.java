@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Xvfb 工作区的 AgentTools（12 个）。
+ * Xvfb 工作区的 AgentTools（14 个）。
  *
  * <p>命名与语义见 spec §5。所有会话级工具的第一个可选参数都是 {@code workspace}
  * （id 或目录）；缺省时走 {@link XvfbService} 的 W4 规则（最近 RUNNING，没有就自动开一个），
@@ -35,6 +35,8 @@ public final class XvfbTools {
                 new WorkspaceCloseTool(service),
                 new WorkspaceListTool(service),
                 new LaunchTool(service),
+                new OpenBrowserTool(service),
+                new WaitTool(service),
                 new ScreenshotTool(service),
                 new WindowsTool(service),
                 new ExecTool(service),
@@ -340,6 +342,82 @@ public final class XvfbTools {
             row.put("pid", pid);
             row.put("launched", true);
             return row;
+        }
+    }
+
+    private static final class OpenBrowserTool extends Base {
+
+        OpenBrowserTool(XvfbService service) {
+            super(service);
+        }
+
+        @Override
+        public String name() {
+            return "xvfb_open_browser";
+        }
+
+        @Override
+        public String description() {
+            return "一次调用在工作区里启动浏览器：默认 Chromium、workspace-local profile、"
+                    + "可选 URL。返回 pid/profile/workspace/display；需要窗口出现时再调 xvfb_wait。";
+        }
+
+        @Override
+        public ToolSpec spec() {
+            return ToolSpec.level(AccessToken.DEFAULT, false, true);
+        }
+
+        @Override
+        public Map<String, Object> jsonSchema() {
+            Map<String, Object> props = new LinkedHashMap<>();
+            props.put("workspace", Map.of("type", "string",
+                    "description", "工作区 id；省略=最近一个"));
+            props.put("url", Map.of("type", "string", "description", "http(s) URL，可省略"));
+            props.put("binary", Map.of("type", "string",
+                    "description", "浏览器可执行文件；省略=配置的 Chromium"));
+            return Map.of("type", "object", "properties", props);
+        }
+
+        @Override
+        Object run(ToolContext context) {
+            return service.launchBrowser(workspace(context), optionalText(context, "url"),
+                    optionalText(context, "binary"));
+        }
+    }
+
+    private static final class WaitTool extends Base {
+
+        WaitTool(XvfbService service) {
+            super(service);
+        }
+
+        @Override
+        public String name() {
+            return "xvfb_wait";
+        }
+
+        @Override
+        public String description() {
+            return "等待工作区出现窗口：titleContains 为空时等任意真实窗口；超时返回 WAIT_TIMEOUT。"
+                    + "默认 10000ms，最大 60000ms。";
+        }
+
+        @Override
+        public Map<String, Object> jsonSchema() {
+            Map<String, Object> props = new LinkedHashMap<>();
+            props.put("workspace", Map.of("type", "string",
+                    "description", "工作区 id；省略=最近一个"));
+            props.put("titleContains", Map.of("type", "string",
+                    "description", "窗口标题包含的文本；空=任意真实窗口"));
+            props.put("timeoutMs", Map.of("type", "integer", "minimum", 500, "maximum", 60000));
+            return Map.of("type", "object", "properties", props);
+        }
+
+        @Override
+        Object run(ToolContext context) {
+            return service.waitForWindow(workspace(context),
+                    optionalText(context, "titleContains"),
+                    Math.max(500, intArg(context, "timeoutMs", 10000)));
         }
     }
 

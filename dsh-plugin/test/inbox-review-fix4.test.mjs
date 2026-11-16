@@ -37,7 +37,7 @@ function ackComplete(body, { ackedRevision = Number(body.revision) + 1 } = {}) {
   })
 }
 
-function item(id, { frozenRevision = 1, body = `body-${id}` } = {}) {
+function item(id, { frozenRevision = 1, body = `body-${id}`, waitingForQuiet = false } = {}) {
   return {
     id,
     source: 'qq_group/bot-1/1',
@@ -47,6 +47,7 @@ function item(id, { frozenRevision = 1, body = `body-${id}` } = {}) {
     omittedMessages: 0,
     entries: [{ line: `[12:00] #1 A：${body}` }],
     frozenRevision,
+    waitingForQuiet,
   }
 }
 
@@ -399,6 +400,37 @@ test('I1 a GET-recovered pendingPush fails closed when the proven instance chang
 // I2: transient /runtime failures retain the push and recover; only a real
 // instance mismatch is permanently fail-closed until explicit handling.
 // ---------------------------------------------------------------------------
+
+test('a live panel with a quiet-held unpushed item does not poison recovery proof', async () => {
+  const { stateFile, paths } = tempState()
+  bootstrapWithPendingPush(stateFile, paths)
+  const messages = []
+  const server = fakeInbox({
+    livePanel: panel({
+      revision: 1, pushRevision: 1,
+      items: [
+        item('itm-recover', { frozenRevision: 1, body: 'acked-body' }),
+        item('itm-held', { frozenRevision: 0, body: 'quiet-held-body', waitingForQuiet: true }),
+      ],
+    }),
+    runtime: async () => json({ processId: 'proc-A', inboxIdentity: IDENTITY }),
+  })
+  const client = createInboxClient(
+    ctxFor(agentRecorder('session-1', messages)),
+    config(server, stateFile, { sessionId: 'session-1' }),
+  )
+  try {
+    client.start()
+    await waitFor(() => messages.length === 1, 'recovery injected the pushed item')
+    assert.match(messages[0]?.message?.content?.[0]?.text ?? '', /acked-body/u)
+    assert.doesNotMatch(messages[0]?.message?.content?.[0]?.text ?? '', /quiet-held-body/u)
+    await waitFor(() => server.state.ackBodies.length >= 1, 'recovery ACK issued')
+    assert.deepEqual(server.state.ackBodies.at(-1).itemIds, ['itm-recover'])
+    assert.ok(client.status().pendingPush === null)
+  } finally {
+    client.dispose()
+  }
+})
 
 test('I2 a transient runtime probe failure retains pendingPush and retries with backoff', async () => {
   const { stateFile, paths } = tempState()

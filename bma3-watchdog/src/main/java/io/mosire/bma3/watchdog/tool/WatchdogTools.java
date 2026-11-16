@@ -12,9 +12,11 @@ import io.mosire.bma3.watchdog.WatchdogEngine;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
- * Watchdog MCP face: status, run-probes and manual remediation.
+ * Watchdog MCP face: status, run-probes, manual remediation and the content-free diagnostics
+ * bundle.
  *
  * <p>Names start with {@code bma3_} so the DSH preset's {@code bma3_core} group includes them
  * automatically; no extra preset row is needed.</p>
@@ -29,7 +31,13 @@ public final class WatchdogTools {
     }
 
     public static List<AgentTool> all(WatchdogEngine engine) {
-        return List.of(new StatusTool(engine), new ProbeTool(engine), new RemediateTool(engine));
+        return all(engine, null);
+    }
+
+    public static List<AgentTool> all(WatchdogEngine engine,
+                                      Supplier<Map<String, Object>> diagnostics) {
+        return List.of(new StatusTool(engine), new ProbeTool(engine), new RemediateTool(engine),
+                new DiagnoseTool(engine, diagnostics));
     }
 
     private static ToolResult json(Object value) {
@@ -56,7 +64,7 @@ public final class WatchdogTools {
         @Override
         public String description() {
             return "查看 BMA3 watchdog：各组件当前健康（process/disk/db/inboxHttp/inboxBacklog/mcp/"
-                    + "qqAccount/qqZombie/dshPlugin/webconnect/config）、ready 判定、最近事件、"
+                    + "qqAccount/qqZombie/dshPlugin/webconnect/media/xvfb/schedule/config）、ready 判定、最近事件、"
                     + "探针/恢复/抑制/报警计数。只读，不返回消息正文或凭据。";
         }
 
@@ -102,6 +110,43 @@ public final class WatchdogTools {
             Object raw = context.arguments().get("component");
             String component = raw instanceof String text ? text.trim() : "";
             return json(engine.runProbeNow(component));
+        }
+    }
+
+    private static final class DiagnoseTool implements AgentTool {
+
+        private final WatchdogEngine engine;
+        private final Supplier<Map<String, Object>> diagnostics;
+
+        private DiagnoseTool(WatchdogEngine engine, Supplier<Map<String, Object>> diagnostics) {
+            this.engine = engine;
+            this.diagnostics = diagnostics;
+        }
+
+        @Override
+        public String name() {
+            return "bma3_watchdog_diagnose";
+        }
+
+        @Override
+        public String description() {
+            return "一屏只读诊断包：watchdog snapshot + Inbox/媒体/文件大小等无正文诊断。"
+                    + "不执行命令、不触发恢复、不返回正文/token/凭据/绝对路径。";
+        }
+
+        @Override
+        public Map<String, Object> jsonSchema() {
+            return Map.of("type", "object", "properties", Map.of());
+        }
+
+        @Override
+        public ToolResult execute(ToolContext context) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("watchdog", engine.snapshot());
+            if (diagnostics != null) {
+                body.put("bundle", diagnostics.get());
+            }
+            return json(body);
         }
     }
 

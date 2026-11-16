@@ -556,7 +556,7 @@ public record AppConfig(
     }
 
     public record Inbox(String inboxId, int httpPort, Display display, Push push,
-                        Retention retention, Dismiss dismiss) {
+                        Retention retention, Dismiss dismiss, Wait waitPolicy) {
 
         public Inbox {
             inboxId = inboxId == null || inboxId.isBlank() ? "bma3" : inboxId;
@@ -564,11 +564,18 @@ public record AppConfig(
             push = push == null ? Push.defaults() : push;
             retention = retention == null ? Retention.defaults() : retention;
             dismiss = dismiss == null ? Dismiss.defaults() : dismiss;
+            waitPolicy = waitPolicy == null ? Wait.defaults() : waitPolicy;
+        }
+
+        public Inbox(String inboxId, int httpPort, Display display,
+                     Push push, Retention retention, Dismiss dismiss) {
+            this(inboxId, httpPort, display, push, retention, dismiss, Wait.defaults());
         }
 
         public Inbox(String inboxId, int httpPort, Display display,
                      Push push, Retention retention) {
-            this(inboxId, httpPort, display, push, retention, Dismiss.defaults());
+            this(inboxId, httpPort, display, push, retention, Dismiss.defaults(),
+                    Wait.defaults());
         }
 
         public Inbox(String inboxId, int httpPort, Display display) {
@@ -581,7 +588,7 @@ public record AppConfig(
 
         public static Inbox defaults() {
             return new Inbox("bma3", 46500, Display.defaults(), Push.defaults(),
-                    Retention.defaults(), Dismiss.defaults());
+                    Retention.defaults(), Dismiss.defaults(), Wait.defaults());
         }
 
         /** Push filter: items below {@code minPriority} stay visible but never wake the agent. */
@@ -651,8 +658,71 @@ public record AppConfig(
             }
         }
 
+        /**
+         * Source-prefix quiet policy for the single Inbox push scheduler. The factory
+         * default is quiet=0 so existing deployments do not change until an Agent opts in.
+         */
+        public record Wait(boolean enabled, int defaultQuietSeconds, int defaultMaxWaitSeconds,
+                           List<SourceRule> sources) {
+
+            public Wait {
+                if (defaultQuietSeconds < 0 || defaultQuietSeconds > 300) {
+                    throw new IllegalArgumentException(
+                            "inbox.wait.defaultQuietSeconds 必须在 0..300");
+                }
+                if (defaultMaxWaitSeconds < 1 || defaultMaxWaitSeconds > 600) {
+                    throw new IllegalArgumentException(
+                            "inbox.wait.defaultMaxWaitSeconds 必须在 1..600");
+                }
+                if (defaultQuietSeconds > 0 && defaultMaxWaitSeconds < defaultQuietSeconds) {
+                    throw new IllegalArgumentException(
+                            "inbox.wait.defaultMaxWaitSeconds 不能小于 defaultQuietSeconds");
+                }
+                sources = sources == null ? List.of() : List.copyOf(sources);
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (SourceRule rule : sources) {
+                    if (!seen.add(rule.source())) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources 重复来源: " + rule.source());
+                    }
+                }
+            }
+
+            public record SourceRule(String source, int quietSeconds, int maxWaitSeconds) {
+
+                public SourceRule {
+                    source = source == null ? "" : source.trim();
+                    if (source.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources[].source 不能为空");
+                    }
+                    if (source.startsWith("/")) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources[].source 不能以 / 开头");
+                    }
+                    if (quietSeconds < 0 || quietSeconds > 300) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources[].quietSeconds 必须在 0..300");
+                    }
+                    if (maxWaitSeconds < 1 || maxWaitSeconds > 600) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources[].maxWaitSeconds 必须在 1..600");
+                    }
+                    if (quietSeconds > 0 && maxWaitSeconds < quietSeconds) {
+                        throw new IllegalArgumentException(
+                                "inbox.wait.sources[].maxWaitSeconds 不能小于 quietSeconds");
+                    }
+                }
+            }
+
+            public static Wait defaults() {
+                return new Wait(true, 0, 20, List.of());
+            }
+        }
+
         public record Display(int maxMessagesPerItem, int maxItemsPerPanel,
-                              boolean includeOmittedCount, int maxCharsPerItem) {
+                              boolean includeOmittedCount, int maxCharsPerItem,
+                              String mode, int summaryMaxCharsPerItem, int summaryAboveItems) {
 
             public Display {
                 if (maxMessagesPerItem < 1 || maxMessagesPerItem > 50) {
@@ -664,16 +734,37 @@ public record AppConfig(
                 if (maxCharsPerItem < 0 || maxCharsPerItem > 20000) {
                     throw new IllegalArgumentException("inbox.display.maxCharsPerItem 必须在 0..20000");
                 }
+                mode = mode == null ? "auto" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+                if (!mode.equals("full") && !mode.equals("summary") && !mode.equals("auto")) {
+                    throw new IllegalArgumentException(
+                            "inbox.display.mode 只能是 full/summary/auto");
+                }
+                if (summaryMaxCharsPerItem < 0 || summaryMaxCharsPerItem > 20000) {
+                    throw new IllegalArgumentException(
+                            "inbox.display.summaryMaxCharsPerItem 必须在 0..20000");
+                }
+                if (summaryAboveItems < 1 || summaryAboveItems > 50) {
+                    throw new IllegalArgumentException(
+                            "inbox.display.summaryAboveItems 必须在 1..50");
+                }
             }
 
             /** Compatibility constructor: default per-item character cap. */
             public Display(int maxMessagesPerItem, int maxItemsPerPanel,
                            boolean includeOmittedCount) {
-                this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, 1200);
+                this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, 1200,
+                        "auto", 200, 8);
+            }
+
+            /** Compatibility constructor: pre-summary config. */
+            public Display(int maxMessagesPerItem, int maxItemsPerPanel,
+                           boolean includeOmittedCount, int maxCharsPerItem) {
+                this(maxMessagesPerItem, maxItemsPerPanel, includeOmittedCount, maxCharsPerItem,
+                        "auto", 200, 8);
             }
 
             public static Display defaults() {
-                return new Display(6, 6, true, 1200);
+                return new Display(6, 6, true, 1200, "auto", 200, 8);
             }
         }
     }

@@ -9,6 +9,7 @@ import io.mosire.bma3.inbox.http.InboxHttpServer;
 import io.mosire.bma3.qqconnect.account.AccountConfig;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
+import io.mosire.bma3.qqconnect.tools.QqMediaDiagnostics;
 import io.mosire.bma3.watchdog.spi.Probe;
 import io.mosire.bma3.watchdog.spi.ProbeResult;
 import java.io.IOException;
@@ -227,6 +228,19 @@ public final class Probes {
             } catch (RuntimeException failure) {
                 return ProbeResult.degraded("qqZombie", "ZOMBIE_SOCKET", accountId);
             }
+        });
+    }
+
+    /** Content-free media download/OCR-adjacent counters and directory inventory. */
+    public static Probe media(QqMediaDiagnostics diagnostics, Path mediaDir) {
+        return probe("media", () -> {
+            Map<String, String> facts = diagnostics == null
+                    ? Map.of() : diagnostics.facts(mediaDir);
+            if (mediaDir != null && Files.exists(mediaDir) && !Files.isWritable(mediaDir)) {
+                return ProbeResult.degraded("media", "NOT_WRITABLE",
+                        "downloads 目录不可写", facts);
+            }
+            return ProbeResult.up("media", "media counters", facts);
         });
     }
 
