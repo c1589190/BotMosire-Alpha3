@@ -6,7 +6,7 @@
   <parent>
     <groupId>io.mosire.bma3</groupId>
     <artifactId>bma3-parent</artifactId>
-    <version>0.0.7-hotfix-EnableDebug</version>
+    <version>0.0.7-hotfix1</version>
   </parent>
   <artifactId>bma3-scheduler</artifactId>
   <name>bma3-scheduler</name>
