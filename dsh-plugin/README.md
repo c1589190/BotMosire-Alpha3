@@ -46,7 +46,7 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## 连上 bma3 jar（0.0.7-early 的正确方式）
+## 连上 bma3 jar（0.0.7-hotfix-EnableDebug 的正确方式）
 
 插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
 `@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。

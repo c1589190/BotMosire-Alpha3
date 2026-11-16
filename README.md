@@ -1,8 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**版本 `0.0.5-early`（开发中，未发布）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**版本 `0.0.7-hotfix-EnableDebug`（已发布，Pre-release）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-> 最近一次已发布版本仍是 `0.0.4-hotfix1`，下面的 Release 链接指向它。`0.0.5-early` 只在本仓库与 CI 门禁中存在，**未打 tag、未发布**。
+> 最新 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix-EnableDebug>。本版在 `0.0.7-early` 的发送/Inbox 止损基础上，启用远程问诊调试通道，并包含触发规则 v2 与定时任务。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -13,27 +13,28 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.5-early`（开发中，未发
 
 看到仓库后按这个顺序做，不要先改代码：
 
-1. 下载或编译 `bma3-app-0.0.5-early.jar`（或下载已发布的 `0.0.4-hotfix1`）；
+1. 下载 `botmosire-a3-linux-x86_64.tar.gz`，或用 `packaging/build-app-image.sh` 从源码生成 app-image；
 2. 准备运行目录、`config/app.yaml` 和 token 文件；
-3. 启动 jar，确认 MCP 和 Inbox 端口；
+3. 启动 app-image，确认 MCP 和 Inbox 端口；
 4. 把 `dsh-plugin` link 进目标 DSH profile；
 5. 启动后 DSH 插件自动连接 Inbox 的单个 SSE；需要指定目标会话时调用 `bma3_inbox_bind`；
 6. 需要 MCP 工具时，在 DSH 里添加 Bearer MCP 连接。
 
 ### 1. 下载或编译
 
-Release 资产（推荐给只看仓库的 Agent）：
+Release 资产（对应 tag `v0.0.7-hotfix-EnableDebug`）：
 
-<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.4-hotfix1/bma3-app-0.0.4-hotfix1.jar>
+- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix-EnableDebug/botmosire-a3-linux-x86_64.tar.gz>
+- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix-EnableDebug/mosire-bma3-dsh-0.0.7-hotfix-EnableDebug.tgz>
 
-从源码编译：
+从源码构建 app-image：
 
 ```bash
-./mvnw -q -pl bma3-app -am package -DskipTests
-ls -lh bma3-app/target/bma3-app-0.0.4-hotfix1.jar
+bash packaging/build-app-image.sh
+ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 ```
 
-要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release jar 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
+要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release app-image 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
 
 ### 2. 运行目录与配置
 
@@ -153,10 +154,9 @@ webconnect:
 启动：
 
 ```bash
-export BMA3_MCP_TOKEN="$(cat /opt/bma3/token)"
 export LLBOT_ACCESS_TOKEN="..."          # 云端 LLBot/OneBot token
 export BMA3_CHROMEDRIVER="/path/to/chromedriver"  # 可选；不填走 Selenium Manager
-java -jar bma3-app-0.0.5-early.jar --config /opt/bma3/run
+./dist/botmosire-a3/bin/botmosire-a3 --config /opt/bma3/run
 ```
 
 启动日志会打印实际 MCP/health/Inbox 端口；默认配置对应：
@@ -165,16 +165,17 @@ java -jar bma3-app-0.0.5-early.jar --config /opt/bma3/run
 - Inbox HTTP：`http://127.0.0.1:46500`
 - health：`http://127.0.0.1:8766/healthz`（liveness）、`/readyz`（readiness）、`/watchdog`（Bearer）
 
-验证 Inbox（Bearer 用 `/opt/bma3/token`）：
+验证 Inbox（Bearer 用 `.bma3env` 里的 `INBOX_TOKEN`）：
 
 ```bash
-curl -H "Authorization: Bearer $(cat /opt/bma3/token)" \
+INBOX_TOKEN="$(sed -n 's/^INBOX_TOKEN=//p' /opt/bma3/run/config/.bma3env)"
+curl -H "Authorization: Bearer $INBOX_TOKEN" \
   http://127.0.0.1:46500/v1/inboxes/bma3/status
 ```
 
 ### 3. 安装 DSH 插件
 
-插件是仓库里的 `dsh-plugin/`，包名 `@mosire/bma3-dsh`。一个包四个模块：`bma3-inbox`、`bma3-preset`（内含 `self` 人设 loader）、`bma3-self`、以及兼容用的 `bma3-persona`（已停用）。
+插件是仓库里的 `dsh-plugin/`，包名 `@mosire/bma3-dsh`。一个包两个模块：`inbox`（面板注入/ACK）与 `preset`（系统提示词 + 薄工具面 + 媒体工具）。
 
 ```bash
 git clone https://github.com/c1589190/BotMosire-Alpha3.git
@@ -225,7 +226,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**0.0.7-early 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
+**`0.0.7-hotfix-EnableDebug` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
 
 jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 
