@@ -2,6 +2,19 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 22:35 —— 0.0.7-hotfix2-test2 测试 Pre-release 已发布**。用户指定版本名 `0.0.7-hotfix2-test2`。
+
+- **分支 / 提交 / tag**：`feat/0.0.7-hotfix2`；提交 `4c11c2f`；tag `v0.0.7-hotfix2-test2` → `4c11c2f`；已推送 origin。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix2-test2>（Pre-release）。
+- **本版修复远端 earlytest 反馈**：`inbox_wait_quiet` 只返回未 ACK 条目并给出 `ackable`；`bma3_watchdog_diagnose` 去重；`media.byKind` 输出固定零计数；`xvfb_open_browser` 增加 `--no-first-run`/`--no-default-browser-check`。
+- **资产**：
+  - `botmosire-a3-linux-x86_64.tar.gz`（sha256 `060affc6fd40133868abcd0c601572205d128b01bfc66509286cdfb4ea168808`）
+  - `mosire-bma3-dsh-0.0.7-hotfix2-test2.tgz`（sha256 `bc79d55219c653532d3d8ba8ae4a7616d4ffe6213cd3a0837239df188c37d930`）
+  - 两个 `.sha256` 与 `SHA256SUMS`；回下载 `sha256sum -c` PASS，app-image/插件版本均为 `0.0.7-hotfix2-test2`。
+- **门禁**：Java `./mvnw -q -o test` rc=0，**328 tests / 0 failures / 0 errors / 1 skipped**；插件 `npm test` rc=0，**167 pass / 0 fail**；`packaging/smoke.sh` PASS；MCP 68 工具 / 15 探针。
+- **保留裁定**：Agent `inbox_wait_quiet` 默认仍是 2000ms（D-070）；远端建议 3s，未擅自改。
+- **仍未验证/风险**：`bma3_media` 在远端工具面缺失（需 BMA3 preset/重载复核 `bma3_ocr`/`bma3_asr`/`bma3_media`）；summary 多图 markers、真实 DSH/LLBot/provider OCR、好友写操作、B 站 xvfb 登录态、systemd、掉电/回滚均 `NOT_RUN`。正式基线仍为 `v0.0.7-hotfix1`。
+
 **2026-11-16 22:20 —— 远端 earlytest 反馈修复已落工作树（未提交/未发布）**。通过 debug HTTP 询问远端运行中的 `0.0.7-hotfix2-earlytest`，远端反馈：`inbox_wait_quiet` 返回 ACKED 历史/未冻结条目、2s 偏短、watchdog diagnose 重复输出、`media.byKind` 空、`bma3_media` 未出现在其工具面、`xvfb_open_browser` 默认 Chromium 缺失且首次启动 ToS 挡住等待。
 
 - **已修复**：`inbox_wait_quiet` 只输出未 ACK 条目，并在每项给出 `ackable`（frozenRevision>0）；`bma3_watchdog_diagnose` 不再重复返回 watchdog；`QqMediaDiagnostics.byKind` 固定输出 image/file/record/video 的 0 计数；`xvfb_open_browser` 增加 `--no-first-run`/`--no-default-browser-check`，并抽了可单测的 browser argv。
