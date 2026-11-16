@@ -1,8 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**版本 `0.0.7-hotfix1`（已发布，Pre-release）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-test1`（Pre-release，用于远端验证，不替代正式 hotfix）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-> 最新 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix1>。本版继承 `0.0.7-hotfix-EnableDebug` 的调试通道、触发规则 v2 与定时任务，并修复 ACK 后 fresh verification 的 `deferredPush` 永久冻结：proof 失败改为有界重试，live `/panel` 支持旧服务端缺失 `frozenRevision` 及混合正 revision 的 coherent recovery snapshot。
+> 测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test1>。本版用于验证绑定自愈、`bma3_inbox` 注册和 MCP 一屏诊断；正式 hotfix 仍以 `v0.0.7-hotfix1` 为基线，不应把本测试包当作正式发布。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -22,10 +22,10 @@ DevMosire-iiBot 的继承与重构。**版本 `0.0.7-hotfix1`（已发布，Pre-
 
 ### 1. 下载或编译
 
-Release 资产（对应 tag `v0.0.7-hotfix1`）：
+测试 Release 资产（对应 tag `v0.0.7-test1`）：
 
-- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix1/botmosire-a3-linux-x86_64.tar.gz>
-- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix1/mosire-bma3-dsh-0.0.7-hotfix1.tgz>
+- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test1/botmosire-a3-linux-x86_64.tar.gz>
+- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test1/mosire-bma3-dsh-0.0.7-test1.tgz>
 
 从源码构建 app-image：
 
@@ -226,7 +226,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**`0.0.7-hotfix1` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
+**`0.0.7-test1` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
 
 jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 

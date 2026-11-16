@@ -1,6 +1,6 @@
 {
   "name": "@mosire/bma3-dsh",
-  "version": "0.0.7-hotfix1",
+  "version": "0.0.7-test1",
   "private": true,
   "type": "module",
   "description": "BMA3 thin DSH bundle: Inbox wake injection, the BMA3 persona preset, thin tool face and DeepSeek OCR/ASR tools.",

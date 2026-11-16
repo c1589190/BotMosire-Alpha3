@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import { apply, createInboxClient, inboxStatePaths } from '../lib/inbox.js'
 
 const IDENTITY = 'inb_state_beta'
+const PLUGIN_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 const encoder = new TextEncoder()
 
 function tempState() {
@@ -722,7 +723,7 @@ test('heartbeat diagnostics carry sanitized version and tool-registration state'
     await client.heartbeat()
     await waitFor(() => bodies.length >= 1, 'heartbeat body')
     const diagnostics = bodies.at(-1).diagnostics
-    assert.equal(diagnostics.version, '0.0.7-hotfix1')
+    assert.equal(diagnostics.version, PLUGIN_VERSION)
     assert.equal(diagnostics.toolRegistration.registered, false)
     assert.equal(diagnostics.toolRegistration.attempts, 2)
     assert.equal(diagnostics.toolRegistration.lastError, 'tools_service_unavailable')
