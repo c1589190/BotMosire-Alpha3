@@ -1,12 +1,12 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**开发版本 `0.0.7-hotfix2-earlytest`（尚未发布；上一测试版为 `0.0.7-test2`）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-hotfix2-earlytest`（Pre-release，用于远端验证，不替代正式 hotfix）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-> 上一测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test2>。当前 `0.0.7-hotfix2-earlytest` 已加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；尚未打 tag 或发布。
+> 测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix2-earlytest>。本版加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；正式 hotfix 仍以 `v0.0.7-hotfix1` 为基线。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
-- 当前分支：`feat/bma3-plan-1`
+- 当前测试分支：`feat/0.0.7-hotfix2`
 - 真实 QQ/DSH/systemd 的完整生产联调仍按 `NOT_RUN` 记录，见 [`docs/agents/STATUS.md`](docs/agents/STATUS.md)。
 
 ## 给 Agent 的快速加载顺序
@@ -22,10 +22,10 @@ DevMosire-iiBot 的继承与重构。**开发版本 `0.0.7-hotfix2-earlytest`（
 
 ### 1. 下载或编译
 
-上一测试 Release 资产（对应 tag `v0.0.7-test2`；hotfix2 发布后以新 Release 为准）：
+测试 Release 资产（对应 tag `v0.0.7-hotfix2-earlytest`）：
 
-- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test2/botmosire-a3-linux-x86_64.tar.gz>
-- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-test2/mosire-bma3-dsh-0.0.7-test2.tgz>
+- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix2-earlytest/botmosire-a3-linux-x86_64.tar.gz>
+- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix2-earlytest/mosire-bma3-dsh-0.0.7-hotfix2-earlytest.tgz>
 
 从源码构建 app-image：
 

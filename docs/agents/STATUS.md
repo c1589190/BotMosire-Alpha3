@@ -2,6 +2,18 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 22:05 —— 0.0.7-hotfix2-earlytest 测试 Pre-release 已发布**。用户要求把本批新功能作为 `0.0.7-hotfix2-earlytest` 发布。
+
+- **分支 / 提交 / tag**：`feat/0.0.7-hotfix2`；功能与版本提交 `bd34d8c`；tag `v0.0.7-hotfix2-earlytest` → `bd34d8c`；已推送 origin。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix2-earlytest>（Pre-release，标题带 `[TEST]`）。
+- **资产**：
+  - `botmosire-a3-linux-x86_64.tar.gz`（sha256 `dff9acdedd1bf1286fd82587b82c9aac539743c791e846856e9067d2592a872b`）
+  - `mosire-bma3-dsh-0.0.7-hotfix2-earlytest.tgz`（sha256 `fc64de47718521071f2cafaebd2789dbdd9b8a9b15b7df6880f9cbcf94d639f6`）
+  - 两个 `.sha256` 与 `SHA256SUMS`；回下载 `sha256sum -c` PASS，app-image/插件版本均为 `0.0.7-hotfix2-earlytest`。
+- **门禁**：Java `./mvnw -q -o test` rc=0，**326 tests / 0 failures / 0 errors / 1 skipped**；插件 `npm test` rc=0，**167 pass / 0 fail**；`packaging/smoke.sh` PASS；MCP 68 工具 / 15 探针。
+- **未验证**：真实 DSH 中的 `inbox_wait_quiet`/summary 注入、LLBot `input_status`、LLBot/provider OCR 与好友写动作、B 站 xvfb 登录态复用、真实远端诊断包、真实 QQ/LLBot、systemd、掉电/升级回滚均 `NOT_RUN`；插件级 OCR/ASR 调用统计尚未汇入 watchdog bundle。正式 hotfix 基线仍为 `v0.0.7-hotfix1`。
+- **说明**：本批提交包含调查/设计/计划文档、Inbox 来源等待与摘要、watchdog/媒体诊断、xvfb 易用性、QQ friend/provider 动作及测试；没有合并到 `feat/bma3-plan-1`，没有改 main。
+
 **2026-11-16 21:45 —— 0.0.7-hotfix2 第一批实现完成（未提交、未发布）**。用户确认 D-069/D-070 后要求持续实现，不再逐项确认。当前分支 `feat/0.0.7-hotfix2`，基线为 test2 工作树。
 
 - **Inbox 硬等待**：新增 `InboxWaitPolicy`，所有 source 按最长前缀匹配；`inbox.wait` 默认 `enabled=true/defaultQuietSeconds=0/defaultMaxWaitSeconds=20`，可由 Agent 用 `set_config` 热重载。`dueFor`/`heldForQuiet` 修改现有唯一注入调度；quiet item 不会被其他 source 的 flush 带走。`PanelItem.waitingForQuiet` 供插件识别 live GET 中的未推送 hold。
