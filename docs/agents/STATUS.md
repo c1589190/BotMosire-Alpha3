@@ -2,6 +2,15 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 22:50 —— 远端 test2 debug 检查完成（插件版本不一致，待重载）**。用户应用 `0.0.7-hotfix2-test2` 后用 debug HTTP 检查。
+
+- **远端状态**：jar `/debug/snapshot` = `0.0.7-hotfix2-test2`，但插件 heartbeat `diagnostics.version` 仍是 `0.0.7-hotfix2-earlytest`（toolRegistration at 14:05:16，早于 jar 14:40 重启）⇒ **jar 更新不会重载 DSH 插件，需要重启 DSH/插件级 reload**。
+- **PASS**：`inbox_wait_quiet` 可调用；`bma3_watchdog_diagnose` 返回 test2 且 watchdog 只出现一次；`media.byKind` 输出 `{image:0,file:0,record:0,video:0}`；`xvfb_status` supported=true、windowManager=/usr/bin/openbox。
+- **发现**：`inbox_wait_quiet(sourcePrefix='bma3_debug')` 无斜杠返回 `Error [object Object]`；`sourcePrefix='bma3_debug/'` 返回 settled、items=[]（该调试条目已被插件自动 ACK）；`qq_group/...` 返回 settled、items=1、`ackable=false/frozenRevision=0`——语义上“来源安静”不等于“条目不冻结可处理”。
+- **本地后续修复（工作树，未提交/未发布）**：`InboxWaitQuietTool` 捕获非参数运行时异常并返回 `WAIT_QUIET_FAILED`；输出新增 `allAckable`/`processable`，明确 settled 只代表来源安静。全量 Maven **329 tests / 0 failures / 0 errors / 1 skipped**。
+- **仍未验证**：`bma3_media`/`bma3_ocr`/`bma3_asr` 在远端工具面缺失；因插件仍是 earlytest，先重启 DSH 再复核。summary 多图 markers、真实 LLBot/provider OCR、好友写操作、B 站 xvfb 登录态仍为 `NOT_RUN`。
+- **版本**：工作树仍是 test2 代码并带两处未提交修复；已发布 tag `v0.0.7-hotfix2-test2` 不覆盖，若发布修复需新 tag（建议 test3）。
+
 **2026-11-16 22:35 —— 0.0.7-hotfix2-test2 测试 Pre-release 已发布**。用户指定版本名 `0.0.7-hotfix2-test2`。
 
 - **分支 / 提交 / tag**：`feat/0.0.7-hotfix2`；提交 `4c11c2f`；tag `v0.0.7-hotfix2-test2` → `4c11c2f`；已推送 origin。
@@ -13,6 +22,7 @@
   - 两个 `.sha256` 与 `SHA256SUMS`；回下载 `sha256sum -c` PASS，app-image/插件版本均为 `0.0.7-hotfix2-test2`。
 - **门禁**：Java `./mvnw -q -o test` rc=0，**328 tests / 0 failures / 0 errors / 1 skipped**；插件 `npm test` rc=0，**167 pass / 0 fail**；`packaging/smoke.sh` PASS；MCP 68 工具 / 15 探针。
 - **保留裁定**：Agent `inbox_wait_quiet` 默认仍是 2000ms（D-070）；远端建议 3s，未擅自改。
+- **交接快照**：[hotfix2-test2 handoff](../superpowers/status/2026-11-16-hotfix2-test2-handoff.md)。
 - **仍未验证/风险**：`bma3_media` 在远端工具面缺失（需 BMA3 preset/重载复核 `bma3_ocr`/`bma3_asr`/`bma3_media`）；summary 多图 markers、真实 DSH/LLBot/provider OCR、好友写操作、B 站 xvfb 登录态、systemd、掉电/回滚均 `NOT_RUN`。正式基线仍为 `v0.0.7-hotfix1`。
 
 **2026-11-16 22:20 —— 远端 earlytest 反馈修复已落工作树（未提交/未发布）**。通过 debug HTTP 询问远端运行中的 `0.0.7-hotfix2-earlytest`，远端反馈：`inbox_wait_quiet` 返回 ACKED 历史/未冻结条目、2s 偏短、watchdog diagnose 重复输出、`media.byKind` 空、`bma3_media` 未出现在其工具面、`xvfb_open_browser` 默认 Chromium 缺失且首次启动 ToS 挡住等待。

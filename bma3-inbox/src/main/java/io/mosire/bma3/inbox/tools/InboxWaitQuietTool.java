@@ -42,7 +42,8 @@ public final class InboxWaitQuietTool implements AgentTool {
         return "按 source/sourcePrefix 只读等待来源安静：默认 quietMs=2000、maxWaitMs=20000。"
                 + "静默满足返回 settled=true；持续有新消息到硬上限返回 settled=false/stillActive=true。"
                 + "items 只列未 ACK 条目，ackable 标明是否已冻结可 ACK；"
-                + "支持任意来源；不 ACK、不冻结、不改变 Inbox 推送节奏。";
+                + "allAckable 表示当前返回项是否都可处理；settled=true 只代表来源安静，"
+                + "不代表已推送/可 ACK。支持任意来源；不 ACK、不冻结、不改变 Inbox 推送节奏。";
     }
 
     @Override
@@ -104,8 +105,14 @@ public final class InboxWaitQuietTool implements AgentTool {
                 items.add(row);
             }
             body.put("items", items);
+            boolean allAckable = items.isEmpty() || items.stream()
+                    .allMatch(item -> Boolean.TRUE.equals(item.get("ackable")));
+            body.put("allAckable", allAckable);
+            body.put("processable", result.settled() && allAckable);
             body.put("hint", result.settled()
-                    ? "来源已安静，可以正式回复或继续处理其他事"
+                    ? (allAckable
+                        ? "来源已安静，可以正式回复或继续处理其他事"
+                        : "来源已安静，但返回条目尚未全部冻结；不要 ACK，必要时用 inbox_status 等下一次推送")
                     : "来源仍在活动；可以再调用一次继续等，或现在给出阶段性回复");
             return InboxTools.json(body);
         } catch (IllegalArgumentException failure) {
@@ -113,6 +120,10 @@ public final class InboxWaitQuietTool implements AgentTool {
             String code = message.equals("SOURCE_REQUIRED") ? "SOURCE_REQUIRED"
                     : "INVALID_WAIT_PARAMETERS";
             return ToolResult.error(code, message);
+        } catch (RuntimeException failure) {
+            String message = failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage();
+            return ToolResult.error("WAIT_QUIET_FAILED", message);
         }
     }
 

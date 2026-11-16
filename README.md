@@ -1,8 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-hotfix2-test2`（Pre-release，用于远端验证，不替代正式 hotfix）**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。**当前版本 `0.0.7-tolatest`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
 
-> 测试 Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix2-test2>。本版加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；正式 hotfix 仍以 `v0.0.7-hotfix1` 为基线。
+> Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest>。本版加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；上一正式 hotfix 基线为 `v0.0.7-hotfix1`。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -22,10 +22,10 @@ DevMosire-iiBot 的继承与重构。**测试版本 `0.0.7-hotfix2-test2`（Pre-
 
 ### 1. 下载或编译
 
-测试 Release 资产（对应 tag `v0.0.7-hotfix2-test2`）：
+Release 资产（对应 tag `v0.0.7-tolatest`）：
 
-- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix2-test2/botmosire-a3-linux-x86_64.tar.gz>
-- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-hotfix2-test2/mosire-bma3-dsh-0.0.7-hotfix2-test2.tgz>
+- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-tolatest/botmosire-a3-linux-x86_64.tar.gz>
+- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-tolatest/mosire-bma3-dsh-0.0.7-tolatest.tgz>
 
 从源码构建 app-image：
 
@@ -237,7 +237,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**`0.0.7-hotfix2-test2` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
+**`0.0.7-tolatest` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
 
 jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 

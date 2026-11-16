@@ -247,6 +247,22 @@ class InboxToolsTest {
     }
 
     @Test
+    void waitQuietAcceptsAPrefixWithoutTrailingSlashAndReportsProcessability() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-prefix2.db"))) {
+            InboxService service = service(store);
+            List<AgentTool> tools = InboxTools.all(service);
+            ToolResult waited = tool(tools, "inbox_wait_quiet").execute(call(Map.of(
+                    "sourcePrefix", "bma3_debug", "quietMs", 10, "maxWaitMs", 100)));
+            assertThat(waited.success()).as(waited.message()).isTrue();
+            JsonNode body = mapper.readTree(waited.message());
+            assertThat(body.path("settled").asBoolean()).isTrue();
+            assertThat(body.path("items")).isEmpty();
+            assertThat(body.path("allAckable").asBoolean()).isTrue();
+            assertThat(body.path("processable").asBoolean()).isTrue();
+        }
+    }
+
+    @Test
     void waitQuietRejectsMissingSourceAndInvalidRange() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-invalid.db"))) {
             InboxService service = service(store);
