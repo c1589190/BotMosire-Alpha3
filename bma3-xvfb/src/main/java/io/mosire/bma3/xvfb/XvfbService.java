@@ -323,12 +323,7 @@ public final class XvfbService implements AutoCloseable {
             throw new XvfbException("BROWSER_PROFILE_FAILED",
                     "创建浏览器 profile 失败: " + failure.getMessage());
         }
-        List<String> argv = new ArrayList<>(List.of(
-                executable, "--no-sandbox", "--disable-dev-shm-usage",
-                "--user-data-dir=" + profile));
-        if (!target.isEmpty()) {
-            argv.add(target);
-        }
+        List<String> argv = browserArgs(executable, profile, target);
         long pid = launch(requested, argv);
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("pid", pid);
@@ -338,6 +333,18 @@ public final class XvfbService implements AutoCloseable {
         view.put("workspace", workspace.id());
         view.put("display", workspace.displayName());
         return view;
+    }
+
+    /** Browser argv is separated so the first-run flags can be unit-tested without Xvfb. */
+    static List<String> browserArgs(String executable, Path profile, String target) {
+        List<String> argv = new ArrayList<>(List.of(
+                executable, "--no-sandbox", "--disable-dev-shm-usage",
+                "--no-first-run", "--no-default-browser-check",
+                "--user-data-dir=" + profile));
+        if (target != null && !target.isBlank()) {
+            argv.add(target);
+        }
+        return List.copyOf(argv);
     }
 
     /** Wait until a window whose title contains {@code titleContains} appears. */

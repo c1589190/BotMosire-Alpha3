@@ -12,7 +12,7 @@ import java.util.List;
  * @param matchedBy source or sourcePrefix
  * @param waitedMs elapsed wait time
  * @param lastActivityAt latest matching item update, or the wait start when no item exists
- * @param items matching items, newest first, bounded by the service
+ * @param items unacked matching items, newest first, bounded by the service
  */
 public record WaitQuietResult(
         boolean settled,

@@ -12,6 +12,7 @@ import io.mosire.agentlib.tool.ToolContext;
 import io.mosire.agentlib.tool.ToolResult;
 import io.mosire.bma3.inbox.core.AppendItem;
 import io.mosire.bma3.inbox.core.DeliveryPolicy;
+import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.PluginHeartbeat;
 import io.mosire.bma3.inbox.core.SqliteInboxStore;
@@ -204,6 +205,27 @@ class InboxToolsTest {
             assertThat(body.path("items")).hasSize(1);
             assertThat(service.panel().revision()).isEqualTo(revision);
             assertThat(service.panel().items()).hasSize(1);
+        }
+    }
+
+    @Test
+    void waitQuietDoesNotReturnAckedHistoryOrImplyUnfrozenItemsAreAckable() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("wait-unacked.db"))) {
+            InboxService service = service(store, Duration.ofSeconds(30));
+            append(service, "qq_private/bot-1/3", 300, "旧消息");
+            InboxPanel first = service.awaitPush(service.pushRevision(), Duration.ofSeconds(1));
+            assertThat(first).isNotNull();
+            service.ackPanel(first.revision());
+            append(service, "qq_private/bot-1/3", 300, "新消息");
+
+            List<AgentTool> tools = InboxTools.all(service);
+            ToolResult waited = tool(tools, "inbox_wait_quiet").execute(call(Map.of(
+                    "source", "qq_private/bot-1/3", "quietMs", 20, "maxWaitMs", 1000)));
+            assertThat(waited.success()).as(waited.message()).isTrue();
+            JsonNode body = mapper.readTree(waited.message());
+            assertThat(body.path("items")).hasSize(1);
+            assertThat(body.path("items").get(0).path("totalMessages").asInt()).isEqualTo(1);
+            assertThat(body.path("items").get(0).path("ackable").asBoolean()).isFalse();
         }
     }
 

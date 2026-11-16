@@ -21,6 +21,12 @@ public final class QqMediaDiagnostics {
     private final AtomicLong downloadedBytes = new AtomicLong();
     private final AtomicLong splitImages = new AtomicLong();
     private final Map<String, AtomicLong> byKind = new ConcurrentHashMap<>();
+
+    public QqMediaDiagnostics() {
+        for (String kind : new String[]{"image", "file", "record", "video"}) {
+            byKind.put(kind, new AtomicLong());
+        }
+    }
     private final Map<String, AtomicLong> errors = new ConcurrentHashMap<>();
 
     public void attempt(String kind) {

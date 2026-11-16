@@ -2,6 +2,14 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 22:20 —— 远端 earlytest 反馈修复已落工作树（未提交/未发布）**。通过 debug HTTP 询问远端运行中的 `0.0.7-hotfix2-earlytest`，远端反馈：`inbox_wait_quiet` 返回 ACKED 历史/未冻结条目、2s 偏短、watchdog diagnose 重复输出、`media.byKind` 空、`bma3_media` 未出现在其工具面、`xvfb_open_browser` 默认 Chromium 缺失且首次启动 ToS 挡住等待。
+
+- **已修复**：`inbox_wait_quiet` 只输出未 ACK 条目，并在每项给出 `ackable`（frozenRevision>0）；`bma3_watchdog_diagnose` 不再重复返回 watchdog；`QqMediaDiagnostics.byKind` 固定输出 image/file/record/video 的 0 计数；`xvfb_open_browser` 增加 `--no-first-run`/`--no-default-browser-check`，并抽了可单测的 browser argv。
+- **保留裁定**：Agent `inbox_wait_quiet` 默认仍是 2000ms（用户 D-070）；远端建议 3s，但未擅自改用户默认。
+- **待定位**：远端看不到 `bma3_media` 很可能是因为它不在 BMA3 preset 会话里（媒体工具按 D-068 只在 preset scope）；需要在真实 BMA3 会话/重载后复核 `bma3_ocr`/`bma3_asr`/`bma3_media` 是否一起出现。
+- **门禁（工作树）**：`./mvnw -q -o test` rc=0，**328 tests / 0 failures / 0 errors / 1 skipped**；远端反馈前插件 167 pass；本轮未重跑 smoke/发布，未 commit/push。
+- **版本**：仍是已发布的 `0.0.7-hotfix2-earlytest`；tag 不覆盖。修复版需要新版本/tag（建议 `0.0.7-hotfix2-earlytest2`）并重新走 smoke/asset 校验。
+
 **2026-11-16 22:05 —— 0.0.7-hotfix2-earlytest 测试 Pre-release 已发布**。用户要求把本批新功能作为 `0.0.7-hotfix2-earlytest` 发布。
 
 - **分支 / 提交 / tag**：`feat/0.0.7-hotfix2`；功能与版本提交 `bd34d8c`；tag `v0.0.7-hotfix2-earlytest` → `bd34d8c`；已推送 origin。

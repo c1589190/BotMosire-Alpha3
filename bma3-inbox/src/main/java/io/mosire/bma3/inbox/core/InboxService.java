@@ -852,12 +852,12 @@ public final class InboxService {
             if (!now.isBefore(lastActivity.plus(quietDuration))) {
                 return new WaitQuietResult(true, "quiet", selector, matchedBy,
                         Duration.between(started, now).toMillis(), lastActivity,
-                        newestFirst(matching));
+                        unackedNewestFirst(matching));
             }
             if (!now.isBefore(deadline)) {
                 return new WaitQuietResult(false, "max_wait", selector, matchedBy,
                         Duration.between(started, now).toMillis(), lastActivity,
-                        newestFirst(matching));
+                        unackedNewestFirst(matching));
             }
             Instant next = lastActivity.plus(quietDuration);
             if (next.isAfter(deadline)) {
@@ -870,12 +870,12 @@ public final class InboxService {
                 Thread.currentThread().interrupt();
                 return new WaitQuietResult(false, "interrupted", selector, matchedBy,
                         Duration.between(started, Instant.now()).toMillis(), lastActivity,
-                        newestFirst(matching));
+                        unackedNewestFirst(matching));
             }
         }
         return new WaitQuietResult(false, "interrupted", selector, matchedBy,
                 Duration.between(started, Instant.now()).toMillis(), lastActivity,
-                newestFirst(matching));
+                unackedNewestFirst(matching));
     }
 
     private List<InboxItem> matchingItems(String exact, String prefix) {
@@ -896,8 +896,9 @@ public final class InboxService {
         return latest;
     }
 
-    private static List<InboxItem> newestFirst(List<InboxItem> items) {
+    private static List<InboxItem> unackedNewestFirst(List<InboxItem> items) {
         return items.stream()
+                .filter(item -> item.status() != ItemStatus.ACKED)
                 .sorted(Comparator.comparing(InboxItem::updatedAt).reversed())
                 .limit(20)
                 .toList();

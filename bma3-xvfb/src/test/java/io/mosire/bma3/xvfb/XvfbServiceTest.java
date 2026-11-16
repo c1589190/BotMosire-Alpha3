@@ -62,6 +62,15 @@ class XvfbServiceTest {
     }
 
     @Test
+    void browserArgsDisableTheFirstRunTourAndKeepTheUrl() {
+        var args = XvfbService.browserArgs("/usr/bin/google-chrome",
+                Path.of("/tmp/bma3-profile"), "https://www.bilibili.com");
+        assertThat(args).contains("--no-first-run", "--no-default-browser-check");
+        assertThat(args).contains("--user-data-dir=/tmp/bma3-profile");
+        assertThat(args.getLast()).isEqualTo("https://www.bilibili.com");
+    }
+
+    @Test
     void statusNeverExposesAnIsolationVerdict(@TempDir Path root) {
         XvfbService service = new XvfbService(root.resolve(".xvfb"), noXvfb());
 

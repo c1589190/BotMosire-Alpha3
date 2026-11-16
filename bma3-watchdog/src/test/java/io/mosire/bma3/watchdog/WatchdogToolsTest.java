@@ -46,6 +46,7 @@ class WatchdogToolsTest {
 
             AgentTool diagnose = WatchdogTools.all(engine, () -> Map.of(
                             "version", "0.0.7-hotfix2",
+                            "watchdog", engine.snapshot(),
                             "media", Map.of("attempts", 2)))
                     .stream().filter(tool -> tool.name().equals("bma3_watchdog_diagnose"))
                     .findFirst().orElseThrow();
@@ -55,8 +56,8 @@ class WatchdogToolsTest {
             assertThat(result.success()).isTrue();
             var json = new ObjectMapper().readTree(result.message());
             assertThat(json.path("watchdog").path("components").has("fake")).isTrue();
-            assertThat(json.path("bundle").path("version").asText())
-                    .isEqualTo("0.0.7-hotfix2");
+            assertThat(json.path("version").asText()).isEqualTo("0.0.7-hotfix2");
+            assertThat(json.path("bundle").isMissingNode()).isTrue();
             assertThat(result.message()).doesNotContain("token", "Bearer", "Cookie");
         }
     }

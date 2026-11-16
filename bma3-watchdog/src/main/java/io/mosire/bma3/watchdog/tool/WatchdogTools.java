@@ -141,12 +141,13 @@ public final class WatchdogTools {
 
         @Override
         public ToolResult execute(ToolContext context) {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("watchdog", engine.snapshot());
             if (diagnostics != null) {
-                body.put("bundle", diagnostics.get());
+                Map<String, Object> bundle = diagnostics.get();
+                if (bundle != null) {
+                    return json(bundle);
+                }
             }
-            return json(body);
+            return json(Map.of("watchdog", engine.snapshot()));
         }
     }
 

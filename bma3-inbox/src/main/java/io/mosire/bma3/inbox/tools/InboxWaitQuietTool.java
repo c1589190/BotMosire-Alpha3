@@ -41,6 +41,7 @@ public final class InboxWaitQuietTool implements AgentTool {
     public String description() {
         return "按 source/sourcePrefix 只读等待来源安静：默认 quietMs=2000、maxWaitMs=20000。"
                 + "静默满足返回 settled=true；持续有新消息到硬上限返回 settled=false/stillActive=true。"
+                + "items 只列未 ACK 条目，ackable 标明是否已冻结可 ACK；"
                 + "支持任意来源；不 ACK、不冻结、不改变 Inbox 推送节奏。";
     }
 
@@ -96,6 +97,7 @@ public final class InboxWaitQuietTool implements AgentTool {
                 row.put("revision", item.revision());
                 row.put("frozenRevision", item.frozenRevision());
                 row.put("continued", item.continued());
+                row.put("ackable", item.frozenRevision() > 0);
                 if (includeEntries) {
                     row.put("entries", item.entries());
                 }
