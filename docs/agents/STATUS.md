@@ -1,8 +1,19 @@
-# STATUS —— 更新时间：2026-11-15 (UTC+8)
+# STATUS —— 更新时间：2026-11-16 (UTC+8)
 
 ## 当前目标 / 进行中范围
 
-**2026-11-15 23:58 —— 0.0.8 批次（调试通道 / 触发规则 v2 / 定时任务）已实现并推送，未打 tag、未发版**。用户确认「三个都做」「不要单飞限制」。设计：[调试通道 / 触发规则 / 定时任务设计](../superpowers/specs/2026-11-15-debug-channel-schedule-triggers-design.md)（不变量 I-A1..A8 / I-B1..B6 / I-C1..C5 + 验收判据 A1..A9 / B1..B6 / C1..C6）。
+**2026-11-16 19:24 —— 0.0.7-hotfix-EnableDebug 已发布（GitHub Pre-release）**。用户指令「发布0.0.7-hotfix-EnableDebug版本」；版本号按用户指定统一为 `0.0.7-hotfix-EnableDebug`，发布内容基于当前 0.0.8 批次代码。
+
+- **tag / commit / 分支**：tag `v0.0.7-hotfix-EnableDebug` → `5a41c31`；`feat/bma3-plan-1` 已推送并与 origin 同步。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-hotfix-EnableDebug>。
+- **内容**：远程问诊 `/debug/*`（独立 `DEBUG_TOKEN`、`bma3_debug_reply`/`bma3_debug_pending`）+ 触发规则 v2（regex/source/commandPrefixes/`bma3_priority_explain`）+ 定时任务（`bma3-scheduler`、5 个 `bma3_schedule_*` 工具、watchdog schedule 探针）；继承 0.0.7-early 的出站发送与 Inbox guarded ACK 止损。
+- **资产**：`botmosire-a3-linux-x86_64.tar.gz`（sha256 `841927a1…`）、`mosire-bma3-dsh-0.0.7-hotfix-EnableDebug.tgz`（sha256 `18849ccd…`）、两个 `.sha256` 与 `SHA256SUMS`。
+- **发布门禁（2026-11-16 本机会话）**：`./mvnw -q -o test` rc=0，**306 tests / 0 failures / 0 errors / 1 skipped**；`dsh-plugin npm test` rc=0，**155 pass / 0 fail**；`packaging/smoke.sh` PASS（app-image 构建、启动、`/healthz` 200）；app-image `--version` 与插件包 `package.json` 均为 `0.0.7-hotfix-EnableDebug`。首次全量测试出现一次 `Bma3AppOutboundRecoveryTest` 端口 `BindException`，聚焦重跑 4/4 PASS，随后全量重跑 306/0/0/1 PASS，判定为测试端口分配竞态，未改产品代码。
+- **资产回下载校验**：`gh release download v0.0.7-hotfix-EnableDebug` + `sha256sum -c SHA256SUMS` PASS；解包后 app-image 版本与插件版本均核验一致。
+- **未验证**：真实 DSH 会话里由 Agent 调 `bma3_debug_reply`、真实 QQ/LLBot、本版远端部署、`security.auth=none` 下 `/debug` 的进程级 404、真实 DSH 热重载/`agents.resume`、掉电与升级/回滚，均 `NOT_RUN`；0.0.7 停工时的跨组件最终复核仍无完整关账结论。
+- **运行环境事实（发布复核时）**：`bma3-local-app`、`bma3-local-fake`、`dsh-bma3test` 均为 inactive，18765/18766/18767/45701/46701/3090 无监听；发布未启动或重启这些服务。
+
+**2026-11-15 23:58 —— 0.0.8 批次（调试通道 / 触发规则 v2 / 定时任务）已实现并推送**。该代码批次后来由用户指定以 `0.0.7-hotfix-EnableDebug` 发布，见顶部；本段保留当时的实现记录。用户确认「三个都做」「不要单飞限制」。设计：[调试通道 / 触发规则 / 定时任务设计](../superpowers/specs/2026-11-15-debug-channel-schedule-triggers-design.md)（不变量 I-A1..A8 / I-B1..B6 / I-C1..C5 + 验收判据 A1..A9 / B1..B6 / C1..C6）。
 
 - **切片 A 远程问诊**：`bma3-app/.../debug/`（`DebugApi`/`DebugService`/`DebugStore`/`DebugRequest`/`DebugTools`/`DebugException`）挂在 health 端口；`GET /debug/snapshot|logs`、`POST /debug/ask|answer`、`GET /debug/ask[/{id}]`；token 为 `.bma3env` 新增的**第三条** `DEBUG_TOKEN`（与 MCP/INBOX 独立）；`security.auth=none` 时整面不挂载；问题只经 `InboxService.append` 注入（`source=bma3_debug/<id>`，优先级 350）；不做单飞，`debug.maxPending` 默认 32、0=不限；审计只记 id/字节数/状态/耗时。
 - **切片 B 触发规则 v2**：`AppConfig.ContentRule` 增 `match=regex`（pattern ≤200、非法正则启动即拒）与 `source` 作用域（`/` 边界）；新增 `weighting.commandPrefixes`（默认 `/` `!`）驱动 `qq_command`，不再写死；新工具 `bma3_priority_explain` 与 ingest 共用同一 `PriorityResolver`（`PriorityResolver.weighting()` 暴露同一快照）。**纠正一条旧结论**：正文前缀规则自 `de15ba4`（0.0.3-hotfix7）就存在，`.rd` 的权重以前就能配，缺的是可发现性/来源作用域/正则/命令前缀。
@@ -13,12 +24,12 @@
 - **重启存活实测**：提问 `rq-8b5e0a23bf7c` 在 `systemctl --user restart bma3-local-app` 后仍是 `PENDING`，面板中该 request 仍**只有 1 条**（未重复注入）。
 - **热重载 + `.rd` 实测**：把本地配置改成 `commandPrefixes: ["/","!", "."]` + `.rd` prefix +150 后，无需重启，`bma3_priority_explain` 立即显示新前缀与 +150；再注入一条真实私聊 `.rd 3d6 热重载后`，面板条目 priority **550**（300 + qq_command 100 + 150）。
 - **抓到的坑（不在产品代码里）**：`build/local-0.0.7/inject-test-message.py` 把 `message_id` 写成字符串，`OneBot11Client` 的解码器会静默丢弃该帧（`onMessage` 里 `catch (Exception) {}`），表现为"注入了但面板没反应"。注入时 `message_id` 必须是数字。该脚本在 `build/`（不提交）。
-- **未验**：真实 DSH 会话里由 Agent 调 `bma3_debug_reply`（本次由 MCP 直连模拟）；真实 QQ/LLBot；远端部署；`security.auth=none` 下 404 只由单测覆盖；`inbox.js` 未改动，`dsh-plugin npm test` 本批未跑。
-- **提交状态**：`77c3a3f`（feat(0.0.8)：远程问诊 API + 触发规则 v2 + 定时任务）已推送 `feat/bma3-plan-1`；用户明确「提交并推送，但不要发布」，因此**没有打 tag、没有创建 Release**，版本号仍是 `0.0.7-early`。
+- **未验（当时）**：真实 DSH 会话里由 Agent 调 `bma3_debug_reply`（本次由 MCP 直连模拟）；真实 QQ/LLBot；远端部署；`security.auth=none` 下 404 只由单测覆盖。`inbox.js` 未改动，`dsh-plugin npm test` 当时未跑；2026-11-16 发布前已补跑 155 pass。
+- **当时提交状态**：`77c3a3f`（feat(0.0.8)：远程问诊 API + 触发规则 v2 + 定时任务）已推送 `feat/bma3-plan-1`；当时用户明确「提交并推送，但不要发布」，所以当时未打 tag、未创建 Release，版本号仍为 `0.0.7-early`。2026-11-16 用户另行授权发布为 `0.0.7-hotfix-EnableDebug`，该指令已覆盖此前的“不发布”状态。
 
 **2026-11-15 22:33 —— 0.0.7-early 已发布，本机可调试**：tag [`v0.0.7-early`](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-early)（Pre-release）指向 `5bf33e4`；资产 `botmosire-a3-linux-x86_64.tar.gz`（sha256 `e1f498a2…`）与 `mosire-bma3-dsh-0.0.7-early.tgz`（sha256 `5f9d42df…`）。发布门禁：`./mvnw -q -o test` rc=0（276 tests / 0 fail / 1 skip）、插件 `npm test` 155 pass、`packaging/smoke.sh` PASS（app-image 启动、`/healthz` 200）。本批改动与破坏性升级顺序见 release notes；**真实 QQ/LLBot、真实 DSH 宿主、远端部署、掉电与升级/回滚仍 `NOT_RUN`**。
 
-**本机调试环境（2026-11-15 22:45 起，systemd --user 临时单元）**：`bma3-local-app.service`（jar 0.0.7-early，配置与数据在 `build/local-0.0.7/`，端口 MCP `18765` / Inbox `18766` / health `18767`）、`bma3-local-fake.service`（`tools/e2e-local/FakeOneBot`，WS `45701` / 注入 `46701`）、`dsh-bma3test.service`（DSH web host，端口 `3090`；profile `bma3test` 从 `web` 复制，`stateFile` 指向 `build/local-0.0.7/dsh-inbox-state.json` 以避开主 host 的状态锁；token 见 `journalctl --user -u dsh-bma3test`，不落库）。辅助脚本：`build/local-0.0.7/inject-test-message.py`、`build/local-0.0.7/inbox-status.sh`。**已实测**：jar `--version` = 0.0.7-early、MCP `tools/list` 52 个工具、guarded ACK 返回逐条 `complete=true`、注入假 QQ 消息后 panel/identity/processId 正常、插件 v2 快照与独占锁生成、DSH 原生 mcp-client 已连上本机 jar。**未实测**：真实 DSH 会话里的面板注入与 ACK 恢复（需在 `3090` 的 BMA3 预设会话里手动跑）、真实 QQ、远端部署。
+**本机调试环境（2026-11-15 22:45 起，systemd --user 临时单元）**：`bma3-local-app.service`（jar 0.0.7-early，配置与数据在 `build/local-0.0.7/`，端口 MCP `18765` / Inbox `18766` / health `18767`）、`bma3-local-fake.service`（`tools/e2e-local/FakeOneBot`，WS `45701` / 注入 `46701`）、`dsh-bma3test.service`（DSH web host，端口 `3090`；profile `bma3test` 从 `web` 复制，`stateFile` 指向 `build/local-0.0.7/dsh-inbox-state.json` 以避开主 host 的状态锁；token 见 `journalctl --user -u dsh-bma3test`，不落库）。辅助脚本：`build/local-0.0.7/inject-test-message.py`、`build/local-0.0.7/inbox-status.sh`。**已实测**：jar `--version` = 0.0.7-early、MCP `tools/list` 52 个工具、guarded ACK 返回逐条 `complete=true`、注入假 QQ 消息后 panel/identity/processId 正常、插件 v2 快照与独占锁生成、DSH 原生 mcp-client 已连上本机 jar。**未实测**：真实 DSH 会话里的面板注入与 ACK 恢复（需在 `3090` 的 BMA3 预设会话里手动跑）、真实 QQ、远端部署。**2026-11-16 发布复核时该套临时 unit 已全部 inactive，端口无监听。**
 
 **用户要求停工（2026-11-15，未提交、未部署）**：本会话用户明确要求「不管你做到哪了，停下，保存当前工作状态」。已停止继续开发和验证；仅按要求记录交接，整体跨组件最终复核被中断，**尚无完整最终复核结论，不应宣称本批全部关账或可部署**。未经用户再次要求不要自动恢复。当前分支 `feat/bma3-plan-1`；止损批次已提交为 `d08c5b2`，版本发布提交为 `5bf33e4`（tag `v0.0.7-early`），均已推送；本机已按上文起调试环境，远端未部署。
 
