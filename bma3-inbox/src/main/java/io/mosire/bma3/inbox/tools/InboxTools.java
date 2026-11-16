@@ -19,10 +19,15 @@ public final class InboxTools {
     }
 
     public static List<AgentTool> all(InboxService service) {
+        return all(service, "unknown");
+    }
+
+    public static List<AgentTool> all(InboxService service, String version) {
         return List.of(new InboxStatusTool(service), new InboxListTool(service),
                 new InboxItemsTool(service), new InboxGetTool(service),
                 new InboxAckTool(service), new InboxDismissTool(service),
-                new InboxWaitTool(service));
+                new InboxWaitTool(service), new InboxDiagnoseTool(service, version),
+                new InboxPluginControlTool(service));
     }
 
     static ToolResult json(Object value) {

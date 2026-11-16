@@ -291,6 +291,19 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
   `state.v2.json.lock` 再启动；否则客户端会 fail-closed 并报告锁被占用。
 
 - 工具：`bma3_inbox`（status/bind/unbind/restore/pause/resume/start/stop/ack/discard/accept-identity）。
+  - 未显式配置 `sessionId` 时，首次真正选中 idle 会话会**自动持久化** `targetSessionId`；heartbeat/status
+    随即显示 bound=true。重启后按 v2 state 自动 `restore()`，不会只把绑定留在内存。
+  - legacy `pendingPush.targetSessionId=null` 会在首次选定目标时与绑定一起原子补写；已有目标不匹配仍
+    fail-closed，绝不会改投另一个 idle 会话。
+  - `bma3_inbox` 注册失败不会拖垮 inbox/SSE/ACK；插件会重试 profile 注册，并在拿到具体 agent 时尝试
+    `agent.ctx.tools.register`。`status.toolRegistration` 显示 `registered/attempts/lastError/scopes`。
+- 诊断兜底：
+  - MCP 工具 `inbox_diagnose`：一屏返回版本、runtime/MCP 启动 id、inbox 状态、插件 heartbeat、
+    deferredPush/freshVerification/toolRegistration 摘要和 pending control；只读，不含正文/凭据。
+  - MCP 工具 `inbox_plugin_control`：`status` 查看心跳；`restore` 排队让插件恢复已保存的会话；
+    `remind` 排队发送短提醒。只操作既有 control 通道，不直接 ACK、改身份或写消息。
+  - 插件 heartbeat 的 `diagnostics` 字段只带版本、注册状态、deferred/fresh 元数据与计数，服务端可在
+    `/plugin` 与诊断工具中读取。
 
 ## 装到 profile
 

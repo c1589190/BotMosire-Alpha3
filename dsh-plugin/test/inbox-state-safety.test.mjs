@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { createInboxClient, inboxStatePaths } from '../lib/inbox.js'
+import { apply, createInboxClient, inboxStatePaths } from '../lib/inbox.js'
 
 const IDENTITY = 'inb_state_beta'
 const encoder = new TextEncoder()
@@ -212,7 +212,8 @@ test('an old-version writer to v1 cannot erase the v2 pending record', async () 
     config(fakeInbox({ ack: async (body) => ackComplete(body) }), stateFile),
   )
   try {
-    assert.equal(second.status().targetSessionId, null, 'v2 wins over the stale v1 target')
+    assert.equal(second.status().targetSessionId, 'session-1',
+      'v2 wins over the stale v1 target and retains its auto-bound session')
     assert.notEqual(second.status().targetSessionId, 'stale-old-writer')
     assert.deepEqual(second.status().pendingAck?.itemIds, pendingBefore.itemIds)
   } finally {
@@ -597,3 +598,136 @@ test('the v2 snapshot and lock paths are deterministic siblings of the configure
   assert.equal(inboxStatePaths({ stateFile: '/tmp/example/state' }).v2, '/tmp/example/state.v2')
 })
 
+
+
+test('the first auto-selected target is persisted before followup and survives a restart', async () => {
+  const { stateFile, paths } = tempState()
+  const messages = []
+  const agent = agentRecorder('session-auto', messages)
+  const server = fakeInbox()
+  const first = createInboxClient(ctxFor(agent), config(server, stateFile))
+  try {
+    first.start()
+    server.push(panel({
+      revision: 1,
+      pushRevision: 1,
+      items: [item('itm-auto-bind', { frozenRevision: 1 })],
+    }))
+    await waitFor(() => messages.length === 1 && first.status().pendingAck === null,
+      'auto-bound first push ACKed')
+    assert.equal(first.status().targetSessionId, 'session-auto')
+    const disk = JSON.parse(readFileSync(paths.v2, 'utf8'))
+    assert.equal(disk.targetSessionId, 'session-auto', 'target is durable before/with followup')
+  } finally {
+    first.dispose()
+  }
+
+  const second = createInboxClient(ctxFor(agent), config(server, stateFile))
+  try {
+    assert.equal(second.status().targetSessionId, 'session-auto')
+    const restored = await second.restore()
+    assert.equal(restored.targetSessionId, 'session-auto')
+    assert.equal(restored.agentLive, true)
+  } finally {
+    second.dispose()
+  }
+})
+
+test('agent-scope registration makes bma3_inbox visible when profile tools are unavailable', async () => {
+  const { stateFile } = tempState()
+  const messages = []
+  const agentTools = []
+  const agent = {
+    ...agentRecorder('session-scope', messages),
+    ctx: {
+      tools: {
+        register(definition) {
+          agentTools.push(definition)
+          return () => {}
+        },
+      },
+    },
+  }
+  const ctx = {
+    effect: (callback) => callback(),
+    get: (name) => (name === 'tools' ? undefined : undefined),
+    agents: { get: (id) => (id === agent.id ? agent : undefined), list: () => [agent] },
+  }
+  const server = fakeInbox()
+  const client = apply(ctx, {
+    ...config(server, stateFile),
+    persistState: false,
+    autoStart: false,
+  })
+  try {
+    await client.restore(agent.id)
+    await waitFor(() => agentTools.some((definition) => definition.name === 'bma3_inbox'),
+      'agent-scope bma3_inbox registration')
+    assert.ok(client.status().toolRegistration?.scopes.includes('agent:session-scope'))
+  } finally {
+    client.dispose()
+  }
+})
+
+test('profile tool registration retries when the tools service becomes available', async () => {
+  const { stateFile } = tempState()
+  const definitions = []
+  let toolsAvailable = false
+  const ctx = {
+    effect: (callback) => callback(),
+    get: (name) => (name === 'tools' && toolsAvailable
+      ? { register: (definition) => { definitions.push(definition); return () => {} } }
+      : undefined),
+    agents: { get: () => undefined, list: () => [] },
+  }
+  const server = fakeInbox()
+  const client = apply(ctx, {
+    ...config(server, stateFile),
+    persistState: false,
+    autoStart: false,
+  })
+  try {
+    assert.equal(client.status().toolRegistration?.registered, false)
+    toolsAvailable = true
+    await waitFor(() => definitions.some((definition) => definition.name === 'bma3_inbox'),
+      'profile tool retry registration')
+    assert.equal(client.status().toolRegistration?.registered, true)
+    assert.ok(client.status().toolRegistration?.scopes.includes('profile'))
+  } finally {
+    client.dispose()
+  }
+})
+
+
+test('heartbeat diagnostics carry sanitized version and tool-registration state', async () => {
+  const { stateFile } = tempState()
+  const messages = []
+  const agent = agentRecorder('session-heartbeat', messages)
+  const server = fakeInbox()
+  const bodies = []
+  const originalFetch = server.fetchImpl
+  server.fetchImpl = async (url, init = {}) => {
+    if (url.endsWith('/plugin/heartbeat')) bodies.push(JSON.parse(init.body))
+    return originalFetch(url, init)
+  }
+  const client = createInboxClient(ctxFor(agent), config(server, stateFile))
+  try {
+    client.start()
+    client.setToolRegistration({
+      registered: false,
+      attempts: 2,
+      lastError: 'tools_service_unavailable',
+      scopes: [],
+    })
+    await client.heartbeat()
+    await waitFor(() => bodies.length >= 1, 'heartbeat body')
+    const diagnostics = bodies.at(-1).diagnostics
+    assert.equal(diagnostics.version, '0.0.7-hotfix1')
+    assert.equal(diagnostics.toolRegistration.registered, false)
+    assert.equal(diagnostics.toolRegistration.attempts, 2)
+    assert.equal(diagnostics.toolRegistration.lastError, 'tools_service_unavailable')
+    assert.equal(JSON.stringify(bodies).includes('SECRET_BODY'), false)
+  } finally {
+    client.dispose()
+  }
+})

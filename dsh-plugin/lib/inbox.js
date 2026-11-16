@@ -12,6 +12,14 @@ const STATE_VERSION = 2
 const LEGACY_STATE_VERSION = 1
 const DEFAULT_ACK_RETRY_BASE_MS = 500
 const DEFAULT_ACK_RETRY_MAX_MS = 30000
+const PLUGIN_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+      || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
 
 /**
  * Read the jar-owned token file (D-063). The plugin never generates or stores a token: BMA3 writes
@@ -746,6 +754,8 @@ export function createInboxClient(ctx, config = {}) {
   let ackCancelEpoch = 0
   let ackSuspended = false
   let disposed = false
+  let toolRegistration = null
+  let agentToolRegistrar = null
   let generation = 0
   let controlEpoch = 0
   let connectionEpoch = 0
@@ -857,6 +867,8 @@ export function createInboxClient(ctx, config = {}) {
 
   const status = () => ({
     ...state,
+    pluginVersion: PLUGIN_VERSION,
+    toolRegistration,
     pendingRevision: pending?.revision ?? 0,
     connected: state.connection === 'open',
     running: !stopped,
@@ -892,6 +904,43 @@ export function createInboxClient(ctx, config = {}) {
     const agents = ctx?.agents
     if (state.targetSessionId) return agents?.get?.(state.targetSessionId)
     return agents?.list?.().find((candidate) => candidate?.status === 'idle')
+  }
+
+  /**
+   * Persist the target chosen for an otherwise-unbound client before followup. A pending push
+   * created while the client was unbound carries targetSessionId=null; attach it to the same
+   * transaction so a restart cannot recover the push without knowing where it was meant to go.
+   */
+  const adoptRuntimeBinding = (targetSessionId) => {
+    if (!isNonEmptyString(targetSessionId)) {
+      state.lastError = 'target_session_unresolved'
+      return false
+    }
+    if (state.targetSessionId && state.targetSessionId !== targetSessionId) {
+      state.lastError = 'bound_target_mismatch'
+      return false
+    }
+    if (state.pendingPush?.targetSessionId
+      && state.pendingPush.targetSessionId !== targetSessionId) {
+      state.lastError = 'pending_push_session_mismatch'
+      return false
+    }
+    const attachPending = Boolean(state.pendingPush && !state.pendingPush.targetSessionId)
+    const bindNow = !state.targetSessionId
+    if (!bindNow && !attachPending) return true
+    const previousTarget = state.targetSessionId
+    const previousPendingPush = state.pendingPush
+    state.targetSessionId = targetSessionId
+    if (attachPending) {
+      state.pendingPush = { ...state.pendingPush, targetSessionId }
+    }
+    if (!persist()) {
+      state.targetSessionId = previousTarget
+      state.pendingPush = previousPendingPush
+      state.lastError = 'auto_bind_persist_failed'
+      return false
+    }
+    return true
   }
 
   /** Resume a persisted session when it is not live yet (DSH restart). */
@@ -1055,6 +1104,57 @@ export function createInboxClient(ctx, config = {}) {
     return applied
   }
 
+  const heartbeatDiagnostics = () => {
+    const short = (value, limit = 160) => {
+      const text = String(value ?? '')
+      return text.length <= limit ? text : text.slice(0, limit) + '…'
+    }
+    const deferred = state.deferredPush
+    const fresh = state.freshVerification
+    return {
+      version: PLUGIN_VERSION,
+      toolRegistration: toolRegistration
+        ? {
+            registered: toolRegistration.registered === true,
+            attempts: Number(toolRegistration.attempts ?? 0),
+            lastError: toolRegistration.lastError ? short(toolRegistration.lastError) : null,
+            scopes: Array.isArray(toolRegistration.scopes)
+              ? toolRegistration.scopes.slice(0, 4).map((scope) => short(scope, 80)) : [],
+            at: toolRegistration.at ?? null,
+          }
+        : null,
+      deferredPush: deferred
+        ? {
+            revision: Number(deferred.revision ?? 0),
+            pushRevision: Number(deferred.pushRevision ?? 0),
+            reason: short(deferred.reason),
+            at: deferred.at ?? null,
+          }
+        : null,
+      freshVerification: fresh
+        ? {
+            required: fresh.required === true,
+            attempts: Number(fresh.attempts ?? 0),
+            lastError: fresh.lastError ? short(fresh.lastError) : null,
+            nextAt: Number.isFinite(fresh.nextAt) ? fresh.nextAt : null,
+            lastAttemptAt: fresh.lastAttemptAt ?? null,
+          }
+        : null,
+      pendingAckItems: Array.isArray(state.pendingAck?.itemIds)
+        ? state.pendingAck.itemIds.length : 0,
+      pendingPush: state.pendingPush
+        ? {
+            targetSessionId: state.pendingPush.targetSessionId ?? null,
+            panelRevision: Number(state.pendingPush.panelRevision ?? 0),
+            pushRevision: Number(state.pendingPush.pushRevision ?? 0),
+            itemCount: Array.isArray(state.pendingPush.itemIds)
+              ? state.pendingPush.itemIds.length : 0,
+          }
+        : null,
+      recentAcked: Array.isArray(state.recentAcked) ? state.recentAcked.length : 0,
+    }
+  }
+
   const heartbeat = async () => {
     if (disposed || (stopped && !state.targetSessionId)) return null
     if (persistenceEnabled && !lockStillOurs(lock)) {
@@ -1082,6 +1182,7 @@ export function createInboxClient(ctx, config = {}) {
           appliedControlId: state.appliedControlId,
           tokenSource: tokenSource(config),
           tokenOk: state.lastAuthFailed !== true,
+          diagnostics: heartbeatDiagnostics(),
         }),
       })
       if (disposed || generation !== operation || controlEpoch !== controlAtStart) return null
@@ -1831,8 +1932,10 @@ export function createInboxClient(ctx, config = {}) {
       return
     }
     if (pendingPushMismatchKey === mismatchKey && pendingPushMismatchCode) return
-    if (!pendingPush.targetSessionId
-      || pendingPush.targetSessionId !== state.targetSessionId) {
+    // A null target is the legacy "chosen at first wake" case. A concrete mismatch is still
+    // fail-closed; wake() will attach the legacy record to the same session in one persist.
+    if (pendingPush.targetSessionId
+      && pendingPush.targetSessionId !== state.targetSessionId) {
       if (pendingPushMismatchKey !== mismatchKey || pendingPushMismatchCode !== 'session') {
         pendingPushMismatchKey = mismatchKey
         pendingPushMismatchCode = 'session'
@@ -1950,11 +2053,19 @@ export function createInboxClient(ctx, config = {}) {
     const controlAtStart = controlEpoch
     const agent = findAgent()
     if (!agent || agent.status !== 'idle' || typeof agent.followup !== 'function') return false
+    try {
+      agentToolRegistrar?.(agent)
+    } catch {
+      toolRegistration = toolRegistration ?? {
+        registered: false, attempts: 0, lastError: 'agent_tool_register_failed', at: null, scopes: [],
+      }
+    }
     const targetSessionId = isNonEmptyString(agent.id) ? String(agent.id) : state.targetSessionId
     if (!isNonEmptyString(targetSessionId)) {
       state.lastError = 'wake: target session id is missing; refusing an unattributable injection'
       return false
     }
+    if (!adoptRuntimeBinding(targetSessionId)) return false
     const target = targetContext()
     if (target.error) {
       state.lastError = target.error
@@ -2627,6 +2738,14 @@ export function createInboxClient(ctx, config = {}) {
     if (disposed || generation !== operation || controlEpoch !== operationEpoch) return status()
     if (!agent) {
       state.lastError = state.lastError ?? 'resume_failed'
+    } else {
+      try {
+        agentToolRegistrar?.(agent)
+      } catch {
+        toolRegistration = toolRegistration ?? {
+          registered: false, attempts: 0, lastError: 'agent_tool_register_failed', at: null, scopes: [],
+        }
+      }
     }
     // Start the SSE even when resume failed: the binding is durable and the session may be
     // opened later; starting now means the first push is not missed.
@@ -2817,6 +2936,25 @@ export function createInboxClient(ctx, config = {}) {
     discard,
     acceptIdentity,
     dispose,
+    attachToolRegistrar: (registrar) => {
+      agentToolRegistrar = typeof registrar === 'function' ? registrar : null
+      return status()
+    },
+    setToolRegistration: (next) => {
+      if (!next || typeof next !== 'object') {
+        toolRegistration = null
+        return status()
+      }
+      toolRegistration = {
+        registered: next.registered === true,
+        attempts: Number.isFinite(Number(next.attempts)) ? Number(next.attempts) : 0,
+        lastError: next.lastError == null ? null : String(next.lastError).slice(0, 160),
+        at: next.at ?? null,
+        scopes: Array.isArray(next.scopes)
+          ? next.scopes.filter((scope) => typeof scope === 'string').slice(0, 8) : [],
+      }
+      return status()
+    },
     bind: (sessionId) => {
       if (disposed) throw new Error('client disposed')
       const target = String(sessionId ?? '').trim() || null
@@ -3261,12 +3399,8 @@ export function registerInboxCommand(ctx, client) {
   }
 }
 
-export function apply(ctx, config = {}) {
-  const client = createInboxClient(ctx, config)
-  const tools = ctx?.tools ?? ctx?.get?.('tools')
-  if (tools?.register) {
-    const register = (definition) => ctx.effect(() => tools.register(definition))
-    register({
+function inboxToolDefinition(client) {
+  return {
       name: 'bma3_inbox',
       description:
         '查看/修改当前会话的 inbox 挂载状态。action=status 返回绑定会话、SSE 连接、游标、暂停标志、'
@@ -3377,7 +3511,113 @@ export function apply(ctx, config = {}) {
           }, null, 2),
         }
       },
-    })
+    }
+}
+
+/**
+ * Register the model-facing `bma3_inbox` tool in every scope we can reach. DSH may expose the
+ * profile tools registry before an agent exists, and a preset/agent scope may not inherit a
+ * profile registration. Registration failure is diagnostic, not fatal: inbox/SSE/ACK keep
+ * running, and we retry the global registration while an agent-scoped registration is attempted
+ * whenever wake() resolves an agent.
+ */
+function registerInboxTool(ctx, client) {
+  let disposed = false
+  let timer = null
+  let profileDisposer = null
+  const agentDisposers = new Map()
+  const scopes = new Set()
+  const diagnostic = { registered: false, attempts: 0, lastError: null, at: null, scopes: [] }
+  const delayFor = (attempt) => Math.min(250 * (2 ** Math.max(0, attempt - 1)), 2000)
+  const publish = (lastError = diagnostic.lastError) => {
+    diagnostic.lastError = lastError
+    diagnostic.scopes = [...scopes]
+    if (typeof client?.setToolRegistration === 'function') {
+      diagnostic.at = new Date().toISOString()
+      client.setToolRegistration(diagnostic)
+    }
+  }
+  const getTools = (holder) => {
+    try {
+      return holder?.tools ?? holder?.get?.('tools')
+    } catch {
+      return undefined
+    }
+  }
+  const remember = (scope, dispose) => {
+    scopes.add(scope)
+    diagnostic.registered = true
+    diagnostic.lastError = null
+    publish(null)
+    return dispose
+  }
+  const attemptProfile = () => {
+    if (disposed || scopes.has('profile')) return true
+    diagnostic.attempts += 1
+    const tools = getTools(ctx)
+    if (!tools?.register) {
+      publish('tools_service_unavailable')
+    } else {
+      try {
+        const dispose = tools.register(inboxToolDefinition(client))
+        profileDisposer = typeof dispose === 'function' ? dispose : null
+        remember('profile', profileDisposer)
+        return true
+      } catch (error) {
+        publish('tool_register_failed')
+      }
+    }
+    if (diagnostic.attempts < 12) {
+      timer = setTimeout(() => {
+        timer = null
+        attemptProfile()
+      }, delayFor(diagnostic.attempts))
+      timer.unref?.()
+    }
+    return false
+  }
+  const registerAgent = (agent) => {
+    if (disposed || !agent) return false
+    const id = String(agent.id ?? '').trim()
+    if (!id) return false
+    const scope = 'agent:' + id
+    if (scopes.has(scope)) return true
+    const tools = getTools(agent.ctx)
+    if (!tools?.register) return false
+    try {
+      const dispose = tools.register(inboxToolDefinition(client))
+      if (typeof dispose === 'function') agentDisposers.set(id, dispose)
+      remember(scope, dispose)
+      return true
+    } catch {
+      publish('agent_tool_register_failed')
+      return false
+    }
+  }
+  const dispose = () => {
+    disposed = true
+    if (timer) clearTimeout(timer)
+    timer = null
+    for (const disposeAgent of agentDisposers.values()) {
+      try { disposeAgent() } catch { /* already gone */ }
+    }
+    agentDisposers.clear()
+    if (typeof profileDisposer === 'function') {
+      try { profileDisposer() } catch { /* already gone */ }
+    }
+    profileDisposer = null
+  }
+  attemptProfile()
+  publish()
+  return { registerAgent, dispose, status: () => ({ ...diagnostic, scopes: [...scopes] }) }
+}
+
+export function apply(ctx, config = {}) {
+  const client = createInboxClient(ctx, config)
+  const toolRegistration = registerInboxTool(ctx, client)
+
+  if (typeof client.attachToolRegistrar === 'function') {
+    client.attachToolRegistrar(toolRegistration.registerAgent)
   }
 
   // Slash-command surface: /inbox status|bind|unbind|detach|... (D-057).
@@ -3398,6 +3638,9 @@ export function apply(ctx, config = {}) {
       ctx?.logger?.('bma3-dsh')?.warn?.(`inbox start failed: ${error?.message ?? error}`)
     }
   }
-  ctx?.effect?.(() => () => client.dispose())
+  ctx?.effect?.(() => () => {
+    toolRegistration.dispose()
+    client.dispose()
+  })
   return client
 }

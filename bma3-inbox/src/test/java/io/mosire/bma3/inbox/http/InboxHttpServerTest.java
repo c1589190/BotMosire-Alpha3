@@ -314,6 +314,45 @@ class InboxHttpServerTest {
         }
     }
 
+    @Test
+    void heartbeatDiagnosticsRoundTripAndRestoreControlIsDeliveredOnNextHeartbeat() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("heartbeat.db"))) {
+            InboxService service = new InboxService(store,
+                    new DeliveryPolicy(200, Duration.ofSeconds(1), Duration.ofSeconds(30)));
+            InboxHttpServer server = new InboxHttpServer("127.0.0.1", 0, "bma3", "token", service);
+            try {
+                server.start();
+                String heartbeatBody = "{\"sessionId\":\"session-1\",\"bound\":true,"
+                        + "\"sse\":\"open\",\"lastPushRevision\":9,"
+                        + "\"tokenSource\":\"env-file\",\"tokenOk\":true,"
+                        + "\"diagnostics\":{\"version\":\"0.0.7-hotfix1\","
+                        + "\"toolRegistration\":{\"registered\":false,"
+                        + "\"attempts\":2,\"lastError\":\"tools_service_unavailable\"}}}";
+                HttpResponse<String> heartbeat = post(
+                        base(server) + "/v1/inboxes/bma3/plugin/heartbeat", "token",
+                        heartbeatBody);
+                assertThat(heartbeat.statusCode()).as(heartbeat.body()).isEqualTo(200);
+
+                HttpResponse<String> plugin = get(base(server) + "/v1/inboxes/bma3/plugin", "token");
+                JsonNode pluginBody = mapper.readTree(plugin.body());
+                assertThat(pluginBody.path("heartbeat").path("diagnostics").path("version").asText())
+                        .isEqualTo("0.0.7-hotfix1");
+                assertThat(pluginBody.path("heartbeat").path("diagnostics")
+                        .path("toolRegistration").path("registered").asBoolean()).isFalse();
+
+                service.requestControl("restore", "session-9", "test restore");
+                HttpResponse<String> next = post(
+                        base(server) + "/v1/inboxes/bma3/plugin/heartbeat", "token",
+                        heartbeatBody);
+                JsonNode nextBody = mapper.readTree(next.body());
+                assertThat(nextBody.path("control").path("action").asText()).isEqualTo("restore");
+                assertThat(nextBody.path("control").path("sessionId").asText()).isEqualTo("session-9");
+            } finally {
+                server.close();
+            }
+        }
+    }
+
     private HttpResponse<String> get(String url, String token) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url)).GET();
         if (token != null) {

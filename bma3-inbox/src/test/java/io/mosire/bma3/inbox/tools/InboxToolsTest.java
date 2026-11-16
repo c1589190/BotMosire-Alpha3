@@ -13,6 +13,7 @@ import io.mosire.agentlib.tool.ToolResult;
 import io.mosire.bma3.inbox.core.AppendItem;
 import io.mosire.bma3.inbox.core.DeliveryPolicy;
 import io.mosire.bma3.inbox.core.InboxService;
+import io.mosire.bma3.inbox.core.PluginHeartbeat;
 import io.mosire.bma3.inbox.core.SqliteInboxStore;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -55,7 +56,8 @@ class InboxToolsTest {
             List<AgentTool> tools = InboxTools.all(service(store));
             assertThat(tools).extracting(AgentTool::name).containsExactly(
                     "inbox_status", "inbox_list", "inbox_items", "inbox_get",
-                    "inbox_ack", "inbox_dismiss", "inbox_wait");
+                    "inbox_ack", "inbox_dismiss", "inbox_wait", "inbox_diagnose",
+                    "inbox_plugin_control");
         }
     }
 
@@ -175,6 +177,38 @@ class InboxToolsTest {
             ToolResult manual = tool(tools, "inbox_ack").execute(call(Map.of()));
             assertThat(manual.success()).as(manual.message()).isTrue();
             assertThat(service.panel().items()).isEmpty();
+        }
+    }
+
+    @Test
+    void diagnoseAndPluginControlExposeHeartbeatWithoutBodyOrCredentials() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("diagnose.db"))) {
+            InboxService service = service(store);
+            service.pluginHeartbeat(new PluginHeartbeat(
+                    "session-1", true, "open", 7L, "mcp-1", "", "", "env-file", true,
+                    Instant.now(), Map.of(
+                            "version", "0.0.7-hotfix1",
+                            "toolRegistration", Map.of("registered", false,
+                                    "attempts", 2, "lastError", "tools_service_unavailable"))));
+            List<AgentTool> tools = InboxTools.all(service, "0.0.7-hotfix1");
+
+            JsonNode diagnose = mapper.readTree(tool(tools, "inbox_diagnose")
+                    .execute(call(Map.of())).message());
+            assertThat(diagnose.path("version").asText()).isEqualTo("0.0.7-hotfix1");
+            assertThat(diagnose.path("heartbeat").path("sessionId").asText())
+                    .isEqualTo("session-1");
+            assertThat(diagnose.path("heartbeat").path("diagnostics").path("version").asText())
+                    .isEqualTo("0.0.7-hotfix1");
+            assertThat(diagnose.toString()).doesNotContain("SECRET_BODY", "Bearer", "Cookie");
+
+            ToolResult controlResult = tool(tools, "inbox_plugin_control")
+                    .execute(call(Map.of("action", "restore", "sessionId", "session-9")));
+            assertThat(controlResult.success()).as(controlResult.message()).isTrue();
+            JsonNode control = mapper.readTree(controlResult.message());
+            assertThat(control.path("control").path("action").asText()).isEqualTo("restore");
+            assertThat(control.path("control").path("sessionId").asText()).isEqualTo("session-9");
+            assertThat(service.pendingControl().action()).isEqualTo("restore");
+            assertThat(service.pendingControl().sessionId()).isEqualTo("session-9");
         }
     }
 

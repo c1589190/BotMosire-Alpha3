@@ -477,6 +477,11 @@ public final class InboxHttpServer implements AutoCloseable {
     private Map<String, Object> handleHeartbeat(HttpExchange exchange) throws IOException {
         byte[] body = exchange.getRequestBody().readAllBytes();
         var node = body.length == 0 ? mapper.createObjectNode() : mapper.readTree(body);
+        java.util.Map<String, Object> diagnostics = node.has("diagnostics")
+                && node.get("diagnostics").isObject()
+                ? mapper.convertValue(node.get("diagnostics"),
+                        new com.fasterxml.jackson.core.type.TypeReference<>() { })
+                : java.util.Map.of();
         PluginHeartbeat heartbeat = new PluginHeartbeat(
                 node.path("sessionId").asText(""),
                 node.path("bound").asBoolean(false),
@@ -487,7 +492,7 @@ public final class InboxHttpServer implements AutoCloseable {
                 node.path("appliedControlId").asText(""),
                 node.path("tokenSource").asText("unknown"),
                 node.path("tokenOk").asBoolean(true),
-                Instant.now());
+                Instant.now(), diagnostics);
         ControlCommand control = service.pluginHeartbeat(heartbeat);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("control", control);

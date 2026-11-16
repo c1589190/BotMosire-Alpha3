@@ -320,7 +320,7 @@ public final class Bma3App implements AutoCloseable {
                     new JsonWatchdogStore(config.dataDir().resolve("watchdog")));
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(qqContext));
-            tools.addAll(InboxTools.all(inboxService));
+            tools.addAll(InboxTools.all(inboxService, Main.VERSION));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
             tools.addAll(WatchdogTools.all(watchdog));
