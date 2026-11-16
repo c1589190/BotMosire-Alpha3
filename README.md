@@ -9,6 +9,17 @@ DevMosire-iiBot 的继承与重构。**当前版本 `0.0.7-tolatest`**：Java 21
 - 当前分支：`main`（`0.0.7-tolatest`）
 - 真实 QQ/DSH/systemd 的完整生产联调仍按 `NOT_RUN` 记录，见 [`docs/agents/STATUS.md`](docs/agents/STATUS.md)。
 
+## `0.0.7-tolatest` 新功能
+
+- **Inbox 来源等待**：`inbox.wait.sources` 支持任意 source 前缀、最长匹配和热重载；未配置来源默认 `0` 秒，Agent 可自行开启。quiet 中的条目不会被其他来源的 flush 提前推走。
+- **Agent 自主等待**：MCP `inbox_wait_quiet(source/sourcePrefix, quietMs=2000, maxWaitMs=20000)` 只读等待来源安静；不 ACK、不冻结、不创建 item。`settled` 只表示来源安静，`allAckable/processable` 才表示当前返回项可处理。
+- **面板摘要**：`inbox.display.mode=full|summary|auto`；`summaryMaxCharsPerItem`、`summaryAboveItems` 可热重载；摘要模式只显示最新 entry，`inbox_get` 可用 `itemId` 或 panel `index` 展开。
+- **watchdog / 媒体诊断**：`GET /watchdog/diagnostics` 与 MCP `bma3_watchdog_diagnose` 提供无正文诊断；媒体计数包含 image/file/record/video 和下载目录统计。
+- **媒体工具**：插件 `bma3_media(filePath)` 按 image/document/audio 路由 OCR/ASR；没有 `DEEPSEEK_API_KEY` 时明确失败，不伪造识别结果。它是 BMA3 preset 工具，不在 bma3 MCP 的 68 个工具里。
+- **xvfb**：`xvfb_open_browser`、`xvfb_wait` 把“开浏览器 + 等窗口”缩短为两步；默认带 `--no-first-run`/`--no-default-browser-check`。
+- **QQ**：`qq_friend` 提供常用好友操作；`qq_provider_action` 覆盖 provider 扩展。写 action 需 `confirm=true`，发送/上传 action 永久禁止绕过消息板。
+- **升级注意**：jar 与 DSH 插件必须成对升级；先停旧写者并备份 SQLite。BMA3 preset 工具需要新 BMA3 会话或宿主重载后才能看到最新行。
+
 ## 给 Agent 的快速加载顺序
 
 看到仓库后按这个顺序做，不要先改代码：
@@ -17,7 +28,7 @@ DevMosire-iiBot 的继承与重构。**当前版本 `0.0.7-tolatest`**：Java 21
 2. 准备运行目录、`config/app.yaml` 和 token 文件；
 3. 启动 app-image，确认 MCP 和 Inbox 端口；
 4. 把 `dsh-plugin` link 进目标 DSH profile；
-5. 启动后 DSH 插件自动连接 Inbox 的单个 SSE；需要指定目标会话时调用 `bma3_inbox_bind`；
+5. 启动后 DSH 插件自动连接 Inbox 的单个 SSE；需要指定目标会话时用 `/inbox bind` 或 `bma3_inbox action=bind`；
 6. 需要 MCP 工具时，在 DSH 里添加 Bearer MCP 连接。
 
 ### 1. 下载或编译

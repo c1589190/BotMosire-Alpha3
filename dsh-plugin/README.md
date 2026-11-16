@@ -111,7 +111,7 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 
 ### 验证
 
-连上后工具以 `mcp__bma3__*` 出现（约 40 个：`inbox_*`、`qq_*`、`get_config`/`set_config`、
+连上后工具以 `mcp__bma3__*` 出现（完整配置约 68 个：`inbox_*`、`qq_*`、`xvfb_*`、`get_config`/`set_config`、
 `bma3_watchdog_*`）。最快的自检是调一次 `mcp__bma3__inbox_status`，返回 JSON 即通。
 
 ### 常见故障
@@ -138,6 +138,7 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 - 纯文本模型没有视觉能力时，先 `qq_media_view` 落盘，再 `bma3_media(filePath)`；没有 OCR key 就明确返回失败，不要根据文件名猜内容。
 - 计费随 DeepSeek 官方：OCR 1.5 元/1000 页、ASR 0.78 元/小时（限时 5 折）。
 - 出境边界：**只有 Agent 显式调这些工具时，被指定的那一个文件才发往 `api.deepseek.com`**；插件不批量、不缓存。
+- `bma3_media` 是 BMA3 preset 工具，不在 MCP 的 `mcp__bma3__*` 列表里；老会话可能保留旧 preset 行快照，需要新 BMA3 会话或宿主重载。
 - TTS 不做（D-068）。
 
 ## Inbox
