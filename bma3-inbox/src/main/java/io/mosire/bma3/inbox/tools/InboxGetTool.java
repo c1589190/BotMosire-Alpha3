@@ -69,6 +69,7 @@ public final class InboxGetTool implements AgentTool {
             body.put("omittedMessages", Math.max(0, item.totalMessages() - item.entries().size()));
             body.put("eventRevision", item.eventRevision());
             body.put("revision", item.revision());
+            body.put("frozenRevision", item.frozenRevision());
             body.put("createdAt", item.createdAt().toString());
             body.put("updatedAt", item.updatedAt().toString());
             body.put("continued", item.continued());

@@ -79,6 +79,10 @@ class InboxToolsTest {
             assertThat(detail.path("id").asText()).isEqualTo(lastId);
             assertThat(detail.path("entries")).hasSize(1);
             assertThat(detail.path("entries").get(0).path("text").asText()).isEqualTo("消息1");
+            assertThat(detail.has("frozenRevision"))
+                    .as("inbox_get must expose push eligibility for diagnostics")
+                    .isTrue();
+            assertThat(detail.path("frozenRevision").asLong()).isZero();
         }
     }
 

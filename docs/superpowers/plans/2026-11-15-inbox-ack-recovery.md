@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-15-delivery-safety-design.md` §§5–7.
 
+> **2026-11-16 hotfix:** [Inbox live recovery hotfix](2026-11-16-inbox-live-recovery-hotfix.md) 修正 fresh GET proof failure 的终态与 legacy/mixed live snapshot 恢复；本计划里「live GET 仅接受同一 frozenRevision」的约束仅继续适用于 SSE push 与 `pendingPush` 精确恢复。
+
 ## Global Constraints
 
 - Never ACK an empty/missing item list by revision; never widen or replace original IDs, revision or database identity on retry.

@@ -3,6 +3,7 @@
 > **状态**：已确认（2026-11-15，用户在收到本文设计说明后要求「开始实现吧」）；按本文范围实施。
 > **日期**：2026-11-15（UTC+8）
 > **范围**：第一批止损：QQ 文本/图片/文件的出站安全和消息板状态；DSH Inbox 已注入条目的 ACK 恢复。
+> **2026-11-16 热修复修正**：live `/panel` fresh verification 的恢复路径按 [Inbox live recovery hotfix](2026-11-16-inbox-live-recovery-hotfix.md) 修正；SSE push 与 `pendingPush` 的整批同一 `frozenRevision` 精确证明不变。
 
 ## 1. 背景和需求
 

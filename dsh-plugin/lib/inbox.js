@@ -408,7 +408,9 @@ function panelEnvelope(panel) {
   return { revision, push, items, empty: items.length === 0 }
 }
 
-function batchFromPanel(panel, targetSessionId, inboxId, targetFingerprint = null) {
+function batchFromPanel(panel, targetSessionId, inboxId, targetFingerprint = null, {
+  allowLiveSnapshot = false,
+} = {}) {
   const revision = Number(panel?.revision)
   const push = Number(panel?.pushRevision ?? revision)
   const items = Array.isArray(panel?.items) ? panel.items : []
@@ -419,11 +421,28 @@ function batchFromPanel(panel, targetSessionId, inboxId, targetFingerprint = nul
   if (!isPositiveRevision(push)) return { error: 'panel has no push revision' }
   if (!itemIds.every(isNonEmptyString)) return { error: 'panel item id is missing or empty' }
   if (new Set(itemIds).size !== itemIds.length) return { error: 'duplicate panel item id' }
-  if (!items.every((item) => isPositiveRevision(Number(item?.frozenRevision)))) {
-    return { error: 'panel item is not demonstrably frozen for a push' }
-  }
-  if (!items.every((item) => Number(item.frozenRevision) === push)) {
-    return { error: 'panel batch mixes frozen revisions' }
+  if (allowLiveSnapshot) {
+    // A live GET is a coherent current snapshot, not a push batch. Older servers may omit
+    // frozenRevision entirely, and multiple earlier pushes may legitimately leave mixed positive
+    // revisions in one unacked panel. Both are recoverable here; an explicitly unpushed item
+    // (frozenRevision=0) or partially missing metadata is still rejected, and guarded ACK remains
+    // the server-side authority for whether each item was really pushed.
+    const frozenValues = items.map((item) => item?.frozenRevision)
+    const supplied = frozenValues.filter((value) => value !== undefined && value !== null)
+    if (supplied.length !== 0 && supplied.length !== items.length) {
+      return { error: 'live panel mixes missing and present frozen metadata' }
+    }
+    if (supplied.length > 0
+      && !supplied.every((value) => isPositiveRevision(Number(value)))) {
+      return { error: 'live panel contains an explicitly unpushed item' }
+    }
+  } else {
+    if (!items.every((item) => isPositiveRevision(Number(item?.frozenRevision)))) {
+      return { error: 'panel item is not demonstrably frozen for a push' }
+    }
+    if (!items.every((item) => Number(item.frozenRevision) === push)) {
+      return { error: 'panel batch mixes frozen revisions' }
+    }
   }
   return {
     batch: {
@@ -452,6 +471,19 @@ function provableFreshPush(panel, targetFingerprint = null) {
     return { ok: false, reason: 'fresh panel mixes frozen revisions (cannot preserve one batch)' }
   }
   return { ok: true, batch: { ...batch, targetSessionId: null } }
+}
+
+/**
+ * A live GET after ACK may recover a coherent current panel even when it spans multiple earlier
+ * push revisions or comes from a server that predates frozenRevision. The ACK path still requires
+ * the server to prove every item was frozen before accepting it.
+ */
+function provableLiveSnapshot(panel, targetFingerprint = null) {
+  const shape = batchFromPanel(panel, null, panel?.inboxId, targetFingerprint, {
+    allowLiveSnapshot: true,
+  })
+  if (shape.error) return { ok: false, reason: shape.error }
+  return { ok: true, batch: { ...shape.batch, targetSessionId: null } }
 }
 
 function ackProof(body, pending) {
@@ -1493,10 +1525,11 @@ export function createInboxClient(ctx, config = {}) {
     persist()
   }
 
-  const pendingPushFromPanel = (panel, source) => {
+  const pendingPushFromPanel = (panel, source, options = {}) => {
     if (!source) return null
     if (panel?.inboxId && String(panel.inboxId) !== source.inboxId) return null
-    const shape = batchFromPanel(panel, state.targetSessionId, source.inboxId, source.fingerprint)
+    const shape = batchFromPanel(panel, state.targetSessionId, source.inboxId, source.fingerprint,
+      options)
     if (shape.error) return null
     return {
       inboxId: source.inboxId,
@@ -1517,9 +1550,9 @@ export function createInboxClient(ctx, config = {}) {
     : null)
 
   /** Persist the verified-but-not-injected push before clearing the verification diagnostic. */
-  const commitVerifiedPush = (panel, source) => {
+  const commitVerifiedPush = (panel, source, options = {}) => {
     if (state.pendingAck || state.injectionIntent) return false
-    const candidate = pendingPushFromPanel(panel, source)
+    const candidate = pendingPushFromPanel(panel, source, options)
     if (!candidate) {
       state.lastError = 'panel_not_injectable'
       persist()
@@ -1551,7 +1584,9 @@ export function createInboxClient(ctx, config = {}) {
     }
     pendingPushProcessId = source.processId ?? connectionProcessId ?? null
     pendingPushRebaseline = false
-    pendingSource = source
+    pendingSource = options.allowLiveSnapshot === true
+      ? { ...source, allowLiveSnapshot: true }
+      : source
     return true
   }
 
@@ -1728,7 +1763,7 @@ export function createInboxClient(ctx, config = {}) {
         markFreshVerificationDone(null)
         return
       }
-      const proof = provableFreshPush(panel, target.fingerprint)
+      const proof = provableLiveSnapshot(panel, target.fingerprint)
       if (!proof.ok) {
         state.deferredPush = {
           revision: envelope.revision,
@@ -1736,15 +1771,21 @@ export function createInboxClient(ctx, config = {}) {
           reason: proof.reason,
           at: new Date().toISOString(),
         }
-        markFreshVerificationDone('fresh_verify_batch_mixed')
-        state.lastError = 'fresh_verify_batch_mixed'
+        // A proof failure is a retryable observation, not a terminal ACK verdict. Marking the
+        // verification done here used to stop all recovery forever (`nextAt=null`), leaving the
+        // push watermark frozen with new items still on the server.
+        current.lastError = 'fresh_verify_batch_mixed'
+        current.nextAt = Date.now() + verifyRetryDelayFor(current.attempts)
+        state.lastError = current.lastError
+        persist()
+        requestVerifyRetry(current.attempts)
         return
       }
       if (!commitVerifiedPush(panel, {
         inboxId: expectedInbox,
         fingerprint: expectedFingerprint,
         processId: pendingAckProcessId ?? connectionProcessId ?? null,
-      })) {
+      }, { allowLiveSnapshot: true })) {
         return
       }
       pending = panel
@@ -1752,6 +1793,7 @@ export function createInboxClient(ctx, config = {}) {
         inboxId: expectedInbox,
         fingerprint: expectedFingerprint,
         processId: pendingPushProcessId ?? null,
+        allowLiveSnapshot: true,
       }
     } catch (error) {
       if (disposed || stopped || generation !== operation || controlEpoch !== controlAtStart) return
@@ -1978,8 +2020,9 @@ export function createInboxClient(ctx, config = {}) {
         return handleConnectionInstanceFailure('mismatch', panel)
       }
     }
+    const allowLiveSnapshot = source.allowLiveSnapshot === true
     const shape = batchFromPanel(panel, targetSessionId,
-      source.inboxId, source.fingerprint)
+      source.inboxId, source.fingerprint, { allowLiveSnapshot })
     if (shape.error) {
       state.lastError = `panel: ${shape.error}`
       persist()
@@ -1988,7 +2031,7 @@ export function createInboxClient(ctx, config = {}) {
     const { batch, revision, push } = shape
     if (push <= state.injectedPushRevision) return false
     if (state.pendingPush) {
-      const candidate = pendingPushFromPanel(panel, source)
+      const candidate = pendingPushFromPanel(panel, source, { allowLiveSnapshot })
       if (!candidate || !samePendingPush(state.pendingPush, candidate)) {
         state.lastError = 'pending_push_mismatch'
         pending = null

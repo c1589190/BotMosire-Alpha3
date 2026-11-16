@@ -388,7 +388,94 @@ test('a live GET panel with unpushed items is not injected as though it were a p
   }
 })
 
-test('a live GET panel with mixed frozen revisions is not split or injected', async () => {
+test('a live GET panel with mixed frozen revisions is recovered as one coherent snapshot', async () => {
+  const { stateFile } = tempState()
+  const messages = []
+  const agent = agentRecorder('session-1', messages)
+  let ackCount = 0
+  const server = fakeInbox({
+    ack: async (body) => {
+      ackCount += 1
+      if (ackCount >= 2) {
+        server.livePanel = panel({ revision: 3, pushRevision: 2, items: [] })
+      }
+      return ackComplete(body)
+    },
+  })
+  server.livePanel = panel({
+    revision: 2,
+    pushRevision: 2,
+    items: [
+      item('itm-old-frozen', { frozenRevision: 1 }),
+      item('itm-new-frozen', { frozenRevision: 2 }),
+    ],
+  })
+  const client = createInboxClient(ctxFor(agent), config(server, stateFile, {
+    verifyRetryBaseMs: 15,
+    verifyRetryMaxMs: 30,
+  }))
+  try {
+    client.start()
+    server.push(panel({
+      revision: 1, pushRevision: 1,
+      items: [item('itm-first', { frozenRevision: 1 })],
+    }))
+    await waitFor(() => server.state.ackBodies.length >= 2
+      && client.status().pendingAck === null, 'live recovery snapshot ACKed')
+    assert.equal(messages.length, 2)
+    assert.match(messages[1].message.content[0].text, /itm-old-frozen|itm-new-frozen/u)
+    assert.deepEqual(server.state.ackBodies[1].itemIds,
+      ['itm-old-frozen', 'itm-new-frozen'])
+    await waitFor(() => client.status().freshVerification?.required === false, 'post-recovery verify')
+    assert.equal(server.state.ackCalls, 2)
+  } finally {
+    client.dispose()
+  }
+})
+
+test('a live GET without frozenRevision is recovered as a legacy snapshot', async () => {
+  const { stateFile } = tempState()
+  const messages = []
+  const agent = agentRecorder('session-1', messages)
+  const legacyItem = item('itm-live-legacy', { body: 'LEGACY_LIVE_BODY' })
+  delete legacyItem.frozenRevision
+  let ackCount = 0
+  const server = fakeInbox({
+    ack: async (body) => {
+      ackCount += 1
+      if (ackCount >= 2) {
+        server.livePanel = panel({ revision: 3, pushRevision: 2, items: [] })
+      }
+      return ackComplete(body)
+    },
+  })
+  server.livePanel = panel({
+    revision: 2,
+    pushRevision: 2,
+    items: [legacyItem],
+  })
+  const client = createInboxClient(ctxFor(agent), config(server, stateFile, {
+    verifyRetryBaseMs: 15,
+    verifyRetryMaxMs: 30,
+  }))
+  try {
+    client.start()
+    server.push(panel({
+      revision: 1, pushRevision: 1,
+      items: [item('itm-first', { frozenRevision: 1 })],
+    }))
+    await waitFor(() => server.state.ackBodies.length >= 2
+      && client.status().pendingAck === null, 'legacy live snapshot ACKed')
+    assert.equal(messages.length, 2)
+    assert.match(messages[1].message.content[0].text, /LEGACY_LIVE_BODY/u)
+    assert.deepEqual(server.state.ackBodies[1].itemIds, ['itm-live-legacy'])
+    await waitFor(() => client.status().freshVerification?.required === false, 'post-legacy verify')
+  } finally {
+    client.dispose()
+  }
+})
+
+test('fresh verification proof failure retries instead of becoming terminal', async () => {
   const { stateFile } = tempState()
   const messages = []
   const agent = agentRecorder('session-1', messages)
@@ -397,23 +484,27 @@ test('a live GET panel with mixed frozen revisions is not split or injected', as
     livePanel: panel({
       revision: 2,
       pushRevision: 2,
-      items: [
-        item('itm-old-frozen', { frozenRevision: 1 }),
-        item('itm-new-frozen', { frozenRevision: 2 }),
-      ],
+      items: [item('itm-unpushed-live', { frozenRevision: 0 })],
     }),
   })
-  const client = createInboxClient(ctxFor(agent), config(server, stateFile))
+  const client = createInboxClient(ctxFor(agent), config(server, stateFile, {
+    verifyRetryBaseMs: 20,
+    verifyRetryMaxMs: 40,
+  }))
   try {
     client.start()
     server.push(panel({
       revision: 1, pushRevision: 1,
       items: [item('itm-first', { frozenRevision: 1 })],
     }))
-    await waitFor(() => messages.length === 1 && client.status().pendingAck === null, 'first push ACKed')
-    await new Promise((resolve) => setTimeout(resolve, 120))
-    assert.equal(messages.length, 1, 'mixed batches must not be split')
-    assert.match(String(client.status().deferredPush?.reason ?? ''), /frozen|mixed|batch/i)
+    await waitFor(() => client.status().freshVerification?.required === true
+      && client.status().freshVerification?.attempts >= 2, 'fresh verification retry')
+    const verification = client.status().freshVerification
+    assert.equal(verification.lastError, 'fresh_verify_batch_mixed')
+    assert.ok(Number.isFinite(verification.nextAt), 'retry has a finite nextAt')
+    assert.ok(server.state.getPanelCalls >= 2, 'GET is actually retried')
+    assert.equal(messages.length, 1, 'an explicitly unpushed live item is not injected')
+    assert.equal(server.state.ackCalls, 1, 'only the original push was ACKed')
   } finally {
     client.dispose()
   }

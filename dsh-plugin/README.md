@@ -235,12 +235,16 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
    `verifyRetryBaseMs`/`verifyRetryMaxMs`）。409（身份、条目缺失/未推送、revision 冲突）和
    部分证明保留记录并停止自动重试。
 5. 待 ACK 期间不注入新面板；确认 ACK 并持久化删除后，先 GET 一次新鲜 `/panel` 校验身份与
-   已确认条目，只有「同一次更新、全部条目都带同一 `frozenRevision`」的可证明 push 才会注入。
-   fresh GET 固定使用 ACK 记录对应的 inboxId/目标指纹；当前配置的 inboxId/baseUrl 变了就
-   fail-closed（`fresh_inbox_id_mismatch`/`fresh_base_url_mismatch`），不重定向。该同批冻结
-   证明同时适用于 SSE push 与重连 live snapshot：混合 `frozenRevision` 的面板绝不合并成一次
-   push，只留诊断。live GET 里的未冻结条目**不会**被当成 push。无法安全重建的 push 只留持久化
-   诊断，**不会自动重放**；请人工核对消息板后再处理后续 push。
+   已确认条目。fresh GET 固定使用 ACK 记录对应的 inboxId/目标指纹；当前配置的 inboxId/baseUrl
+   变了就 fail-closed（`fresh_inbox_id_mismatch`/`fresh_base_url_mismatch`），不重定向。
+   - **SSE push 与 `pendingPush` 精确恢复**：仍要求整批条目同一 `frozenRevision=pushRevision`；
+     混合/缺失证明只留诊断，不会拆批或错误 ACK。
+   - **live `/panel` 恢复快照**：GET 的是当前 coherent 面板，不是新 push。若所有条目都显式
+     `frozenRevision>0`（允许混合 revision），或旧服务端整批省略该字段，可作为一次恢复快照注入
+     并由 guarded ACK 确认；显式 `frozenRevision=0`、部分缺失或非法 revision 拒绝注入。
+   - **重试**：fresh verification 的 proof 失败属于可重试观察，必须保留 `required=true`、写入
+     有限 `nextAt` 并按 `verifyRetryBaseMs`/`verifyRetryMaxMs` 退避重试；不得再出现
+     `done + nextAt=null` 的永久卡死。ACK 409 或服务端拒绝未推送条目仍保留原记录，不自动重放。
 6. `stop` / `unbind` / `detach` 会停止新的自动 ACK 重试并取消在途 ACK/GET（崩溃/对端不接受
    取消时不能保证撤回已发出的字节）；`start` / `bind` 后恢复。`pause` 只暂停注入，ACK 恢复继续。
 7. `followup` 抛错或成功后快照写失败会留下「注入意图」这一不确定记录：不自动重投、不 ACK，
@@ -276,6 +280,8 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
   有未处置记录时会拒绝。目标 baseUrl 含 userinfo/query/fragment 时该操作也会安全失败。
 - `deferredPush` 与 `freshVerification`（尝试次数/安全错误码）会随 v2 快照保存，重启后
   `/inbox status` 仍可看到；不会因重启而静默消失。
+- `inbox_get` 现在显式返回 `frozenRevision`（未推送为 0），便于区分「已推送待 ACK」与「尚未冻结」；
+  该字段是诊断/证明元数据，不是 Agent 可编辑的业务状态。
 - 错误文本只保存有界分类码（如 `ack_timeout`、`ack_http_409_...`、`state_write_failed`、
   `pending_inbox_id_mismatch`、`pending_base_url_mismatch`、`config_target_unsupported`），
   不保存远端响应正文、异常 message、原始 baseUrl/userinfo/query、面板正文或 token。
