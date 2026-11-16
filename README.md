@@ -6,7 +6,7 @@ DevMosire-iiBot 的继承与重构。**当前版本 `0.0.7-tolatest`**：Java 21
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
-- 当前测试分支：`feat/0.0.7-hotfix2`
+- 当前分支：`main`（`0.0.7-tolatest`）
 - 真实 QQ/DSH/systemd 的完整生产联调仍按 `NOT_RUN` 记录，见 [`docs/agents/STATUS.md`](docs/agents/STATUS.md)。
 
 ## 给 Agent 的快速加载顺序

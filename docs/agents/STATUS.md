@@ -2,6 +2,19 @@
 
 ## 当前目标 / 进行中范围
 
+**2026-11-16 23:33 —— 0.0.7-tolatest 正式版本已发布并合并到 main**。用户要求发布为 `0.0.7-tolatest`、完善文档并合并到 `main`。
+
+- **版本 / 分支 / 提交 / tag**：版本统一为 `0.0.7-tolatest`；提交 `c35f132`；tag `v0.0.7-tolatest` → `c35f132`；`main` fast-forward 到 `c35f132` 并推送；`feat/0.0.7-hotfix2` 同步推送。
+- **Release**：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest>（**正式 Release，非 Pre-release**）。
+- **资产**：
+  - `botmosire-a3-linux-x86_64.tar.gz`（sha256 `e32cfaef976b58cc4627ed474c53d07d6f10d0c77323b054fa3ed7b6e9c372c1`）
+  - `mosire-bma3-dsh-0.0.7-tolatest.tgz`（sha256 `0f107e35d409d3df5cb2218e9c796d1134aa2498d905875a9c20f968b96cf414`）
+  - 两个 `.sha256` 与 `SHA256SUMS`；回下载 `sha256sum -c` PASS，app-image/插件版本均为 `0.0.7-tolatest`。
+- **门禁**：Java `./mvnw -q -o test` rc=0，**329 tests / 0 failures / 0 errors / 1 skipped**；插件 `npm test` rc=0，**167 pass / 0 fail**；`packaging/smoke.sh` PASS；完整配置 MCP 68 工具 / 15 探针。
+- **本版内容**：来源等待（任意 source 前缀、热重载、Agent 可配）、`inbox_wait_quiet`（2s 默认、只读、`allAckable/processable`）、面板摘要与 `inbox_get(index)`、watchdog/媒体诊断、`bma3_media`、xvfb_open_browser/wait、QQ friend/provider action，以及远端 earlytest 反馈修复。
+- **文档**：README 更新为 main/0.0.7-tolatest；DSH README 更新；交接快照：[hotfix2-test2 handoff](../superpowers/status/2026-11-16-hotfix2-test2-handoff.md)。
+- **仍未验证**：新 BMA3 preset 会话中的 bma3_media/ocr/asr、真实 LLBot/provider OCR、QQ 好友写操作、B 站 xvfb 登录态、systemd、掉电/升级回滚均 `NOT_RUN`。正式版本已入 main，但真实联调证据不能冒充通过。
+
 **2026-11-16 22:50 —— 远端 test2 debug 检查完成（插件版本不一致，待重载）**。用户应用 `0.0.7-hotfix2-test2` 后用 debug HTTP 检查。
 
 - **远端状态**：jar `/debug/snapshot` = `0.0.7-hotfix2-test2`，但插件 heartbeat `diagnostics.version` 仍是 `0.0.7-hotfix2-earlytest`（toolRegistration at 14:05:16，早于 jar 14:40 重启）⇒ **jar 更新不会重载 DSH 插件，需要重启 DSH/插件级 reload**。
