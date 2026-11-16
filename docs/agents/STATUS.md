@@ -2,14 +2,24 @@
 
 ## 当前目标 / 进行中范围
 
-**2026-11-16 —— DSH 绑定自愈 / `bma3_inbox` 注册 / 一屏诊断已实现（工作树，未提交未发布）**。用户根据远程 Agent 反馈确认「绑定自愈 + `bma3_inbox` 可靠注册 + 一屏诊断」后回复「开始吧」。设计与计划：[spec](../superpowers/specs/2026-11-16-binding-tool-diagnostics-design.md)、[plan](../superpowers/plans/2026-11-16-binding-tool-diagnostics.md)。
+**2026-11-16 20:26 —— 0.0.7-test1 测试 Pre-release 已发布（独立测试分支）**。用户要求「先提交并推送，然后发布 0.0.7-test1；hotfix 是相对正式的版本」。
+
+- **分支 / 提交**：测试分支 `test/inbox-binding-tools-20261116`；功能提交 `6a9ba4c`，测试版本提交 `297ff54`；已推送 origin。正式分支 `feat/bma3-plan-1` 未被本次测试发布改写。
+- **tag / Release**：tag `v0.0.7-test1` → `297ff54`；<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-test1>（Pre-release，标题带 `[TEST]`）。
+- **内容**：绑定自愈（首次 idle 绑定持久化、legacy pendingPush 目标补写、重启 restore）；`bma3_inbox` profile 重试 + agent scope 注册 + `toolRegistration` 诊断；heartbeat diagnostics；MCP `inbox_diagnose` / `inbox_plugin_control`；保留 fresh verification 有界重试。正式 hotfix 基线仍是 `v0.0.7-hotfix1`。
+- **资产**：`botmosire-a3-linux-x86_64.tar.gz`（sha256 `0350abcc…`）、`mosire-bma3-dsh-0.0.7-test1.tgz`（sha256 `f7ab5b1e…`）、两个 `.sha256` 与 `SHA256SUMS`。
+- **门禁**：Java **309 tests / 0 fail / 0 err / 1 skip**；插件 **161 pass / 0 fail**；`packaging/smoke.sh` PASS；app-image `--version` 与插件包 `package.json` 均为 `0.0.7-test1`；资产回下载 + `sha256sum -c` PASS。
+- **测试建议**：使用独立测试目录/dataDir/DSH profile/stateFile 和端口（建议 18765/18766/18767），jar 与插件成对；不要覆盖生产数据或正式 `v0.0.7-hotfix1`。
+- **未验证**：真实 DSH 中 `bma3_inbox` 可见性、自动 restore、`inbox_diagnose`/`inbox_plugin_control` 调用、真实 QQ/LLBot、远端生产部署与升级回滚，均 `NOT_RUN`。**这是测试包，不是正式 hotfix。**
+
+**2026-11-16 —— DSH 绑定自愈 / `bma3_inbox` 注册 / 一屏诊断已实现并进入测试发布**。用户根据远程 Agent 反馈确认「绑定自愈 + `bma3_inbox` 可靠注册 + 一屏诊断」后回复「开始吧」。设计与计划：[spec](../superpowers/specs/2026-11-16-binding-tool-diagnostics-design.md)、[plan](../superpowers/plans/2026-11-16-binding-tool-diagnostics.md)。
 
 - **绑定自愈**：插件首次真正选中 idle 会话时，在 followup 前把 `targetSessionId` 写入 v2 state；legacy `pendingPush.targetSessionId=null` 会在同一事务补写目标；已有目标不匹配仍 fail-closed，不会改投其它会话。
 - **工具注册**：`bma3_inbox` 定义抽成可重复注册；profile tools 不可用/抛错时有界重试，拿到具体 agent 时再尝试 `agent.ctx.tools.register`；注册状态写入 `status.toolRegistration` 和 heartbeat diagnostics，不再静默消失。
 - **心跳诊断**：插件 heartbeat 增加 `diagnostics`（插件版本、toolRegistration、deferredPush/freshVerification、pendingAck/pendingPush 计数/摘要、recentAcked 计数），服务端 `PluginHeartbeat` 保存并透出；不含正文/token/Cookie。
 - **服务端工具**：新增只读 MCP `inbox_diagnose`（jar 版本 + runtime/MCP id + inbox status + heartbeat + pending control）和 `inbox_plugin_control`（MCP 兜底 status/restore/remind，只排队既有 control，不直接 ACK/改身份/写消息）；`InboxTools.all` 从 7 个 inbox 工具变为 9 个，MCP 工具总数相应增加。
 - **本地门禁**：`./mvnw -q -o test` rc=0，**309 tests / 0 failures / 0 errors / 1 skipped**；`dsh-plugin npm test` rc=0，**161 pass / 0 fail**；`packaging/smoke.sh` PASS。聚焦覆盖：自动绑定持久化/重启、profile 延迟注册、agent-scope 注册、heartbeat 诊断、diagnostics/control 工具、`inbox_get.frozenRevision`。
-- **未验证**：真实 DSH 宿主里 `bma3_inbox` 是否最终可见、自动绑定/restore 的真实重启恢复、`inbox_diagnose`/`inbox_plugin_control` 对远端 MCP 的实际调用、真实 QQ/LLBot、远端部署均 `NOT_RUN`。**工作树未提交、未打 tag、未发布**，等待用户下一步指示。
+- **未验证**：真实 DSH 宿主里 `bma3_inbox` 是否最终可见、自动绑定/restore 的真实重启恢复、`inbox_diagnose`/`inbox_plugin_control` 对远端 MCP 的实际调用、真实 QQ/LLBot、远端部署均 `NOT_RUN`。这些改动已提交到测试分支并发布为 `v0.0.7-test1`；正式发布未合并、未打正式 tag。
 
 **2026-11-16 19:41 —— 0.0.7-hotfix1 已发布（GitHub Pre-release）**。用户转述远端现场并指令「请先修复然后发布0.0.7-hotfix1」；已修复 ACK 后 fresh verification 永久冻结。
 
