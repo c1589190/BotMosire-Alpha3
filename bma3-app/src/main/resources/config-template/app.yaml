@@ -135,6 +135,8 @@ watchdog:
   recoveryCooldownSeconds: 30
   alertCooldownSeconds: 600
   pluginHeartbeatTimeoutSeconds: 45
+  pluginHeartbeatEnabled: true  # 纯 MCP、不使用 DSH 插件时设为 false
+  pushBacklogEnabled: true       # 无 SSE 推送消费者的纯 MCP 模式可设为 false
   diskMinFreeMb: 200
   readyzCritical: [mcp, inboxHttp, qqAccount, db]
 

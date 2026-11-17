@@ -25,8 +25,11 @@ run/
 # Secrets and local config
 .env
 .env.*
+.bma3env
+.bma3env.*
 *.env
 *.local.json
+/config/app.yaml
 config/local/
 config/**/bot.json
 secrets/

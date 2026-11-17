@@ -8,6 +8,7 @@
 | M-001 | 2026-11-09 | 本会话用户消息 | 「从隔壁的DevMosire-iiBot了解隔壁项目基本情况」<br>「这个先把规矩立住了写代码才不烧心，从隔壁抄一下AGENTS.md和文档系统规范先，不要急着写代码，等我描述需求」 | 根 `AGENTS.md`；`docs/AGENTS.md`；`docs/agents/**`；本次初始化提交 |
 | M-002 | 2026-11-10 | 本会话用户消息 | 「裁定项不要只列决定本身，要列决定所处的代码环境语义（进AGENTS.md）」<br>「AGENTS.md里是否要求文档中进用户原话？我记得我要求写过，确认一下吧」 | 设计裁定条目在 `DESIGN_RULINGS.md` 保留逐字原话；代码环境语义进专题 spec 与模块 `AGENTS.md`；根 `AGENTS.md` 只放薄红线/路由；见 `docs/AGENTS.md` §二/§九 |
 | M-003 | 2026-11-15 | 本会话用户消息 | 「开始吧。哦对了，子Agent默认使用deepseek-flash请计入AGENTS.md谢谢」 | 根 `AGENTS.md` §5；派子 Agent 默认显式选择 `deepseek-flash`，当次用户另有指定时遵从当次指令 |
+| M-004 | 2026-11-17 | 本会话用户消息 | 「可以直接在Windows上登录github，而不是要用wsl、维护一堆庞杂的工作状态！」<br>「wsl那里的本项目可能还得独立维护！」 | Windows 工作区使用 Windows 自有的 GitHub 登录、Git 和构建环境；不把 WSL 仓库、登录状态或运行实例当作本工作区依赖。WSL 中的项目可能独立维护，不修改其仓库或配置；见 [`STATUS.md`](STATUS.md) 与 [Windows MCP 草案](../superpowers/specs/2026-11-17-windows-codex-snowluma-design.md)。 |
 
 ## 落点说明
 

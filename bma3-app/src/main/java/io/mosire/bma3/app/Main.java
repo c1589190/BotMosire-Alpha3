@@ -9,7 +9,7 @@ import java.util.concurrent.CountDownLatch;
 /** CLI entry point used by the jpackage launcher. */
 public final class Main {
 
-    public static final String VERSION = "0.0.7-tolatest";
+    public static final String VERSION = "0.0.8-SNAPSHOT";
 
     private Main() {
     }
@@ -51,6 +51,9 @@ public final class Main {
         }
         if (rotateToken) {
             Bma3Env rotated = Bma3Env.ensure(Bma3Env.resolve(config, root), true);
+            if (rotated.degraded()) {
+                throw new IllegalStateException("无法安全轮换 token 文件: " + rotated.file());
+            }
             System.out.println("token 已轮换: " + rotated.file() + "（插件需重连）");
         }
         Bma3App app = Bma3App.start(config, System.getenv(), root);

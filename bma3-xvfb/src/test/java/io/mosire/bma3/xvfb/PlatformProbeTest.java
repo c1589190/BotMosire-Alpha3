@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 class PlatformProbeTest {
 
@@ -26,6 +28,7 @@ class PlatformProbeTest {
     }
 
     @Test
+    @EnabledOnOs(OS.LINUX)
     void whichFindsAShell() {
         assertThat(PlatformProbe.which("sh")).isNotBlank();
         assertThat(PlatformProbe.which("definitely-not-a-real-binary-xyz")).isEmpty();

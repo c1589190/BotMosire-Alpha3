@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -40,6 +42,18 @@ class SingleInstanceLockTest {
         try (SingleInstanceLock lock = SingleInstanceLock.acquire(tempDir)) {
             String owner = Files.readString(lock.file());
             assertThat(owner).contains("pid=").contains(String.valueOf(ProcessHandle.current().pid()));
+        }
+    }
+
+    @Test
+    void lockStillConflictsWithThePreviousWholeFileLock() throws Exception {
+        Path file = tempDir.resolve(SingleInstanceLock.LOCK_FILE);
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.CREATE,
+                StandardOpenOption.READ, StandardOpenOption.WRITE);
+             var legacyLock = channel.lock()) {
+            assertThatThrownBy(() -> SingleInstanceLock.acquire(tempDir))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("已有 BMA3 实例");
         }
     }
 }

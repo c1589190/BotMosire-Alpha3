@@ -123,6 +123,8 @@ final class ConfigView {
         watchdog.put("alertCooldownSeconds", config.watchdog().alertCooldownSeconds());
         watchdog.put("pluginHeartbeatTimeoutSeconds",
                 config.watchdog().pluginHeartbeatTimeoutSeconds());
+        watchdog.put("pluginHeartbeatEnabled", config.watchdog().pluginHeartbeatEnabled());
+        watchdog.put("pushBacklogEnabled", config.watchdog().pushBacklogEnabled());
         watchdog.put("diskMinFreeMb", config.watchdog().diskMinFreeMb());
         watchdog.set("readyzCritical", JSON.valueToTree(config.watchdog().readyzCritical()));
 

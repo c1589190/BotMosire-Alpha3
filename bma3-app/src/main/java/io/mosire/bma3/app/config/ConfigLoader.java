@@ -206,7 +206,9 @@ public final class ConfigLoader {
                         watchdog.path("diskMinFreeMb").asLong(200),
                         readyzCritical.isEmpty()
                                 ? AppConfig.Watchdog.defaults().readyzCritical()
-                                : readyzCritical),
+                                : readyzCritical,
+                        watchdog.path("pluginHeartbeatEnabled").asBoolean(true),
+                        watchdog.path("pushBacklogEnabled").asBoolean(true)),
                 new AppConfig.Xvfb(
                         xvfb.path("enabled").asBoolean(true),
                         text(xvfb, "workspaceRoot", ""),

@@ -40,7 +40,8 @@ class QqToolsTest {
 
     @Test
     void readsAcksAndSendsThroughTheAccountRegistry() throws Exception {
-        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot.db"))) {
+        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("bot.db"));
+             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras.db"))) {
             SourceAddress source = SourceAddress.parse("qq_private/bot-1/20002");
             board.append(new InboundMessage(source, "m1", Instant.now(),
                     List.of(new Segment("text", "hello")), Direction.INBOUND));
@@ -50,7 +51,6 @@ class QqToolsTest {
             registry.reconcile(List.of(new AccountConfig(
                     "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
 
-            QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras.db"));
             QqToolContext context = new QqToolContext(registry, board, board, tempDir, extras);
             List<AgentTool> tools = QqTools.all(context);
             assertThat(tools).extracting(AgentTool::name)

@@ -1,13 +1,15 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。**当前版本 `0.0.7-tolatest`**：Java 21 独立服务 + QQ OneBot 11 + Inbox + MCP + Selenium 浏览器工具 + **Xvfb 虚拟桌面（Computer Use）** + DSH 薄插件 + jlink/jpackage 安装骨架。
+DevMosire-iiBot 的继承与重构。当前分支为 **`0.0.8-SNAPSHOT` 开发版本**，提供 Windows 原生、纯 MCP 的 QQ 接入；最新已有发布版为 `0.0.7-tolatest`，包含 Java 21 独立服务、QQ OneBot 11、Inbox、MCP、Selenium、Xvfb 和 DSH 插件。
 
 > Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest>。本版加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；上一正式 hotfix 基线为 `v0.0.7-hotfix1`。
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
-- 当前分支：`main`（`0.0.7-tolatest`）
+- Windows / Codex 快速开始：[Windows 纯 MCP 运行指南](docs/windows-mcp.md)。
 - 真实 QQ/DSH/systemd 的完整生产联调仍按 `NOT_RUN` 记录，见 [`docs/agents/STATUS.md`](docs/agents/STATUS.md)。
+
+以下是已发布的 `0.0.7-tolatest` 功能；Windows 开发分支不要求安装 DSH 插件。
 
 ## `0.0.7-tolatest` 新功能
 

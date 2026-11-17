@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,10 +26,23 @@ class InboxPushScheduleTest {
 
     @TempDir
     Path tempDir;
+    private SqliteInboxStore store;
+
+    private SqliteInboxStore newStore(String name) {
+        store = new SqliteInboxStore(tempDir.resolve(name));
+        return store;
+    }
+
+    @AfterEach
+    void closeStore() {
+        if (store != null) {
+            store.close();
+        }
+    }
 
     private InboxService service() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"));
+        SqliteInboxStore store = newStore("inbox.db");
         return new InboxService(store, policy, "bma3", () -> new InboxRuntime(6, 6, true));
     }
 
@@ -144,7 +158,7 @@ class InboxPushScheduleTest {
         // The old pushMinPriority hard mute is gone: an item that survived dropBelow must wake
         // after the normal delay even when its score is below the immediate threshold.
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("filter.db"));
+        SqliteInboxStore store = newStore("filter.db");
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, IMMEDIATE_THRESHOLD, 30, 5000));
         append(service, "qq_group/1", 200, "低优先也要推");
@@ -160,7 +174,7 @@ class InboxPushScheduleTest {
     @Test
     void itemsBeyondThePanelWindowAreDeliveredInTheNextRoundInsteadOfVanishing() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("overflow.db"));
+        SqliteInboxStore store = newStore("overflow.db");
         // 8 sources, window of 6: the last two must NOT be marked delivered.
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
@@ -190,7 +204,7 @@ class InboxPushScheduleTest {
         // 会有新消息让 panelRevision 前进。按 itemId 精确 ack 不该因此被拒——它明确指名了
         // 自己看过哪几条，只有"这几条本身在我看到之后又变了"才算冲突。
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("ack-race.db"));
+        SqliteInboxStore store = newStore("ack-race.db");
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
         append(service, "qq_private/1", 300, "旧消息 A");
@@ -211,7 +225,7 @@ class InboxPushScheduleTest {
     void aPushedItemIsFrozenAndTheNextMessageOpensASecondItem() {
         // 1B：推送后不再续接；同源新消息另开一条，第二条带「消息更新活跃」标记。
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("frozen.db"));
+        SqliteInboxStore store = newStore("frozen.db");
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
         append(service, "qq_private/1", 300, "第一条");
@@ -253,7 +267,7 @@ class InboxPushScheduleTest {
     @Test
     void aRestartDoesNotReplayFrozenItems() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("restart.db"));
+        SqliteInboxStore store = newStore("restart.db");
         InboxService first = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));
         append(first, "qq_group/1", 300, "重启前已推送");
@@ -298,7 +312,7 @@ class InboxPushScheduleTest {
     @Test
     void panelTruncatesPerItemTextToTheConfiguredBudget() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("budget.db"));
+        SqliteInboxStore store = newStore("budget.db");
         InboxService service = new InboxService(store, policy, "bma3",
                 () -> new InboxRuntime(6, 6, true, -1000, 30, 5000, 100, 60,
                         Integer.MIN_VALUE, 1800, 200));
@@ -313,7 +327,7 @@ class InboxPushScheduleTest {
     @Test
     void sameSourceDuplicatesAreAllowedAndNeverConsolidated() {
         DeliveryPolicy policy = new DeliveryPolicy(IMMEDIATE_THRESHOLD, IMPORTANT, NORMAL);
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("duplicates.db"));
+        SqliteInboxStore store = newStore("duplicates.db");
         for (int round = 1; round <= 3; round++) {
             InboxService service = new InboxService(store, policy, "bma3",
                     () -> new InboxRuntime(6, 6, true, -1000, 30, 5000));

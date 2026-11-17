@@ -159,6 +159,11 @@ public final class Bma3App implements AutoCloseable {
         boolean authRequired = config.security().requiresToken();
         Bma3Env tokenFile = Bma3Env.ensure(Bma3Env.resolve(config, configRoot), false);
         if (tokenFile.degraded()) {
+            if (authRequired) {
+                instanceLock.close();
+                throw new ConfigException("security.auth", "无法安全创建或读取 token 文件: "
+                        + tokenFile.file());
+            }
             LOG.warn("event=token_file_write_failed file={}", tokenFile.file());
         }
         String mcpToken = authRequired ? tokenFile.mcpToken() : "";
@@ -402,16 +407,27 @@ public final class Bma3App implements AutoCloseable {
                             : ProbeResult.down("directory", "DB_UNAVAILABLE", "SELECT 1 failed")))
                     .addProbe(Probes.inboxHttp(config.server().host(), inboxHttp.boundPort(),
                             config.inbox().inboxId(), inboxToken, inboxHttp::running))
-                    .addProbe(Probes.inboxBacklog(inboxService, 120_000L))
+                    .addProbe(Probes.named("inboxBacklog", () ->
+                            current.get().watchdog().pushBacklogEnabled()
+                                    ? Probes.inboxBacklog(inboxService, 120_000L).check()
+                                    : ProbeResult.up("inboxBacklog", "disabled")))
                     .addProbe(Probes.mcp(mcp))
                     .addProbe(Probes.qqAccount(accounts))
                     .addProbe(Probes.qqZombie(accounts))
-                    .addProbe(Probes.dshPlugin(inboxService,
-                            Duration.ofSeconds(config.watchdog()
-                                    .pluginHeartbeatTimeoutSeconds())))
+                    .addProbe(Probes.named("dshPlugin", () -> {
+                        AppConfig.Watchdog settings = current.get().watchdog();
+                        if (!settings.pluginHeartbeatEnabled()) {
+                            return ProbeResult.up("dshPlugin", "disabled");
+                        }
+                        return Probes.dshPlugin(inboxService,
+                                Duration.ofSeconds(settings.pluginHeartbeatTimeoutSeconds())).check();
+                    }))
                     .addProbe(Probes.webconnect(config.webconnect().enabled(),
                             config.webconnect().binary()))
                     .addProbe(Probes.named("xvfb", () -> {
+                        if (!config.xvfb().enabled()) {
+                            return ProbeResult.up("xvfb", "disabled");
+                        }
                         var caps = io.mosire.bma3.xvfb.PlatformProbe.probe();
                         if (!caps.supported()) {
                             return ProbeResult.degraded("xvfb", caps.reason(), caps.hint());

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -18,9 +19,17 @@ class InboxSourceWaitTest {
 
     @TempDir
     Path tempDir;
+    private SqliteInboxStore store;
+
+    @AfterEach
+    void closeStore() {
+        if (store != null) {
+            store.close();
+        }
+    }
 
     private InboxService service(String db, InboxWaitPolicy waitPolicy) {
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve(db));
+        store = new SqliteInboxStore(tempDir.resolve(db));
         DeliveryPolicy delivery = new DeliveryPolicy(IMPORTANT, IMPORTANT_DELAY, NORMAL_DELAY);
         InboxRuntime runtime = new InboxRuntime(6, 6, true, -1000, 30, 5000, 1200, 60,
                 Integer.MIN_VALUE, 1800, 200, "full", 200, 8, waitPolicy);

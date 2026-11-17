@@ -1,4 +1,32 @@
-# STATUS —— 更新时间：2026-11-16 (UTC+8)
+# STATUS —— 更新时间：2026-11-17 (UTC+8)
+
+## 2026-11-17：0.0.8 实现进行中
+
+- 用户要求优先易用性和跨 OneBot provider 通用性（[D-072](../superpowers/DESIGN_RULINGS.md)）；当前会话有 Windows Computer Use 工具，本版本不实现 Xvfb 替代。实现范围见[设计](../superpowers/specs/2026-11-17-windows-codex-snowluma-design.md)与[计划](../superpowers/plans/2026-11-17-windows-codex-snowluma-plan.md)。
+- 本轮只使用 Windows 工作区、Windows Git 和原生工具链；WSL 项目独立维护，不访问其仓库、依赖或运行实例。
+- Windows 原生构建：添加 Maven wrapper 和固定上游源码及 SHA-256 的 `tools/windows/bootstrap-agentlib.ps1`；已从公开 ProjectMosire 源码构建 AgentLib `0.2.5` 并成功打包 `0.0.8-SNAPSHOT`（依赖引导不运行上游测试）。Windows 全量 `mvnw.cmd -B -ntp -fae test` rc=0，334 项、0 failures、0 errors、2 skipped；随后新增纯 MCP 推送探针设置，相关 `OptionalCapabilitiesTest,ConfigLoaderTest,SetConfigToolTest` 16 项 rc=0；最新包用 `-DskipTests package` rc=0。Linux 全量回归未运行。
+- 已实现：Windows 私有运行目录、Windows DPAPI 可选保存 OneBot 凭据、受保护的 BMA3/诊断文件、Codex 标准 HTTP MCP header helper、禁用 Xvfb/DSH 心跳时的健康语义；群请求兼容 SnowLuma 扁平数组，历史扩展区分 SnowLuma、LLBot 和未知 provider，未知分页不伪造游标。Windows 测试还修复了旧测试的 SQLite 句柄清理和 Linux 路径假设。
+- 真实只读验证：Windows 原生 BMA3 曾成功连接本机 SnowLuma；MCP 鉴权拒绝错误 token、允许正确 token；工具发现 54 项，账号状态、群/好友列表、非空群请求、消息板历史均成功。SnowLuma 群历史两页均非空、相邻页无重复。独立临时 Codex 客户端加载用户已配置的 `bma3` MCP，实际调用 `qq_account_list` 和 `qq_conversation_history` 成功；没有发送 QQ 消息。
+- 当前运行：Windows 用户目录 `%LOCALAPPDATA%/BotMosire-Alpha3` 有受 ACL 保护的运行数据，OneBot token 以当前 Windows 用户 DPAPI 加密；Codex 用户配置追加 `bma3` HTTP MCP，不含 token。SnowLuma 一度停止监听，用户重启后 BMA3 自动重连；已平滑重启为最新包，watchdog 整体 `UP`、QQ `UP`，未使用的 DSH/Xvfb/推送积压探针标为 `disabled`。重启后的 Codex 临时客户端再次实际读取账号和消息板成功；当前聊天启动时并未注册新 MCP，需新建 Codex 会话加载配置。
+- 用户明确读取 QQ 应通过 BMA3 封装的 MCP 工具，不依赖 Inbox 注入（[D-073](../superpowers/DESIGN_RULINGS.md)）。
+- 剩余限制：其他 provider 的真实实例、Linux 全量回归、SnowLuma 非空群请求的操作 flag 映射及完整媒体契约仍未验证；不实现 Codex 插件或会话自动唤醒。
+
+## 2026-11-17：0.0.8 Windows / 纯 MCP 分支
+
+- 用户确定 [D-071](../superpowers/DESIGN_RULINGS.md)：Windows 原生 BMA3 接入 SnowLuma，通过 MCP 让 Codex 按需读取 QQ；本版本不开发 Codex 专用插件或自动唤醒。范围已同步[设计草案](../superpowers/specs/2026-11-17-windows-codex-snowluma-design.md)和[实施准备](../superpowers/plans/2026-11-17-windows-codex-snowluma-plan.md)；产品代码尚未修改。
+- Windows 本地分支 `feat/0.0.8-windows-mcp` 从 `96342b0` 创建并跟踪同名远端分支；远端也在 `96342b0`，无新提交。此前工作树中的调查文档保留在 Windows 分支，尚未提交或推送。
+- GitHub 在 Windows Git Credential Manager 中以 `c1589190` 独立登录；Windows 原生 `git ls-remote` 和 `git push --dry-run` 成功。为本仓配置的 GitHub 仓库级代理为 Windows 当前系统代理 `http://127.0.0.1:10808`；没有更改全局 Git 代理。
+- 用户指出 WSL 中项目可能独立维护（[M-004](MAINTENANCE_RULINGS.md)）。本工作区后续 Git、认证、构建及运行均在 Windows 进行，不依赖或修改 WSL 仓库、登录配置、依赖缓存与运行实例。前一轮调查对 WSL 的使用仅保留为历史证据，不再作为构建方案。
+- 未验证：从本 Windows 克隆原生构建、配置并运行独立 BMA3、真实 Codex MCP 接入及实际 QQ 读取；下一步按用户要求从[实施准备](../superpowers/plans/2026-11-17-windows-codex-snowluma-plan.md)开始。
+
+## 2026-11-17：Windows / Codex / SnowLuma 调查与修改准备
+
+- 当前目标：在 Windows 克隆并定位跨平台、Codex 宿主及 SnowLuma 的问题；本轮只做调查和设计/计划草案，产品代码未修改。克隆基线 `main` / `96342b0`，remote `https://github.com/c1589190/BotMosire-Alpha3`；工作树有本轮报告、设计草案、计划和本状态文件的文档变更。
+- 真实只读验证：SnowLuma `2.2.0-node` 的 WebSocket Bearer 握手及 `get_version_info`、`get_status`、`get_login_info`、`get_group_list`、`get_friend_list`、`get_group_system_msg` 成功；Windows Java 运行 WSL 已有同版本 jar，`/healthz` 200、`qqAccount=UP`、MCP initialize/tools/list 200（61 工具，debug/schedule 关闭）。没有发送 QQ 消息。
+- 已定位：SnowLuma 群系统请求返回数组而 BMA3 只解析分类对象；历史游标和群请求 subtype/flag 存在厂商契约差异；Windows 令牌文件依赖继承 ACL、默认 `.bma3env` 未被 Git 忽略；Xvfb/DSH 探针在 Windows/Codex 情况下导致降级；DSH 的会话唤醒接口不能直接用于 Codex。
+- 本轮门禁：Windows `dsh-plugin/npm test` rc=1，167 项中 162 pass / 5 fail（4 项 POSIX chmod 故障注入、1 项 POSIX mode 断言）；Windows Java 测试 `NOT_RUN`，使用 WSL UNC Maven 缓存的尝试在仓库文件锁阶段失败。详见[调查报告](../superpowers/reports/2026-11-17-windows-codex-snowluma-survey.md)。
+- 未验证：当前克隆的 Windows 原生构建、Codex MCP 实连/自动唤醒、真实 QQ 消息入站/出站、SnowLuma 历史分页和非空群请求、Windows 安装和 Linux 全量回归。测试进程已停止；临时测试目录未能删除（自动执行策略拒绝），位置与 ACL 说明见报告。
+- 下一步：`Get-Content -Raw -Encoding utf8 docs/superpowers/specs/2026-11-17-windows-codex-snowluma-design.md`，阅读[设计草案](../superpowers/specs/2026-11-17-windows-codex-snowluma-design.md)及[实施准备](../superpowers/plans/2026-11-17-windows-codex-snowluma-plan.md)，再按用户后续要求实现并逐项验证；不要把本次握手冒充完整联调通过。
 
 ## 当前目标 / 进行中范围
 

@@ -50,7 +50,27 @@ public record AppConfig(
     public record Watchdog(boolean enabled, int intervalSeconds, int probeTimeoutMs,
                            int failureThreshold, int recoveryCooldownSeconds,
                            int alertCooldownSeconds, int pluginHeartbeatTimeoutSeconds,
-                           long diskMinFreeMb, List<String> readyzCritical) {
+                           long diskMinFreeMb, List<String> readyzCritical,
+                           boolean pluginHeartbeatEnabled, boolean pushBacklogEnabled) {
+
+        public Watchdog(boolean enabled, int intervalSeconds, int probeTimeoutMs,
+                        int failureThreshold, int recoveryCooldownSeconds,
+                        int alertCooldownSeconds, int pluginHeartbeatTimeoutSeconds,
+                        long diskMinFreeMb, List<String> readyzCritical) {
+            this(enabled, intervalSeconds, probeTimeoutMs, failureThreshold,
+                    recoveryCooldownSeconds, alertCooldownSeconds, pluginHeartbeatTimeoutSeconds,
+                    diskMinFreeMb, readyzCritical, true, true);
+        }
+
+        public Watchdog(boolean enabled, int intervalSeconds, int probeTimeoutMs,
+                        int failureThreshold, int recoveryCooldownSeconds,
+                        int alertCooldownSeconds, int pluginHeartbeatTimeoutSeconds,
+                        long diskMinFreeMb, List<String> readyzCritical,
+                        boolean pluginHeartbeatEnabled) {
+            this(enabled, intervalSeconds, probeTimeoutMs, failureThreshold,
+                    recoveryCooldownSeconds, alertCooldownSeconds, pluginHeartbeatTimeoutSeconds,
+                    diskMinFreeMb, readyzCritical, pluginHeartbeatEnabled, true);
+        }
 
         public Watchdog {
             if (intervalSeconds < 1 || intervalSeconds > 3600) {

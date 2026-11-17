@@ -22,6 +22,10 @@ public final class SingleInstanceLock implements AutoCloseable {
     /** Lock file name inside the data directory. */
     public static final String LOCK_FILE = ".bma3.lock";
 
+    // Windows enforces byte-range locks on reads too. Keep the PID text at the start readable,
+    // while overlapping the whole-file locks used by older BMA3 versions.
+    private static final long LOCK_OFFSET = 4096L;
+
     private final Path file;
     private final FileChannel channel;
     private final FileLock lock;
@@ -48,7 +52,7 @@ public final class SingleInstanceLock implements AutoCloseable {
                 StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         FileLock lock;
         try {
-            lock = channel.tryLock();
+            lock = channel.tryLock(LOCK_OFFSET, 1L, false);
         } catch (OverlappingFileLockException heldByThisJvm) {
             channel.close();
             throw new IllegalStateException("已有 BMA3 实例持有 " + file + "（同一进程内重复启动）");

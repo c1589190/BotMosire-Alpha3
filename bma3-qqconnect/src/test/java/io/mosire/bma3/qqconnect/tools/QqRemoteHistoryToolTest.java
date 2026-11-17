@@ -273,6 +273,147 @@ class QqRemoteHistoryToolTest {
         }
     }
 
+    @Test
+    void snowlumaUsesMessageIdAnchorsAndRemovesTheInclusiveBoundary() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.providerName = "SnowLuma";
+            harness.client.respondWith(seqRange(100, 3));
+            JsonNode first = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 3))).message());
+            assertThat(first.path("historyDialect").asText()).isEqualTo("snowluma");
+            assertThat(first.path("nextCursor").asText()).isEqualTo("snow:older:100");
+            assertThat(harness.client.requests.getFirst())
+                    .doesNotContainKeys("message_seq", "reverseOrder");
+
+            harness.client.respondWith(seqRange(97, 4));
+            JsonNode older = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 3,
+                    "cursor", first.path("nextCursor").asText()))).message());
+            assertThat(harness.client.requests.get(1))
+                    .containsEntry("message_id", 100L)
+                    .containsEntry("reverse_order", true)
+                    .containsEntry("count", 4);
+            assertThat(older.path("messages")).hasSize(3);
+            assertThat(older.path("messages").get(0).path("messageId").asText()).isEqualTo("97");
+            assertThat(older.path("messages").get(2).path("messageId").asText()).isEqualTo("99");
+            assertThat(older.path("prevCursor").asText()).isEqualTo("snow:newer:99");
+
+            harness.client.respondWith(seqRange(99, 4));
+            JsonNode newer = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 3,
+                    "reverseOrder", true, "cursor", older.path("prevCursor").asText()))).message());
+            assertThat(harness.client.requests.get(2)).containsEntry("reverse_order", false);
+            assertThat(newer.path("messages").get(0).path("messageId").asText()).isEqualTo("102");
+            assertThat(newer.path("messages").get(2).path("messageId").asText()).isEqualTo("100");
+        }
+    }
+
+    @Test
+    void unknownProviderCanReadFirstPageButCannotInventPagingOrTreat1200AsEmpty() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.providerName = "OtherProvider";
+            harness.client.respondWith(seqRange(100, 2));
+            ToolResult first = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 2)));
+            JsonNode body = mapper.readTree(first.message());
+            assertThat(first.success()).isTrue();
+            assertThat(body.path("pagingSupported").asBoolean()).isFalse();
+            assertThat(body.path("hasMore").isNull()).isTrue();
+            assertThat(harness.client.requests.getFirst())
+                    .doesNotContainKeys("message_seq", "message_id", "reverseOrder", "reverse_order");
+
+            ToolResult next = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "cursor", "999")));
+            assertThat(next.success()).isFalse();
+            assertThat(next.code()).isEqualTo("HISTORY_DIALECT_UNKNOWN");
+            assertThat(harness.client.requests).hasSize(1);
+
+            harness.client.respondRaw("{\"status\":\"failed\",\"retcode\":1200,\"data\":null}");
+            ToolResult failed = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692")));
+            assertThat(failed.success()).isFalse();
+            assertThat(failed.code()).isEqualTo("HISTORY_FAILED");
+        }
+    }
+
+    @Test
+    void unknownProviderOrdersByTimestampWhenAvailable() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.providerName = "OtherProvider";
+            harness.client.respondWith(seqRange(100, 3));
+            JsonNode body = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 3,
+                    "reverseOrder", true))).message());
+            assertThat(body.path("orderSupported").asBoolean()).isTrue();
+            assertThat(body.path("messages").get(0).path("messageId").asText()).isEqualTo("102");
+            assertThat(body.path("messages").get(2).path("messageId").asText()).isEqualTo("100");
+        }
+    }
+
+    @Test
+    void unknownProviderPreservesOrderWhenATimestampIsMissing() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.providerName = "OtherProvider";
+            List<Map<String, Object>> messages = seqRange(100, 2);
+            messages.getFirst().remove("time");
+            harness.client.respondWith(messages);
+            JsonNode body = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 2,
+                    "reverseOrder", true))).message());
+            assertThat(body.path("orderSupported").asBoolean()).isFalse();
+            assertThat(body.path("orderHint").asText()).isNotBlank();
+            assertThat(body.path("messages").get(0).path("messageId").asText()).isEqualTo("100");
+        }
+    }
+
+    @Test
+    void snowlumaAcceptsNegativeMessageIdsAndRejectsForeignCursors() throws Exception {
+        try (Harness harness = new Harness()) {
+            harness.client.providerName = "SnowLuma";
+            List<Map<String, Object>> messages = seqRange(100, 2);
+            messages.getFirst().put("message_id", -123);
+            harness.client.respondWith(messages);
+            JsonNode first = mapper.readTree(harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "count", 2))).message());
+            assertThat(first.path("nextCursor").asText()).isEqualTo("snow:older:-123");
+            ToolResult invalid = harness.tool().execute(call(Map.of(
+                    "chatType", "GROUP", "targetId", "955432692", "cursor", "999")));
+            assertThat(invalid.success()).isFalse();
+            assertThat(invalid.code()).isEqualTo("INVALID_ARGUMENT");
+        }
+    }
+
+    @Test
+    void detectsHistoryDialectsSeparatelyForDifferentAccounts() throws Exception {
+        try (SqliteMessageBoardStore board = new SqliteMessageBoardStore(tempDir.resolve("multi.db"));
+             QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("multi-extras.db"))) {
+            FakeClient snow = new FakeClient();
+            snow.providerName = "SnowLuma";
+            snow.respondWith(seqRange(100, 2));
+            FakeClient llbot = new FakeClient();
+            llbot.respondWith(seqRange(200, 2));
+            AccountRegistry registry = new AccountRegistry(
+                    (config, listener) -> "snow".equals(config.accountId()) ? snow : llbot,
+                    event -> { });
+            registry.reconcile(List.of(
+                    new AccountConfig("snow", URI.create("ws://127.0.0.1:3001"), "", true),
+                    new AccountConfig("llbot", URI.create("ws://127.0.0.1:3002"), "", true)));
+            QqRemoteHistoryTool tool = new QqRemoteHistoryTool(
+                    new QqToolContext(registry, board, board, tempDir, extras));
+            ToolResult snowResult = tool.execute(call(Map.of(
+                    "accountId", "snow", "chatType", "GROUP", "targetId", "10", "count", 2)));
+            ToolResult llbotResult = tool.execute(call(Map.of(
+                    "accountId", "llbot", "chatType", "GROUP", "targetId", "10", "count", 2)));
+            assertThat(mapper.readTree(snowResult.message()).path("historyDialect").asText())
+                    .isEqualTo("snowluma");
+            assertThat(mapper.readTree(llbotResult.message()).path("historyDialect").asText())
+                    .isEqualTo("llbot");
+            assertThat(snow.requests.getFirst()).doesNotContainKey("reverseOrder");
+            assertThat(llbot.requests.getFirst()).containsKey("reverseOrder");
+            registry.close();
+        }
+    }
+
     // ---- helpers ----
 
     private static void awaitRequests(FakeClient client, int expected) throws InterruptedException {
@@ -361,6 +502,7 @@ class QqRemoteHistoryToolTest {
         private String rawBody;
         private Exception failure;
         private CompletableFuture<JsonNode> held;
+        private String providerName = "LLBot";
 
         private FakeClient() {
             super(URI.create("ws://127.0.0.1:1"), "", event -> { });
@@ -396,6 +538,10 @@ class QqRemoteHistoryToolTest {
         @Override
         public CompletableFuture<JsonNode> sendAction(String action, Map<String, Object> params) {
             actions.add(action);
+            if ("get_version_info".equals(action)) {
+                return CompletableFuture.completedFuture(mapper.valueToTree(Map.of(
+                        "status", "ok", "retcode", 0, "data", Map.of("app_name", providerName))));
+            }
             // Only the history action is scripted; the registry handshake (get_login_info and
             // friends) must keep succeeding so the tool can actually reach sendAction.
             if (!action.endsWith("_msg_history")) {

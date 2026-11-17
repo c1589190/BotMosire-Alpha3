@@ -3,15 +3,15 @@ package io.mosire.bma3.app.debug;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.mosire.bma3.core.security.PrivateFiles;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
-import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,9 +25,6 @@ import org.slf4j.LoggerFactory;
 public final class DebugStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(DebugStore.class);
-    private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
-            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
-
     private final Path file;
     private final Path auditFile;
     private final ObjectMapper mapper = new ObjectMapper()
@@ -57,6 +54,7 @@ public final class DebugStore {
             return List.of();
         }
         try {
+            PrivateFiles.restrict(file);
             byte[] raw = Files.readAllBytes(file);
             if (raw.length == 0) {
                 return List.of();
@@ -73,15 +71,9 @@ public final class DebugStore {
     synchronized void save(List<DebugRequest> requests) {
         try {
             byte[] body = mapper.writeValueAsBytes(requests);
-            Path temp = file.resolveSibling(file.getFileName() + ".tmp-"
-                    + ProcessHandle.current().pid());
+            Path temp = PrivateFiles.createTemp(file);
             try {
-                Files.write(temp, body);
-                try {
-                    Files.setPosixFilePermissions(temp, OWNER_ONLY);
-                } catch (UnsupportedOperationException ignored) {
-                    // Non-POSIX filesystem.
-                }
+                Files.write(temp, body, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
                 try {
                     Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING,
                             StandardCopyOption.ATOMIC_MOVE);
@@ -91,11 +83,7 @@ public final class DebugStore {
             } finally {
                 Files.deleteIfExists(temp);
             }
-            try {
-                Files.setPosixFilePermissions(file, OWNER_ONLY);
-            } catch (IOException | UnsupportedOperationException ignored) {
-                // Best effort.
-            }
+            PrivateFiles.restrict(file);
         } catch (IOException failure) {
             throw new UncheckedIOException("写入 debug 请求失败: " + file, failure);
         }
@@ -104,16 +92,18 @@ public final class DebugStore {
     /** Append one audit line. Bodies are never passed here by construction. */
     synchronized void audit(String json) {
         try {
+            if (!Files.exists(auditFile, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    Files.createFile(auditFile);
+                } catch (java.nio.file.FileAlreadyExistsException ignored) {
+                    // Another writer created it after the existence check.
+                }
+            }
+            PrivateFiles.restrict(auditFile);
             Files.writeString(auditFile,
                     json.replace('\n', ' ') + System.lineSeparator(),
                     StandardCharsets.UTF_8,
-                    java.nio.file.StandardOpenOption.CREATE,
-                    java.nio.file.StandardOpenOption.APPEND);
-            try {
-                Files.setPosixFilePermissions(auditFile, OWNER_ONLY);
-            } catch (IOException | UnsupportedOperationException ignored) {
-                // Best effort.
-            }
+                    StandardOpenOption.WRITE, StandardOpenOption.APPEND);
         } catch (IOException failure) {
             LOG.warn("event=debug_audit_write_failed file={} error={}", auditFile,
                     failure.getClass().getSimpleName());

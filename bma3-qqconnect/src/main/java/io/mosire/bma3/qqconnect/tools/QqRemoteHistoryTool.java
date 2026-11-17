@@ -7,9 +7,14 @@ import io.mosire.agentlib.tool.ToolResult;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Codec;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -28,10 +33,8 @@ import java.util.function.LongSupplier;
  * subsequent protocol command time out. So the page size is capped at {@link #MAX_COUNT} and there
  * is <b>no "guess a smaller page" fallback</b> — a timeout is a timeout.</p>
  *
- * <p>Paging is done with the provider's real cursor, {@code message_seq}, whose semantics are
- * "take up to {@code count} messages ending at this seq and walking backwards". The returned
- * {@code nextCursor} is therefore {@code oldestSeq - 1}; feeding it back yields the previous page
- * with no overlap.</p>
+ * <p>LLBot uses {@code message_seq}; SnowLuma uses an inclusive {@code message_id} anchor and
+ * {@code reverse_order}. Unknown providers get a single generic page without invented cursors.</p>
  *
  * <p>Spec: {@code docs/superpowers/specs/2026-11-13-remote-history-paging-design.md}.</p>
  */
@@ -51,7 +54,14 @@ public final class QqRemoteHistoryTool implements AgentTool {
     private final QqToolContext context;
     private final Map<String, AtomicBoolean> inFlight = new ConcurrentHashMap<>();
     private final Map<String, Breaker> breakers = new ConcurrentHashMap<>();
+    private final Map<String, ProviderProbe> providers = new ConcurrentHashMap<>();
     private final LongSupplier clock;
+
+    private enum Dialect { LLBOT, SNOWLUMA, GENERIC }
+
+    private record ProviderProbe(OneBot11Client client, CompletableFuture<Dialect> result) { }
+
+    private record SnowCursor(String direction, long messageId) { }
 
     public QqRemoteHistoryTool(QqToolContext context) {
         this(context, System::currentTimeMillis);
@@ -77,8 +87,9 @@ public final class QqRemoteHistoryTool implements AgentTool {
     public String description() {
         return "只读读取 provider 历史（get_group_msg_history / get_friend_msg_history），"
                 + "不写入消息板。**按游标分页，一次一页**：count 1.." + MAX_COUNT
-                + "（默认 " + DEFAULT_COUNT + "，provider 内部每 30 条一个 RPC 窗口）；"
+                + "（默认 " + DEFAULT_COUNT + "）；"
                 + "cursor=上一页返回的 nextCursor。返回 messages/nextCursor/prevCursor/hasMore/count。"
+                + "已识别 provider 才提供可用游标；未知 provider 只尝试首页。"
                 + "下一页（更旧）传 nextCursor，上一页（更新）传 prevCursor。"
                 + "同账号同时只允许一个请求；连续 " + CIRCUIT_THRESHOLD
                 + " 次超时会熔断 " + (CIRCUIT_COOLDOWN_MS / 1000) + " 秒。";
@@ -91,11 +102,14 @@ public final class QqRemoteHistoryTool implements AgentTool {
                 "chatType", Map.of("type", "string", "enum", List.of("GROUP", "PRIVATE")),
                 "targetId", Map.of("type", "string"),
                 "cursor", Map.of("type", "string",
-                        "description", "message_seq 游标；省略=最新一页。下一页用上一页的 nextCursor"),
+                        "description", "provider 游标；省略=最新一页。下一页用上一页的 nextCursor"),
                 "count", Map.of("type", "integer", "minimum", 1, "maximum", MAX_COUNT,
-                        "description", "默认 " + DEFAULT_COUNT + "；≤30 只花 1 个 provider RPC"),
+                        "description", "默认 " + DEFAULT_COUNT + "；建议小页读取"),
                 "reverseOrder", Map.of("type", "boolean",
-                        "description", "仅控制显示顺序：false=旧→新（默认），true=新→旧；不影响游标"),
+                        "description", "仅控制显示顺序：false=旧→新（默认），true=新→旧；未知 provider 需要有效时间戳才能排序"),
+                "historyDialect", Map.of("type", "string",
+                        "enum", List.of("auto", "llbot", "snowluma", "generic"),
+                        "description", "默认 auto 自动识别；未知实现可先用 generic 读取首页"),
                 "includeSegments", Map.of("type", "boolean"),
                 "timeoutMs", Map.of("type", "integer", "minimum", MIN_TIMEOUT_MS,
                         "maximum", MAX_TIMEOUT_MS,
@@ -135,27 +149,17 @@ public final class QqRemoteHistoryTool implements AgentTool {
         boolean includeSegments = QqToolSupport.includeSegments(toolContext);
         int timeoutMs = Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS,
                 QqToolSupport.integer(toolContext, "timeoutMs", DEFAULT_TIMEOUT_MS)));
-        String accountId = toolContext.arguments().get("accountId") instanceof String value
-                ? value : "";
-
         String action = chatType.equals("GROUP") ? "get_group_msg_history" : "get_friend_msg_history";
-        Map<String, Object> params = new LinkedHashMap<>();
-        params.put(chatType.equals("GROUP") ? "group_id" : "user_id", targetNumeric);
-        if (!cursor.isBlank()) {
-            params.put("message_seq", cursor);
-        }
-        params.put("count", count);
-        // provider schema uses camelCase reverseOrder; reverse_order/parse_mult_msg/disable_get_url
-        // are NapCat parameters and are silently dropped by LLBot, so we no longer send them.
-        params.put("reverseOrder", reverseOrder);
-
+        String accountKey;
         OneBot11Client client;
+        Dialect requestedDialect;
         try {
-            client = QqToolSupport.client(context, accountId);
+            accountKey = QqToolSupport.accountId(context, toolContext);
+            client = QqToolSupport.client(context, accountKey);
+            requestedDialect = requestedDialect(toolContext);
         } catch (IllegalArgumentException failure) {
             return QqToolSupport.invalid(failure);
         }
-        String accountKey = accountId.isBlank() ? "-" : accountId;
 
         Breaker breaker = breakers.computeIfAbsent(accountKey, key -> new Breaker());
         long now = clock.getAsLong();
@@ -171,6 +175,38 @@ public final class QqRemoteHistoryTool implements AgentTool {
         }
         long started = System.nanoTime();
         try {
+            Dialect dialect = requestedDialect == null
+                    ? detectDialect(accountKey, client) : requestedDialect;
+            if (dialect == Dialect.GENERIC && !cursor.isBlank()) {
+                return failure("HISTORY_DIALECT_UNKNOWN", targetId, chatType, count,
+                        "UNSUPPORTED_CURSOR", -1, started,
+                        "未知 provider 的历史游标语义；可读取首页，或显式指定已知 historyDialect。");
+            }
+            SnowCursor snowCursor = null;
+            if (dialect == Dialect.SNOWLUMA && !cursor.isBlank()) {
+                try {
+                    snowCursor = parseSnowCursor(cursor);
+                } catch (IllegalArgumentException invalid) {
+                    return QqToolSupport.invalid(invalid);
+                }
+            } else if (dialect == Dialect.LLBOT && cursor.startsWith("snow:")) {
+                return QqToolSupport.invalid(new IllegalArgumentException("游标与 provider 方言不匹配"));
+            }
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put(chatType.equals("GROUP") ? "group_id" : "user_id", targetNumeric);
+            if (dialect == Dialect.SNOWLUMA && snowCursor != null) {
+                params.put("message_id", snowCursor.messageId());
+                params.put("reverse_order", "older".equals(snowCursor.direction()));
+                params.put("count", count + 1);
+            } else {
+                params.put("count", count);
+                if (dialect == Dialect.LLBOT) {
+                    if (!cursor.isBlank()) {
+                        params.put("message_seq", cursor);
+                    }
+                    params.put("reverseOrder", reverseOrder);
+                }
+            }
             JsonNode response = client.sendAction(action, params)
                     .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                     .join();
@@ -178,13 +214,14 @@ public final class QqRemoteHistoryTool implements AgentTool {
             JsonNode data = response.path("data");
             JsonNode array = data.path("messages");
             int size = array.isArray() ? array.size() : -1;
-            if (retcode == 1200) {
-                // retcode 1200 is an empty page, not an error.
+            if (retcode == 1200 && dialect == Dialect.LLBOT) {
+                // The historic LLBot contract treats this retcode as an empty page.
                 reset(breaker);
                 log(action, count, retcode, started, 0, "retcode1200");
                 return emptyPage(targetId, chatType, count, retcode);
             }
-            if (retcode != 0 || !array.isArray()) {
+            if (retcode != 0 || !"ok".equalsIgnoreCase(response.path("status").asText(""))
+                    || !array.isArray()) {
                 log(action, count, retcode, started, size, "failed");
                 return failure("HISTORY_FAILED", targetId, chatType, count,
                         "PROVIDER_ERROR", retcode, started,
@@ -193,7 +230,16 @@ public final class QqRemoteHistoryTool implements AgentTool {
             }
             reset(breaker);
             log(action, count, retcode, started, size, "ok");
-            return page(array, chatType, targetId, count, includeSegments, retcode, started);
+            if (dialect == Dialect.SNOWLUMA) {
+                return snowPage(array, chatType, targetId, count, includeSegments, retcode,
+                        started, snowCursor, reverseOrder);
+            }
+            if (dialect == Dialect.GENERIC) {
+                return genericPage(array, chatType, targetId, count, includeSegments, retcode,
+                        started, reverseOrder);
+            }
+            return page(array, chatType, targetId, count, includeSegments, retcode, started,
+                    dialect, "", "", true, true);
         } catch (Exception failure) {
             // TimeoutException is checked, so the catch type must be Exception (not RuntimeException)
             // for the instanceof test below to be legal.
@@ -229,6 +275,151 @@ public final class QqRemoteHistoryTool implements AgentTool {
         }
     }
 
+    private static Dialect requestedDialect(ToolContext context) {
+        Object raw = context.arguments().get("historyDialect");
+        if (raw == null || "auto".equalsIgnoreCase(String.valueOf(raw))) {
+            return null;
+        }
+        return switch (String.valueOf(raw).toLowerCase(Locale.ROOT)) {
+            case "llbot" -> Dialect.LLBOT;
+            case "snowluma" -> Dialect.SNOWLUMA;
+            case "generic" -> Dialect.GENERIC;
+            default -> throw new IllegalArgumentException("historyDialect 只能是 auto/llbot/snowluma/generic");
+        };
+    }
+
+    private Dialect detectDialect(String accountId, OneBot11Client client) {
+        ProviderProbe probe = providers.compute(accountId, (ignored, previous) -> {
+            if (previous != null && previous.client() == client) {
+                return previous;
+            }
+            return new ProviderProbe(client, probeProvider(client));
+        });
+        Dialect detected = probe.result().join();
+        if (detected == Dialect.GENERIC) {
+            // A failed or unsupported probe may recover without replacing the socket.
+            providers.remove(accountId, probe);
+        }
+        return detected;
+    }
+
+    private static CompletableFuture<Dialect> probeProvider(OneBot11Client client) {
+        try {
+            return client.sendAction("get_version_info", Map.of())
+                    .orTimeout(3, TimeUnit.SECONDS)
+                    .handle((response, failure) -> {
+                        if (failure != null || response == null
+                                || response.path("retcode").asInt(-1) != 0
+                                || !"ok".equalsIgnoreCase(response.path("status").asText(""))) {
+                            return Dialect.GENERIC;
+                        }
+                        String name = response.path("data").path("app_name").asText("")
+                                .toLowerCase(Locale.ROOT);
+                        if (name.contains("snowluma")) {
+                            return Dialect.SNOWLUMA;
+                        }
+                        if (name.contains("llonebot") || name.contains("llbot")
+                                || name.contains("luckylillia")) {
+                            return Dialect.LLBOT;
+                        }
+                        return Dialect.GENERIC;
+                    });
+        } catch (RuntimeException failure) {
+            return CompletableFuture.completedFuture(Dialect.GENERIC);
+        }
+    }
+
+    private static SnowCursor parseSnowCursor(String raw) {
+        String[] fields = raw.split(":", -1);
+        if (fields.length != 3 || !"snow".equals(fields[0])
+                || !("older".equals(fields[1]) || "newer".equals(fields[1]))) {
+            throw new IllegalArgumentException("SnowLuma 游标必须来自上一页的 nextCursor/prevCursor");
+        }
+        try {
+            long id = Long.parseLong(fields[2]);
+            if (id == 0) {
+                throw new NumberFormatException("zero");
+            }
+            return new SnowCursor(fields[1], id);
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("SnowLuma 游标中的消息 ID 无效");
+        }
+    }
+
+    private static ToolResult snowPage(JsonNode array, String chatType, String targetId,
+                                       int requested, boolean includeSegments, int retcode,
+                                       long started, SnowCursor cursor, boolean reverseOrder) {
+        List<JsonNode> messages = new ArrayList<>();
+        boolean timestampsKnown = true;
+        for (JsonNode item : array) {
+            if (!item.isObject()) {
+                return failure("HISTORY_FAILED", targetId, chatType, requested,
+                        "PROVIDER_ERROR", retcode, started, "provider 历史消息格式不受支持");
+            }
+            if (cursor != null && Long.toString(cursor.messageId())
+                    .equals(item.path("message_id").asText(""))) {
+                continue;
+            }
+            timestampsKnown &= item.path("time").asLong(0L) > 0;
+            messages.add(item);
+        }
+        if (timestampsKnown) {
+            // TimSort is stable for equal timestamps; private message_seq is not globally ordered.
+            messages.sort(Comparator.comparingLong(item -> item.path("time").asLong()));
+        }
+        if (messages.size() > requested) {
+            int start = cursor != null && "newer".equals(cursor.direction())
+                    ? 0 : messages.size() - requested;
+            messages = new ArrayList<>(messages.subList(start, start + requested));
+        }
+        String oldest = messages.isEmpty() ? "" : messages.getFirst().path("message_id").asText("");
+        String newest = messages.isEmpty() ? "" : messages.getLast().path("message_id").asText("");
+        boolean canPage = messages.isEmpty()
+                || timestampsKnown && validSnowMessageId(oldest) && validSnowMessageId(newest);
+        String next = canPage && !messages.isEmpty() ? "snow:older:" + oldest : "";
+        String prev = canPage && !messages.isEmpty() ? "snow:newer:" + newest : "";
+        if (reverseOrder) {
+            Collections.reverse(messages);
+        }
+        var result = QqToolSupport.JSON.createArrayNode();
+        messages.forEach(result::add);
+        return page(result, chatType, targetId, requested, includeSegments, retcode, started,
+                Dialect.SNOWLUMA, next, prev, canPage, true);
+    }
+
+    private static ToolResult genericPage(JsonNode array, String chatType, String targetId,
+                                          int requested, boolean includeSegments, int retcode,
+                                          long started, boolean reverseOrder) {
+        List<JsonNode> messages = new ArrayList<>();
+        boolean timestampsKnown = true;
+        for (JsonNode item : array) {
+            if (!item.isObject()) {
+                return failure("HISTORY_FAILED", targetId, chatType, requested,
+                        "PROVIDER_ERROR", retcode, started, "provider 历史消息格式不受支持");
+            }
+            timestampsKnown &= item.path("time").asLong(0L) > 0;
+            messages.add(item);
+        }
+        if (timestampsKnown) {
+            messages.sort(Comparator.comparingLong(item -> item.path("time").asLong()));
+            if (reverseOrder) {
+                Collections.reverse(messages);
+            }
+        }
+        var result = QqToolSupport.JSON.createArrayNode();
+        messages.forEach(result::add);
+        return page(result, chatType, targetId, requested, includeSegments, retcode, started,
+                Dialect.GENERIC, "", "", false, timestampsKnown);
+    }
+
+    private static boolean validSnowMessageId(String raw) {
+        try {
+            return Long.parseLong(raw) != 0;
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
+    }
+
     private void reset(Breaker breaker) {
         synchronized (breaker) {
             breaker.consecutiveTimeouts = 0;
@@ -237,7 +428,9 @@ public final class QqRemoteHistoryTool implements AgentTool {
     }
 
     private static ToolResult page(JsonNode array, String chatType, String targetId, int requested,
-                                   boolean includeSegments, int retcode, long startedNanos) {
+                                   boolean includeSegments, int retcode, long startedNanos,
+                                   Dialect dialect, String providerNext, String providerPrev,
+                                   boolean providerPaging, boolean orderSupported) {
         var root = QqToolSupport.object();
         root.put("chatType", chatType);
         root.put("targetId", targetId);
@@ -303,14 +496,34 @@ public final class QqRemoteHistoryTool implements AgentTool {
         //   backwards -> N = oldest - 1            (window ends just below this page)
         //   forwards  -> N = newest + count        (window ends just above this page)
         // Using newest + 1 for forwards would return this page shifted by one.
-        String nextCursor = minSeq <= 1 ? "" : Long.toString(minSeq - 1);
-        String prevCursor = maxSeq == Long.MIN_VALUE
-                ? "" : Long.toString(maxSeq + requested);
+        boolean canPage = providerPaging;
+        String nextCursor = providerNext;
+        String prevCursor = providerPrev;
+        if (dialect == Dialect.LLBOT) {
+            canPage = messagesRead == 0 || minSeq != Long.MAX_VALUE;
+            nextCursor = minSeq == Long.MAX_VALUE || minSeq <= 1
+                    ? "" : Long.toString(minSeq - 1);
+            prevCursor = maxSeq == Long.MIN_VALUE || maxSeq > Long.MAX_VALUE - requested
+                    ? "" : Long.toString(maxSeq + requested);
+        }
         root.put("count", messagesRead);
         root.put("fetchedCount", messagesRead);
         root.put("nextCursor", nextCursor);
         root.put("prevCursor", prevCursor);
-        root.put("hasMore", messagesRead >= requested);
+        root.put("historyDialect", dialect.name().toLowerCase(Locale.ROOT));
+        root.put("pagingSupported", canPage);
+        if (dialect == Dialect.GENERIC) {
+            root.put("orderSupported", orderSupported);
+            if (!orderSupported) {
+                root.put("orderHint", "时间戳不完整；保留 provider 原始顺序，未应用 reverseOrder。");
+            }
+        }
+        if (canPage) {
+            root.put("hasMore", messagesRead >= requested);
+        } else {
+            root.putNull("hasMore");
+            root.put("pagingHint", "无法确认该 provider 的游标语义或消息锚点；结果只包含当前页。");
+        }
         var attempt = root.putObject("attempt");
         attempt.put("count", requested);
         attempt.put("retcode", retcode);

@@ -13,6 +13,7 @@ import io.mosire.bma3.watchdog.spi.ProbeResult;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -20,10 +21,18 @@ class ProbesDshPluginTest {
 
     @TempDir
     Path tempDir;
+    private SqliteInboxStore store;
+
+    @AfterEach
+    void closeStore() {
+        if (store != null) {
+            store.close();
+        }
+    }
 
     private InboxService service() {
         DeliveryPolicy policy = DeliveryPolicy.defaults();
-        SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("inbox.db"));
+        store = new SqliteInboxStore(tempDir.resolve("inbox.db"));
         return new InboxService(store, policy, "bma3", () -> new InboxRuntime(6, 6, true));
     }
 

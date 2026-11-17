@@ -6,6 +6,8 @@ import io.mosire.bma3.app.config.AppConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -72,7 +74,22 @@ class Bma3EnvTest {
             assertThat(permissions).containsExactlyInAnyOrder(
                     PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
         }
+        AclFileAttributeView acl = Files.getFileAttributeView(file, AclFileAttributeView.class);
+        if (acl != null && !Files.getFileStore(file).supportsFileAttributeView("posix")) {
+            var entries = acl.getAcl();
+            assertThat(entries).hasSize(1);
+            assertThat(entries.getFirst().type()).isEqualTo(AclEntryType.ALLOW);
+            assertThat(entries.getFirst().principal()).isEqualTo(Files.getOwner(file));
+        }
         assertThat(file.getParent().resolve(".bma3env.tmp")).doesNotExist();
+    }
+
+    @Test
+    void aDirectoryCannotBeUsedAsTheTokenFile() throws Exception {
+        Path directory = Files.createDirectory(tempDir.resolve("not-a-token-file"));
+        Bma3Env result = Bma3Env.ensure(directory, false);
+        assertThat(result.degraded()).isTrue();
+        assertThat(result.mcpToken()).isEmpty();
     }
 
     @Test

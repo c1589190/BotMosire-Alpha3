@@ -63,10 +63,11 @@ class XvfbServiceTest {
 
     @Test
     void browserArgsDisableTheFirstRunTourAndKeepTheUrl() {
+        Path profile = Path.of("/tmp/bma3-profile");
         var args = XvfbService.browserArgs("/usr/bin/google-chrome",
-                Path.of("/tmp/bma3-profile"), "https://www.bilibili.com");
+                profile, "https://www.bilibili.com");
         assertThat(args).contains("--no-first-run", "--no-default-browser-check");
-        assertThat(args).contains("--user-data-dir=/tmp/bma3-profile");
+        assertThat(args).contains("--user-data-dir=" + profile);
         assertThat(args.getLast()).isEqualTo("https://www.bilibili.com");
     }
 

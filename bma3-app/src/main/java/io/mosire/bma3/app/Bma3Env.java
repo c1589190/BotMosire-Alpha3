@@ -1,18 +1,19 @@
 package io.mosire.bma3.app;
 
 import io.mosire.bma3.app.config.AppConfig;
+import io.mosire.bma3.core.security.PrivateFiles;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * The jar-owned token bootstrap file ({@code .bma3env}) described by D-063.
@@ -41,9 +42,6 @@ public final class Bma3Env {
     private static final int TOKEN_BYTES = 24;
 
     private static final SecureRandom RANDOM = new SecureRandom();
-
-    private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
-            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
 
     private final Path file;
     private final Map<String, String> values;
@@ -81,7 +79,15 @@ public final class Bma3Env {
      * @return the loaded file view; {@link #degraded()} reports a failed write
      */
     public static Bma3Env ensure(Path file, boolean rotate) {
-        Map<String, String> existing = read(file);
+        Map<String, String> existing;
+        try {
+            if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+                PrivateFiles.restrict(file);
+            }
+            existing = read(file);
+        } catch (IOException | UncheckedIOException failure) {
+            return new Bma3Env(file, Map.of(), true);
+        }
         Map<String, String> next = new LinkedHashMap<>(existing);
         boolean changed = false;
         for (String key : new String[] {MCP_TOKEN, INBOX_TOKEN, DEBUG_TOKEN}) {
@@ -126,32 +132,19 @@ public final class Bma3Env {
         return parsed;
     }
 
-    /** Force owner-only permissions on an existing file; best effort on non-POSIX filesystems. */
-    static void tighten(Path file) {
-        try {
-            Files.setPosixFilePermissions(file, OWNER_ONLY);
-        } catch (IOException | UnsupportedOperationException ignored) {
-            // Windows or exotic filesystem: permissions are handled by the ACL, not here.
-        }
-    }
-
     private static void write(Path file, Map<String, String> values) throws IOException {
         Path parent = file.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        Path temp = file.resolveSibling(file.getFileName() + ".tmp-" + ProcessHandle.current().pid());
+        Path temp = PrivateFiles.createTemp(file);
         StringBuilder body = new StringBuilder()
                 .append("# BMA3 运行期 token 文件（0600）——由 jar 生成，DSH 插件只读。\n")
                 .append("# 轮换：删除本文件或使用 --rotate-token 后重启；两侧需重连。\n");
         values.forEach((key, value) -> body.append(key).append('=').append(value).append('\n'));
         try {
-            Files.writeString(temp, body.toString(), StandardCharsets.UTF_8);
-            try {
-                Files.setPosixFilePermissions(temp, OWNER_ONLY);
-            } catch (UnsupportedOperationException ignored) {
-                // Non-POSIX filesystem.
-            }
+            Files.writeString(temp, body.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
             try {
                 Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING,
                         StandardCopyOption.ATOMIC_MOVE);
@@ -161,7 +154,7 @@ public final class Bma3Env {
         } finally {
             Files.deleteIfExists(temp);
         }
-        tighten(file);
+        PrivateFiles.restrict(file);
     }
 
     private static String generate() {

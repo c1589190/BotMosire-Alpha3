@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -43,6 +44,14 @@ class QqMediaViewToolTest {
     Path tempDir;
 
     private final ObjectMapper mapper = new ObjectMapper();
+    private QqExtrasStore extras;
+
+    @AfterEach
+    void closeExtras() {
+        if (extras != null) {
+            extras.close();
+        }
+    }
 
     @Test
     void anImageIsRefreshedThenWrittenToTheDownloadsDirectory() throws Exception {
@@ -240,7 +249,7 @@ class QqMediaViewToolTest {
         AccountRegistry registry = new AccountRegistry((config, listener) -> client, event -> { });
         registry.reconcile(List.of(new AccountConfig(
                 "bot-1", URI.create("ws://127.0.0.1:3001"), "token", true)));
-        QqExtrasStore extras = new QqExtrasStore(tempDir.resolve("extras.db"));
+        extras = new QqExtrasStore(tempDir.resolve("extras.db"));
         return QqTools.all(new QqToolContext(registry, board, board, tempDir, extras,
                 null, () -> mediaPolicy));
     }
