@@ -9,6 +9,15 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.mosire.bma3.app.config.AppConfig;
+import io.mosire.bma3.app.channel.store.QqChannelObservationStore.CorrelationState;
+import io.mosire.bma3.core.message.Segment;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountClient;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountClientContext;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountClientFactory;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountErrorKind;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountRuntimeStatus;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountState;
+import io.mosire.bma3.qqofficial.event.OfficialQqEvent;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.time.Duration;
@@ -116,6 +125,117 @@ class Bma3AppFakeQqTest {
             if (app != null) {
                 app.close();
             }
+            oneBot.stop();
+        }
+    }
+
+    @Test
+    void fakeOneBotAndOfficialProduceOneCanonicalWakeAfterMcpBinding() throws Exception {
+        FakeOneBotServer oneBot = new FakeOneBotServer();
+        oneBot.start();
+        oneBot.awaitStarted(Duration.ofSeconds(3));
+        FakeOfficialFactory official = new FakeOfficialFactory();
+        Bma3App app = null;
+        McpSyncClient mcp = null;
+        try {
+            AppConfig base = new AppConfig(
+                    tempDir,
+                    new AppConfig.Server("127.0.0.1", 0, "/mcp", "BMA3_TEST_TOKEN"),
+                    new AppConfig.QqConnect(List.of(new AppConfig.Account(
+                            "bot-1", "ws://127.0.0.1:" + oneBot.getPort(), "", true))),
+                    new AppConfig.Inbox("bma3", 0),
+                    AppConfig.Webconnect.defaults(),
+                    new AppConfig.Weighting(0, -300, 1000, 1, 1,
+                            Map.of("*", 0), AppConfig.Weighting.defaultAttributes(), List.of()),
+                    new AppConfig.Logging("INFO", tempDir.resolve("logs").toString()));
+            AppConfig.QqOfficial.Account officialAccount = new AppConfig.QqOfficial.Account(
+                    "app-1", "synthetic-app-id", "BMA3_SYNTHETIC_SECRET", "", true);
+            AppConfig.QqOfficial officialConfig = new AppConfig.QqOfficial(
+                    List.of(officialAccount), "websocket", null, null, null);
+            AppConfig config = new AppConfig(base.dataDir(), base.server(), base.qqconnect(),
+                    officialConfig, base.inbox(), base.webconnect(), base.weighting(),
+                    base.logging(), base.deployer(), base.watchdog(), base.xvfb(), base.security(),
+                    base.debug(), base.schedule());
+            app = Bma3App.start(config, Map.of("BMA3_SYNTHETIC_SECRET", "synthetic-secret"),
+                    tempDir, official);
+            String token = Bma3Env.read(tempDir.resolve(".bma3env")).get(Bma3Env.MCP_TOKEN);
+            HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport
+                    .builder("http://127.0.0.1:" + app.mcpPort())
+                    .endpoint("/mcp").resumableStreams(false)
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .httpRequestCustomizer((request, method, uri, body, context) ->
+                            request.header("Authorization", "Bearer " + token))
+                    .build();
+            mcp = McpClient.sync(transport).build();
+            mcp.initialize();
+
+            String thread = "group.logical";
+            String rawOneBot = "qq_group/bot-1/955432692";
+            String rawOfficial = "qq_official_group/app-1/group-openid-1";
+            callOk(mcp, "qq_thread_bind", Map.of("threadId", thread, "rawSource", rawOneBot,
+                    "channel", "onebot", "label", "双渠道测试群"));
+            callOk(mcp, "qq_thread_bind", Map.of("threadId", thread, "rawSource", rawOfficial,
+                    "channel", "qq_official"));
+            callOk(mcp, "qq_thread_set_preferred_channel", Map.of("threadId", thread,
+                    "preferredChannel", "qq_official"));
+            Map<String, String> scope = Map.of("type", "thread", "value", thread);
+            callOk(mcp, "qq_thread_identity_bind", Map.of("threadId", thread,
+                    "channel", "onebot", "channelUserId", "20002",
+                    "canonicalUserId", "person-1", "scope", scope));
+            callOk(mcp, "qq_thread_identity_bind", Map.of("threadId", thread,
+                    "channel", "qq_official", "channelUserId", "openid-1",
+                    "canonicalUserId", "person-1", "scope", scope));
+
+            Instant at = Instant.ofEpochSecond(1762700000);
+            official.context().dispatchSink().accept(new OfficialQqEvent(
+                    "evt-1", "GROUP_MESSAGE_CREATE", "official-message-1", "group-openid-1",
+                    "", "openid-1", "Alice", "", "", at,
+                    List.of(new Segment("text", "same message")), "", "", "", false,
+                    false, false, 1L, at, true));
+            var pushed = app.inboxService().awaitPush(0L, Duration.ofSeconds(5));
+            assertThat(pushed).isNotNull();
+            assertThat(pushed.items()).singleElement().satisfies(item -> {
+                assertThat(item.source()).isEqualTo("qq_thread/" + thread);
+                assertThat(item.sourceLabel()).isEqualTo("双渠道测试群");
+                assertThat(item.displayChannel()).isEqualTo("qq_official");
+                assertThat(item.entries()).extracting(entry -> entry.text())
+                        .containsExactly("same message");
+            });
+            long pushRevision = pushed.pushRevision();
+
+            oneBot.send("""
+                    {"post_type":"message","message_type":"group","self_id":10001,
+                     "group_id":955432692,"user_id":20002,"message_id":9003,
+                     "time":1762700000,
+                     "message":[{"type":"text","data":{"text":"same message"}}],
+                     "sender":{"nickname":"Alice"}}
+                    """);
+            Bma3App active = app;
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (active.channelRuntime().observations()
+                    .findObservation(rawOneBot, "9003")
+                    .filter(value -> value.routeState() != io.mosire.bma3.app.channel.store
+                            .QqChannelObservationStore.RouteState.PENDING_ROUTE).isEmpty()
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            var observation = active.channelRuntime().observations()
+                    .findObservation(rawOneBot, "9003").orElseThrow();
+            assertThat(observation.correlationState()).isEqualTo(CorrelationState.MATCHED);
+            assertThat(active.inboxService().panel().items()).hasSize(1);
+            assertThat(active.inboxService().awaitPush(pushRevision, Duration.ofMillis(150)))
+                    .isNull();
+            assertThat(active.channelRuntime().observations().statusCounts(thread).observations())
+                    .isEqualTo(2);
+            JsonNode compared = mapper.readTree(text(callOk(mcp, "qq_thread_compare",
+                    Map.of("threadId", thread))));
+            assertThat(compared.toString()).doesNotContain("same message");
+            JsonNode history = mapper.readTree(text(callOk(mcp, "qq_thread_history",
+                    Map.of("threadId", thread, "limit", 20))));
+            assertThat(history.toString()).contains("same message");
+        } finally {
+            if (mcp != null) mcp.closeGracefully();
+            if (app != null) app.close();
             oneBot.stop();
         }
     }
@@ -234,6 +354,54 @@ class Bma3AppFakeQqTest {
                 app.close();
             }
             oneBot.stop();
+        }
+    }
+
+    private static McpSchema.CallToolResult callOk(McpSyncClient mcp, String name,
+                                                   Map<String, Object> args) {
+        McpSchema.CallToolResult result = mcp.callTool(new McpSchema.CallToolRequest(name, args));
+        assertThat(result.isError()).as("%s: %s", name, text(result)).isFalse();
+        return result;
+    }
+
+    private static final class FakeOfficialFactory implements OfficialQqAccountClientFactory {
+        private final AtomicReference<OfficialQqAccountClientContext> context =
+                new AtomicReference<>();
+
+        @Override
+        public OfficialQqAccountClient create(OfficialQqAccountClientContext value) {
+            context.set(value);
+            return new OfficialQqAccountClient() {
+                private volatile boolean connected;
+
+                @Override
+                public String accountId() {
+                    return value.config().accountId();
+                }
+
+                @Override
+                public void start() {
+                    connected = true;
+                }
+
+                @Override
+                public OfficialQqAccountRuntimeStatus status() {
+                    return new OfficialQqAccountRuntimeStatus(
+                            connected ? OfficialQqAccountState.READY
+                                    : OfficialQqAccountState.STOPPED,
+                            connected, false, Instant.now(), null, null, null, 0,
+                            OfficialQqAccountErrorKind.NONE, "", "", "");
+                }
+
+                @Override
+                public void close() {
+                    connected = false;
+                }
+            };
+        }
+
+        OfficialQqAccountClientContext context() {
+            return java.util.Objects.requireNonNull(context.get(), "official factory not started");
         }
     }
 

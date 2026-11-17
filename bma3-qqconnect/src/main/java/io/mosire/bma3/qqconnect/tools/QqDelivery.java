@@ -176,7 +176,8 @@ final class QqDelivery {
         if (recorded) {
             return new Outcome(pending.operationId(), pending.partIndex(), pending.partTotal(),
                     pending.localSeq(), result.status(), null, result.externalMessageId(),
-                    result.errorCode(), result.retcode(), true, null);
+                    result.errorCode(), result.retcode(), true,
+                    result.status() == DeliveryStatus.FAILED_BEFORE_SEND ? false : null);
         }
         return new Outcome(pending.operationId(), pending.partIndex(), pending.partTotal(),
                 pending.localSeq(), DeliveryStatus.UNKNOWN, result.status(), "",

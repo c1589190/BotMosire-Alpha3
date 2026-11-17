@@ -2,6 +2,7 @@ package io.mosire.bma3.qqconnect.onebot;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.mosire.bma3.core.message.Segment;
 import org.junit.jupiter.api.Test;
 
 class OneBot11CodecTest {
@@ -29,6 +30,8 @@ class OneBot11CodecTest {
         assertThat(event.text()).isEqualTo("hello");
         assertThat(event.source("bot-1").format()).isEqualTo("qq_private/bot-1/20002");
         assertThat(event.at()).isEqualTo(java.time.Instant.ofEpochSecond(1762700000L));
+        assertThat(event.timestampFallback()).isFalse();
+        assertThat(event.contentComplete()).isTrue();
     }
 
     @Test
@@ -90,6 +93,95 @@ class OneBot11CodecTest {
     }
 
     @Test
+    void fallsBackForMissingInvalidOrImpossibleTimestamp() {
+        OneBotEvent missing = codec.decode(messageJson("", "[{\"type\":\"text\","
+                + "\"data\":{\"text\":\"hello\"}}]")).orElseThrow();
+        assertThat(missing.timestampFallback()).isTrue();
+        assertThat(missing.at()).isNotNull();
+
+        for (String badTime : java.util.List.of(
+                "\"time\":\"1762700000\",",
+                "\"time\":1762700000.5,",
+                "\"time\":0,",
+                "\"time\":-1,",
+                "\"time\":null,",
+                "\"time\":999999999999999999999999999999,")) {
+            OneBotEvent event = codec.decode(messageJson(badTime,
+                    "[{\"type\":\"text\",\"data\":{\"text\":\"fallback\"}}]"))
+                    .orElseThrow();
+            assertThat(event.timestampFallback()).as(badTime).isTrue();
+            assertThat(event.contentComplete()).as(badTime).isTrue();
+        }
+    }
+
+    @Test
+    void contentCompletenessIsConservativeForStringsUnknownAndIncompleteSegments() {
+        OneBotEvent cqString = codec.decode(messageJson("\"time\":1762700010,",
+                "\"[CQ:face,id=123] raw text\"")).orElseThrow();
+        assertThat(cqString.contentComplete()).isFalse();
+        assertThat(cqString.text()).isEqualTo("[CQ:face,id=123] raw text");
+
+        OneBotEvent unknown = codec.decode(messageJson("\"time\":1762700011,",
+                "[{\"type\":\"markdown\",\"data\":{\"text\":\"**hi**\"}}]"))
+                .orElseThrow();
+        assertThat(unknown.contentComplete()).isFalse();
+        assertThat(unknown.segments()).anyMatch(segment -> "markdown".equals(segment.type()));
+
+        OneBotEvent missingData = codec.decode(messageJson("\"time\":1762700012,",
+                "[{\"type\":\"text\"}]")).orElseThrow();
+        assertThat(missingData.contentComplete()).isFalse();
+
+        OneBotEvent scalarElement = codec.decode(messageJson("\"time\":1762700013,",
+                "[\"not-an-object\"]")).orElseThrow();
+        assertThat(scalarElement.contentComplete()).isFalse();
+
+        OneBotEvent objectMessage = codec.decode(messageJson("\"time\":1762700014,",
+                "{\"type\":\"text\",\"data\":{\"text\":\"hi\"}}")).orElseThrow();
+        assertThat(objectMessage.contentComplete()).isFalse();
+    }
+
+    @Test
+    void knownCompleteStructuredArrayStaysComplete() {
+        OneBotEvent event = codec.decode(messageJson("\"time\":1762700015,",
+                "[{\"type\":\"at\",\"data\":{\"qq\":\"10001\"}},"
+                        + "{\"type\":\"image\",\"data\":{\"file\":\"a.png\"}},"
+                        + "{\"type\":\"text\",\"data\":{\"text\":\"ok\"}}]"))
+                .orElseThrow();
+        assertThat(event.contentComplete()).isTrue();
+        assertThat(event.timestampFallback()).isFalse();
+    }
+
+    @Test
+    void legacyConstructorsDoNotClaimContentCompleteness() {
+        OneBotEvent elevenArgs = new OneBotEvent(
+                "message", "private", "", 10001L, 20002L, 0L, 9001L,
+                java.time.Instant.parse("2026-11-09T11:00:00Z"), "Alice",
+                java.util.List.of(new Segment("text", "ping")), "");
+        assertThat(elevenArgs.timestampFallback()).isFalse();
+        assertThat(elevenArgs.contentComplete()).isFalse();
+
+        OneBotEvent thirteenArgs = new OneBotEvent(
+                "message", "group", "normal", 10001L, 20002L, 955432692L, 9002L,
+                java.time.Instant.parse("2026-11-09T11:00:01Z"), "Bob",
+                java.util.List.of(new Segment("text", "pong")), "", "群名片", "member");
+        assertThat(thirteenArgs.timestampFallback()).isFalse();
+        assertThat(thirteenArgs.contentComplete()).isFalse();
+    }
+
+    @Test
+    void malformedJsonErrorsDoNotEchoContent() {
+        String malformed = """
+                {"post_type":"message","message_type":"private","time":1762700020,
+                 "message":[{"type":"text","data":{"text":"TOP-SECRET-CONTENT"}}]
+                """;
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> codec.decode(malformed))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("OneBot")
+                .hasMessageNotContaining("TOP-SECRET-CONTENT")
+                .satisfies(failure -> assertThat(failure.getCause()).isNull());
+    }
+
+    @Test
     void ignoresNonMessageEvents() {
         assertThat(codec.decode("""
                 {"post_type": "meta_event", "meta_event_type": "lifecycle", "self_id": 10001}
@@ -146,5 +238,21 @@ class OneBot11CodecTest {
                 .isEqualTo("https://example.com/invite");
         assertThat(card.data("raw")).doesNotContain("SECRET");
         assertThat(card.data("raw")).contains("[群邀请链接已移除]");
+    }
+
+    private static String messageJson(String timeField, String messageJson) {
+        return """
+                {
+                  "post_type": "message",
+                  "message_type": "private",
+                  "sub_type": "friend",
+                  "self_id": 10001,
+                  "user_id": 20002,
+                  "message_id": 9999,
+                  %s
+                  "message": %s,
+                  "sender": {"nickname": "Tester"}
+                }
+                """.formatted(timeField, messageJson);
     }
 }

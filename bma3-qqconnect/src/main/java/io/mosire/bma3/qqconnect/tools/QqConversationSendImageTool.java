@@ -70,6 +70,9 @@ public final class QqConversationSendImageTool implements AgentTool {
     public ToolResult execute(ToolContext toolContext) {
         try {
             SourceAddress source = QqToolSupport.source(toolContext);
+            String action = "qq_group".equals(source.platform())
+                    ? "send_group_msg" : "send_private_msg";
+            QqSendSupport.SendRoute route = QqSendSupport.route(source, action, Map.of());
             OneBot11Client client = QqToolSupport.client(context, source);
             Path image = imagePath(QqToolSupport.text(toolContext, "imagePath"));
             if (!Files.isRegularFile(image)) {
@@ -88,17 +91,7 @@ public final class QqConversationSendImageTool implements AgentTool {
             }
             message.add(Map.of("type", "image", "data", Map.of("file", encoded)));
 
-            String action;
-            Map<String, Object> params;
-            if ("qq_group".equals(source.platform())) {
-                action = "send_group_msg";
-                params = Map.of("group_id", Long.parseLong(source.segments().get(1)),
-                        "message", message);
-            } else {
-                action = "send_private_msg";
-                params = Map.of("user_id", Long.parseLong(source.segments().get(1)),
-                        "message", message);
-            }
+            Map<String, Object> params = route.params(message);
 
             // The board is the business source of truth: when the same provider message carries
             // text plus image, the row must contain the caption segment that was actually sent.

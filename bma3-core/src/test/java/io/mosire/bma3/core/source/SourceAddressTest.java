@@ -64,4 +64,17 @@ class SourceAddressTest {
         assertThatThrownBy(() -> SourceAddress.parse("qq_group/bot-1/"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void malformedSourceErrorsNeverEchoTheRawValue() {
+        String hostile = "qq_group//SECRET-TOKEN\nINJECTED";
+        assertThatThrownBy(() -> SourceAddress.parse(hostile))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageNotContaining("SECRET-TOKEN")
+                .hasMessageNotContaining("INJECTED")
+                .hasMessageNotContaining("qq_group");
+        assertThatThrownBy(() -> SourceAddress.parse("SECRET-ONLY"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageNotContaining("SECRET-ONLY");
+    }
 }

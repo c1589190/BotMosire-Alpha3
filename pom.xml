@@ -22,6 +22,7 @@
     <module>bma3-core</module>
     <module>bma3-agentlib</module>
     <module>bma3-qqconnect</module>
+    <module>bma3-qq-official-connect</module>
     <module>bma3-inbox</module>
     <module>bma3-webconnect</module>
     <module>bma3-xvfb</module>

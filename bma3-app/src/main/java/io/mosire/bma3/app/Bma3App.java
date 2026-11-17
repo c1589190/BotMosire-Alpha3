@@ -4,16 +4,23 @@ import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
 import io.mosire.bma3.app.config.ConfigWatcher;
 import io.mosire.bma3.app.config.RuntimePolicy;
+import io.mosire.bma3.app.channel.QqChannelRegistry;
+import io.mosire.bma3.app.channel.QqChannelRuntime;
+import io.mosire.bma3.app.channel.router.QqChannelRouteInput;
+import io.mosire.bma3.app.channel.router.QqChannelRouter;
+import io.mosire.bma3.app.channel.store.QqChannelObservationStore;
 import io.mosire.bma3.app.debug.DebugApi;
 import io.mosire.bma3.app.debug.DebugRequest;
 import io.mosire.bma3.app.debug.DebugService;
 import io.mosire.bma3.app.debug.DebugStore;
 import io.mosire.bma3.app.debug.DebugTools;
+import io.mosire.bma3.app.official.OfficialQqService;
 import io.mosire.bma3.app.priority.PriorityDecision;
 import io.mosire.bma3.app.priority.PriorityResolver;
 import io.mosire.bma3.app.priority.PriorityTools;
 import io.mosire.bma3.app.tools.ConfigToolContext;
 import io.mosire.bma3.app.tools.GetConfigTool;
+import io.mosire.bma3.app.security.RepositoryBoundaries;
 import io.mosire.bma3.app.tools.SetConfigTool;
 import io.mosire.bma3.core.config.ConfigException;
 import io.mosire.bma3.core.message.Direction;
@@ -24,7 +31,6 @@ import io.mosire.bma3.core.priority.SourceKeyer;
 import io.mosire.bma3.core.source.SourceAddress;
 import io.mosire.bma3.core.source.SourceLabels;
 import io.mosire.bma3.core.source.SourceView;
-import io.mosire.bma3.core.store.AppendResult;
 import io.mosire.bma3.core.store.MessageBoardStore;
 import io.mosire.bma3.core.store.SqliteMessageBoardStore;
 import io.mosire.bma3.inbox.core.AppendItem;
@@ -53,6 +59,12 @@ import io.mosire.bma3.qqconnect.tools.QqSourceKeyer;
 import io.mosire.bma3.qqconnect.tools.QqSourceLabeler;
 import io.mosire.bma3.qqconnect.tools.QqToolContext;
 import io.mosire.bma3.qqconnect.tools.QqTools;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountClientFactory;
+import io.mosire.bma3.qqofficial.account.OfficialQqAccountStatus;
+import io.mosire.bma3.qqofficial.account.OfficialQqProductionAccountRuntimeFactory;
+import io.mosire.bma3.qqofficial.credential.OfficialQqCredentialPathPolicy;
+import io.mosire.bma3.qqofficial.directory.OfficialQqDirectoryStore;
+import io.mosire.bma3.qqofficial.tools.QqOfficialSourceLabeler;
 import io.mosire.bma3.webconnect.BrowserOptions;
 import io.mosire.bma3.webconnect.BrowserService;
 import io.mosire.bma3.xvfb.XvfbService;
@@ -71,6 +83,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -105,6 +118,8 @@ public final class Bma3App implements AutoCloseable {
     private final WatchdogEngine watchdog;
     private final QqDirectoryStore directory;
     private final ScheduleService schedule;
+    private final OfficialQqService official;
+    private final QqChannelRuntime channels;
     private final SingleInstanceLock instanceLock;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
@@ -114,6 +129,7 @@ public final class Bma3App implements AutoCloseable {
                     BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
                     ConfigWatcher watcher, WatchdogEngine watchdog,
                     QqDirectoryStore directory, ScheduleService schedule,
+                    OfficialQqService official, QqChannelRuntime channels,
                     SingleInstanceLock instanceLock) {
         this.config = config;
         this.board = board;
@@ -130,6 +146,8 @@ public final class Bma3App implements AutoCloseable {
         this.watchdog = watchdog;
         this.directory = directory;
         this.schedule = schedule;
+        this.official = official;
+        this.channels = channels;
         this.instanceLock = instanceLock;
     }
 
@@ -142,8 +160,18 @@ public final class Bma3App implements AutoCloseable {
     }
 
     public static Bma3App start(AppConfig config, Map<String, String> env, Path configRoot) {
+        return start(config, env, configRoot, new OfficialQqProductionAccountRuntimeFactory());
+    }
+
+    /**
+     * Composition-root seam for deterministic app integration tests and embedders. Production
+     * callers use the overload above; no fake factory is ever discovered implicitly.
+     */
+    public static Bma3App start(AppConfig config, Map<String, String> env, Path configRoot,
+                                OfficialQqAccountClientFactory officialClientFactory) {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(configRoot, "configRoot");
+        Objects.requireNonNull(officialClientFactory, "officialClientFactory");
         SingleInstanceLock instanceLock;
         try {
             instanceLock = SingleInstanceLock.acquire(config.dataDir());
@@ -200,11 +228,16 @@ public final class Bma3App implements AutoCloseable {
                 config.dataDir().resolve("inbox.db"));
         QqDirectoryStore directory = new QqDirectoryStore(
                 config.dataDir().resolve("qq-directory.db"));
+        AtomicReference<OfficialQqDirectoryStore> officialDirectoryRef =
+                new AtomicReference<>();
+        AtomicReference<OfficialQqService> officialServiceRef = new AtomicReference<>();
         AtomicReference<AppConfig> current = new AtomicReference<>(config);
         AtomicReference<RuntimePolicy> runtime =
                 new AtomicReference<>(RuntimePolicy.from(config));
         SourceLabels sourceLabels = SourceLabels.builder()
-                .register(new QqSourceLabeler(() -> directory)).build();
+                .register(new QqSourceLabeler(() -> directory))
+                .register(new QqOfficialSourceLabeler(officialDirectoryRef::get))
+                .build();
         SourceKeyer sourceKeyer = new QqSourceKeyer();
         PriorityResolver priorities = new PriorityResolver(() -> runtime.get().weighting());
         Supplier<DeliveryPolicy> deliveryPolicy = () -> {
@@ -273,9 +306,15 @@ public final class Bma3App implements AutoCloseable {
         QqExtrasStore qqExtras = new QqExtrasStore(config.dataDir().resolve("qq-extras.db"));
         QqMediaDiagnostics mediaDiagnostics = new QqMediaDiagnostics();
         AtomicReference<AccountRegistry> registry = new AtomicReference<>();
-        AccountRegistry accounts = new AccountRegistry(event -> ingest(board, inboxService,
-                priorities, sourceKeyer, registry.get(), current, qqExtras, sourceLabels,
-                directory, event));
+        AtomicReference<QqChannelRuntime> channelsRef = new AtomicReference<>();
+        AccountRegistry accounts = new AccountRegistry(event -> {
+            QqChannelRuntime channels = channelsRef.get();
+            if (channels == null) {
+                throw new IllegalStateException("QQ 渠道恢复尚未完成");
+            }
+            ingest(board, priorities, sourceKeyer, registry.get(), current, qqExtras,
+                    sourceLabels, directory, channels.router(), event);
+        });
         registry.set(accounts);
         QqToolContext qqContext = new QqToolContext(
                 accounts, board, board, config.dataDir(), qqExtras,
@@ -291,7 +330,6 @@ public final class Bma3App implements AutoCloseable {
                             media.maxInlineBytes(), media.maxDownloadBytes(),
                             Duration.ofSeconds(media.timeoutSeconds()));
                 }, directory, mediaDiagnostics);
-
         AtomicReference<WatchdogEngine> watchdogRef = new AtomicReference<>();
         // Remote ask surface (spec 2026-11-15 §2). It is deliberately absent when auth is disabled:
         // debug.maxPending caps concurrency (0 = unlimited, per user ruling: no single-flight).
@@ -351,13 +389,48 @@ public final class Bma3App implements AutoCloseable {
         XvfbService xvfb = null;
         WatchdogEngine watchdog = null;
         try {
+            // Open local control/observation stores first. Repair binding epochs and replay every
+            // durable channel/Inbox operation before an account or an HTTP endpoint is started.
+            QqChannelRuntime channels = new QqChannelRuntime(config.dataDir(), board, inboxService,
+                    inboxStore,
+                    (channel, accountId) -> knownChannelAccount(current.get(), channel, accountId),
+                    (channel, accountId) -> channelAvailable(
+                            channel, accountId, accounts, officialServiceRef.get()),
+                    () -> current.get().qqOfficial().matching(), Clock.systemUTC());
+            channelsRef.set(channels);
+            var recovery = channels.recoverBeforeServing();
+            LOG.info("event=qq_channel_recovered promoted={} routed={} skipped={}",
+                    recovery.promoted(), recovery.routed(), recovery.skipped());
             inboxHttp.start();
+            // New official resources are created inside the unified cleanup scope. If the
+            // directory, credential policy or service constructor fails, the catch below closes
+            // the already-created board/inbox/directory/instance-lock resources.
+            OfficialQqDirectoryStore officialDirectory = new OfficialQqDirectoryStore(
+                    config.dataDir().resolve("official-directory.db"));
+            officialDirectoryRef.set(officialDirectory);
+            OfficialQqCredentialPathPolicy officialCredentialPolicy =
+                    RepositoryBoundaries.credentialPolicy(
+                            officialCredentialStartingPoints(config, configRoot));
+            OfficialQqService officialService = new OfficialQqService(
+                    config, env, board, officialDirectory, inboxService, priorities,
+                    sourceLabels, officialClientFactory, officialCredentialPolicy,
+                    channels.router()::ingest);
+            officialServiceRef.set(officialService);
+
             List<AccountConfig> resolved = resolveAccounts(config, env);
             accounts.reconcile(resolved);
             applySelfOverrides(accounts, config);
+            officialService.start();
             watcher = ConfigWatcher.watch(configRoot, env, next -> {
-                accounts.reconcile(resolveAccounts(next, env));
+                // Validate every dependent runtime before mutating either one. In particular a
+                // bad OneBot tokenEnv must leave the previous global policy and official snapshot
+                // untouched, matching the pre-official hot-reload contract.
+                List<AccountConfig> nextOneBot = resolveAccounts(next, env);
+                List<io.mosire.bma3.qqofficial.account.OfficialQqAccountConfig> nextOfficial =
+                        OfficialQqService.desiredAccounts(next);
+                accounts.reconcile(nextOneBot);
                 applySelfOverrides(accounts, next);
+                officialService.reconcile(next, nextOfficial);
                 current.set(next);
                 runtime.set(RuntimePolicy.from(next));
             });
@@ -368,6 +441,8 @@ public final class Bma3App implements AutoCloseable {
                     new JsonWatchdogStore(config.dataDir().resolve("watchdog")));
             List<io.mosire.agentlib.tool.AgentTool> tools = new ArrayList<>();
             tools.addAll(QqTools.all(qqContext));
+            tools.addAll(officialService.tools());
+            tools.addAll(channels.tools());
             tools.addAll(InboxTools.all(inboxService, Main.VERSION));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
@@ -402,6 +477,9 @@ public final class Bma3App implements AutoCloseable {
             watchdog.addProbe(Probes.process())
                     .addProbe(Probes.disk(config.dataDir()))
                     .addProbe(Probes.db(board::ping, inboxStore::ping))
+                    .addProbe(Probes.named("qqChannels", () -> channels.ping()
+                            ? ProbeResult.up("qqChannels", "SELECT 1")
+                            : ProbeResult.down("qqChannels", "DB_UNAVAILABLE", "SELECT 1 failed")))
                     .addProbe(Probes.named("directory", () -> directory.ping()
                             ? ProbeResult.up("directory", "SELECT 1")
                             : ProbeResult.down("directory", "DB_UNAVAILABLE", "SELECT 1 failed")))
@@ -414,6 +492,8 @@ public final class Bma3App implements AutoCloseable {
                     .addProbe(Probes.mcp(mcp))
                     .addProbe(Probes.qqAccount(accounts))
                     .addProbe(Probes.qqZombie(accounts))
+                    .addProbe(Probes.named("qqOfficial",
+                            () -> qqOfficialProbe(officialService)))
                     .addProbe(Probes.named("dshPlugin", () -> {
                         AppConfig.Watchdog settings = current.get().watchdog();
                         if (!settings.pluginHeartbeatEnabled()) {
@@ -478,36 +558,120 @@ public final class Bma3App implements AutoCloseable {
 
             return new Bma3App(config, board, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
-                    directory, scheduleRef.get(), instanceLock);
+                    directory, scheduleRef.get(), officialService, channels, instanceLock);
         } catch (RuntimeException failure) {
-            if (scheduleRef.get() != null) {
-                scheduleRef.get().close();
+            // Stop external entry points and account producers before their shared stores. A
+            // cleanup failure must not hide the original failure or leak the instance lock.
+            closeSuppressing(failure, watcher);
+            closeSuppressing(failure, watchdog);
+            closeSuppressing(failure, mcp);
+            closeSuppressing(failure, browser);
+            closeSuppressing(failure, xvfb);
+            closeSuppressing(failure, scheduleRef.get());
+            OfficialQqService officialToClose = officialServiceRef.get();
+            if (officialToClose != null) {
+                closeSuppressing(failure, officialToClose);
+            } else {
+                closeSuppressing(failure, officialDirectoryRef.get());
             }
-            if (watchdog != null) {
-                watchdog.close();
-            }
-            if (mcp != null) {
-                mcp.close();
-            }
-            if (browser != null) {
-                browser.close();
-            }
-            if (xvfb != null) {
-                xvfb.close();
-            }
-            if (watcher != null) {
-                watcher.close();
-            }
-            directory.close();
-            accounts.close();
-            qqExtras.close();
-            inboxHttp.close();
-            health.close();
-            instanceLock.close();
-            inboxStore.close();
-            board.close();
+            closeSuppressing(failure, accounts);
+            closeSuppressing(failure, channelsRef.get());
+            closeSuppressing(failure, directory);
+            closeSuppressing(failure, qqExtras);
+            closeSuppressing(failure, inboxHttp);
+            closeSuppressing(failure, health);
+            closeSuppressing(failure, inboxStore);
+            closeSuppressing(failure, board);
+            closeSuppressing(failure, instanceLock);
             throw failure;
         }
+    }
+
+    private static void closeSuppressing(Throwable primary, AutoCloseable resource) {
+        if (resource == null) {
+            return;
+        }
+        try {
+            resource.close();
+        } catch (Exception closeFailure) {
+            primary.addSuppressed(closeFailure);
+        }
+    }
+
+    private static List<Path> officialCredentialStartingPoints(AppConfig config,
+                                                               Path configRoot) {
+        List<Path> points = new ArrayList<>();
+        points.add(configRoot.toAbsolutePath().normalize());
+        points.add(config.dataDir().toAbsolutePath().normalize());
+        points.add(Path.of("").toAbsolutePath().normalize());
+        for (AppConfig.QqOfficial.Account account : config.qqOfficial().accounts()) {
+            if (!account.appSecretFile().isBlank()) {
+                points.add(Path.of(account.appSecretFile()).toAbsolutePath().normalize());
+            }
+        }
+        return List.copyOf(points);
+    }
+
+    private static boolean knownChannelAccount(AppConfig config, QqChannelRegistry.Channel channel,
+                                               String accountId) {
+        if (channel == QqChannelRegistry.Channel.ONEBOT) {
+            return config.qqconnect().accounts().stream()
+                    .anyMatch(account -> account.accountId().equals(accountId));
+        }
+        return config.qqOfficial().accounts().stream()
+                .anyMatch(account -> account.accountId().equals(accountId));
+    }
+
+    private static boolean channelAvailable(QqChannelRegistry.Channel channel, String accountId,
+                                            AccountRegistry oneBot,
+                                            OfficialQqService official) {
+        if (channel == QqChannelRegistry.Channel.ONEBOT) {
+            return oneBot.connected(accountId);
+        }
+        return official != null && official.registry().accountStatus(accountId)
+                .map(OfficialQqAccountStatus::healthy).orElse(false);
+    }
+
+    private static ProbeResult qqOfficialProbe(OfficialQqService official) {
+        List<OfficialQqAccountStatus> statuses = official.registry().accountStatuses();
+        int enabled = 0;
+        int disabled = 0;
+        int connected = 0;
+        int down = 0;
+        int pending = 0;
+        for (OfficialQqAccountStatus status : statuses) {
+            if (status == null || !status.enabled()) {
+                disabled++;
+                continue;
+            }
+            enabled++;
+            if (status.terminal() || status.state()
+                    == io.mosire.bma3.qqofficial.account.OfficialQqAccountState.DOWN) {
+                down++;
+            } else if (!status.connected()) {
+                pending++;
+            } else {
+                connected++;
+            }
+        }
+        Map<String, String> facts = new LinkedHashMap<>();
+        facts.put("accounts", Integer.toString(enabled + disabled));
+        facts.put("enabled", Integer.toString(enabled));
+        facts.put("disabled", Integer.toString(disabled));
+        facts.put("connected", Integer.toString(connected));
+        facts.put("pending", Integer.toString(pending));
+        facts.put("down", Integer.toString(down));
+        if (enabled == 0) {
+            return ProbeResult.up("qqOfficial", "disabled", facts);
+        }
+        if (down > 0) {
+            return ProbeResult.down("qqOfficial", "DOWN", "enabled account unavailable", facts);
+        }
+        if (pending > 0) {
+            return ProbeResult.degraded("qqOfficial", "CONNECTING",
+                    "enabled account not connected", facts);
+        }
+        return ProbeResult.up("qqOfficial", "all enabled accounts connected", facts);
     }
 
     private static WatchdogOptions watchdogOptions(AppConfig config) {
@@ -551,11 +715,12 @@ public final class Bma3App implements AutoCloseable {
         return true;
     }
 
-    private static void ingest(MessageBoardStore board, InboxService inboxService,
+    private static void ingest(MessageBoardStore board,
                                PriorityResolver priorities, SourceKeyer sourceKeyer,
                                AccountRegistry accounts, AtomicReference<AppConfig> current,
                                QqExtrasStore extras, SourceLabels sourceLabels,
-                               QqDirectoryStore directory, AccountEvent accountEvent) {
+                               QqDirectoryStore directory, QqChannelRouter channelRouter,
+                               AccountEvent accountEvent) {
         OneBotEvent event = accountEvent.event();
         SourceAddress source = event.source(accountEvent.accountId());
         SourceView view = sourceLabels.view(source);
@@ -581,7 +746,7 @@ public final class Bma3App implements AutoCloseable {
                     accountEvent.accountId(), sourceKey, decision.priority());
             return;
         }
-        AppendResult appended = board.append(new InboundMessage(
+        InboundMessage fact = new InboundMessage(
                 source,
                 Long.toString(event.messageId()),
                 event.at(),
@@ -590,14 +755,34 @@ public final class Bma3App implements AutoCloseable {
                 senderId,
                 event.senderName(),
                 event.senderCard(),
-                event.senderRole()));
-        if (!appended.created()) {
-            return;
-        }
+                event.senderRole());
         var note = extras.note(accountEvent.accountId(), senderId).orElse(null);
-        InboxEntry entry = entry(event, appended.message().localSeq(), note,
-                accountEvent.accountId(), directory);
-        inboxService.appendOrMerge(AppendItem.of(view, entry, decision.priority(), Instant.now()));
+        InboxEntry preview = entry(event, 0L, note, accountEvent.accountId(), directory);
+        channelRouter.ingest(new QqChannelRouteInput(false, accountEvent.accountId(), source,
+                fact.messageId(), senderId, Direction.INBOUND, event.at(), Instant.now(),
+                decision.priority(),
+                event.timestampFallback() ? QqChannelObservationStore.TimeReliability.FALLBACK
+                        : QqChannelObservationStore.TimeReliability.RELIABLE,
+                event.contentComplete() ? QqChannelObservationStore.ContentIntegrity.COMPLETE
+                        : QqChannelObservationStore.ContentIntegrity.INCOMPLETE,
+                botOnlyMentions(event), event.segments(), fact, preview,
+                QqChannelRouteInput.RawProjectionMode.LEGACY_APPEND_OR_MERGE, view));
+    }
+
+    /** Only structured mentions whose every target is this account may be ignored by matching. */
+    private static boolean botOnlyMentions(OneBotEvent event) {
+        boolean found = false;
+        for (var segment : event.segments()) {
+            if (!"at".equalsIgnoreCase(segment.type())
+                    && !"mention".equalsIgnoreCase(segment.type())) {
+                continue;
+            }
+            found = true;
+            if (event.selfId() <= 0 || !Long.toString(event.selfId()).equals(segment.data("qq"))) {
+                return false;
+            }
+        }
+        return found;
     }
 
     /** True when the quoted platform id belongs to a row this account sent. */
@@ -726,6 +911,16 @@ public final class Bma3App implements AutoCloseable {
         return inboxService;
     }
 
+    /** App-owned official-channel composition, exposed for focused integration diagnostics/tests. */
+    public OfficialQqService officialService() {
+        return official;
+    }
+
+    /** App-owned channel coordinator; exposed for local integration diagnostics/tests. */
+    public QqChannelRuntime channelRuntime() {
+        return channels;
+    }
+
     @Override
     public void close() {
         if (watchdog != null) {
@@ -740,18 +935,24 @@ public final class Bma3App implements AutoCloseable {
         if (schedule != null) {
             schedule.close();
         }
+        if (watcher != null) {
+            watcher.close();
+        }
+        if (mcp != null) {
+            mcp.close();
+        }
+        if (official != null) {
+            official.close();
+        }
+        accounts.close();
+        if (channels != null) {
+            channels.close();
+        }
         if (qqExtras != null) {
             qqExtras.close();
         }
         if (directory != null) {
             directory.close();
-        }
-        if (watcher != null) {
-            watcher.close();
-        }
-        accounts.close();
-        if (mcp != null) {
-            mcp.close();
         }
         if (inboxService != null) {
             inboxService.close();

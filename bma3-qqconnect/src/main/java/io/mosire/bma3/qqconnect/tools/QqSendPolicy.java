@@ -1,23 +1,27 @@
 package io.mosire.bma3.qqconnect.tools;
 
-/** Hard limits shared by every text send tool. */
+import io.mosire.bma3.core.message.TextSendPolicy;
+
+/** QQ view of the shared provider-neutral text policy. */
 public record QqSendPolicy(int maxTextChars, String overflow) {
 
     public QqSendPolicy {
-        overflow = overflow == null || overflow.isBlank() ? "reject" : overflow;
-        if (maxTextChars < 1 || maxTextChars > 3000) {
-            throw new IllegalArgumentException("maxTextChars 必须在 1..3000");
-        }
-        if (!"reject".equals(overflow) && !"split".equals(overflow)) {
-            throw new IllegalArgumentException("overflow 必须是 reject/split");
-        }
+        TextSendPolicy delegate = new TextSendPolicy(maxTextChars, overflow);
+        maxTextChars = delegate.maxTextChars();
+        overflow = delegate.overflow();
     }
 
     public static QqSendPolicy defaults() {
-        return new QqSendPolicy(3000, "reject");
+        TextSendPolicy policy = TextSendPolicy.defaults();
+        return new QqSendPolicy(policy.maxTextChars(), policy.overflow());
     }
 
     public static QqSendPolicy from(int maxTextChars, String overflow) {
         return new QqSendPolicy(maxTextChars, overflow);
+    }
+
+    /** Shared implementation; all chunking/codepoint rules have exactly one owner. */
+    public TextSendPolicy textPolicy() {
+        return new TextSendPolicy(maxTextChars, overflow);
     }
 }

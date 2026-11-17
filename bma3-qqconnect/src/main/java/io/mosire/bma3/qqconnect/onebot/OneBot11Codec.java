@@ -5,12 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosire.bma3.core.message.Segment;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -34,6 +36,11 @@ public final class OneBot11Codec {
             Map.entry("xml", List.of("data", "text")));
 
     private static final int MAX_CARD_RAW_CHARS = 8192;
+
+    /** Segment types whose current parser understands the complete content-bearing payload. */
+    private static final Set<String> COMPLETE_SEGMENT_TYPES = Set.of(
+            "text", "at", "reply", "image", "record", "video", "file", "forward",
+            "face", "mface", "json", "xml");
     private static final Pattern GROUP_INVITE = Pattern.compile(
             "mqqapi://group/invite_join[^\\s\"'<>]*", Pattern.CASE_INSENSITIVE);
     private static final Pattern XML_TITLE = Pattern.compile("(?is)<title>(.*?)</title>");
@@ -48,15 +55,17 @@ public final class OneBot11Codec {
             if (root == null || !"message".equals(root.path("post_type").asText())) {
                 return Optional.empty();
             }
-            long time = root.path("time").asLong(Instant.now().getEpochSecond());
             long groupId = root.path("group_id").asLong(0L);
-            List<Segment> segments = parseSegments(root.path("message"));
+            JsonNode messageNode = root.get("message");
+            List<Segment> segments = parseSegments(messageNode);
+            boolean contentComplete = completeSegmentArray(messageNode);
             String replyTo = segments.stream()
                     .filter(segment -> "reply".equals(segment.type()))
                     .map(segment -> segment.data("id"))
                     .findFirst()
                     .orElse("");
             JsonNode sender = root.path("sender");
+            Timestamp timestamp = parseTimestamp(root.get("time"));
             return Optional.of(new OneBotEvent(
                     root.path("post_type").asText(),
                     root.path("message_type").asText(),
@@ -65,15 +74,93 @@ public final class OneBot11Codec {
                     root.path("user_id").asLong(),
                     groupId,
                     root.path("message_id").asLong(),
-                    Instant.ofEpochSecond(time),
+                    timestamp.at(),
                     sender.path("nickname").asText(""),
                     segments,
                     replyTo,
                     sender.path("card").asText(""),
-                    sender.path("role").asText("")));
+                    sender.path("role").asText(""),
+                    timestamp.fallback(),
+                    contentComplete));
         } catch (Exception failure) {
-            throw new IllegalArgumentException("OneBot 事件解析失败", failure);
+            throw new IllegalArgumentException("OneBot 事件解析失败（原因类型 "
+                    + failure.getClass().getSimpleName() + "）");
         }
+    }
+
+    /**
+     * A timestamp is trustworthy only when it is a positive integral JSON number convertible to
+     * a real {@link Instant}. Missing, textual, fractional, non-positive, or out-of-range values
+     * fall back to server receive time and are explicitly marked unreliable.
+     */
+    private static Timestamp parseTimestamp(JsonNode timeNode) {
+        Instant receivedAt = Instant.now();
+        if (timeNode == null
+                || !timeNode.isIntegralNumber()
+                || !timeNode.canConvertToLong()) {
+            return new Timestamp(receivedAt, true);
+        }
+        long seconds = timeNode.longValue();
+        if (seconds <= 0L) {
+            return new Timestamp(receivedAt, true);
+        }
+        try {
+            return new Timestamp(Instant.ofEpochSecond(seconds), false);
+        } catch (DateTimeException impossible) {
+            return new Timestamp(receivedAt, true);
+        }
+    }
+
+    /**
+     * True only for an array whose every element is a fully understood OneBot segment shape.
+     * A string (including raw CQ code), missing/object message, scalar element, missing type/data,
+     * unknown type, or a known type without its identifying payload is conservatively incomplete.
+     */
+    private static boolean completeSegmentArray(JsonNode message) {
+        if (message == null || !message.isArray()) {
+            return false;
+        }
+        for (JsonNode segment : message) {
+            if (!segment.isObject()) {
+                return false;
+            }
+            JsonNode typeNode = segment.get("type");
+            JsonNode data = segment.get("data");
+            if (typeNode == null || !typeNode.isTextual() || typeNode.asText().isBlank()
+                    || data == null || !data.isObject()) {
+                return false;
+            }
+            String type = typeNode.asText();
+            if (!COMPLETE_SEGMENT_TYPES.contains(type) || !completePayload(type, data)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean completePayload(String type, JsonNode data) {
+        return switch (type) {
+            case "text" -> data.get("text") != null && data.get("text").isTextual();
+            case "at" -> present(data, "qq");
+            case "reply" -> present(data, "id");
+            case "image", "record", "video", "file" ->
+                    present(data, "file") || present(data, "url") || present(data, "path");
+            case "forward" -> present(data, "id");
+            case "face" -> present(data, "id");
+            case "mface" -> present(data, "url") || present(data, "summary")
+                    || present(data, "emoji_id");
+            case "json", "xml" -> data.get("data") != null && data.get("data").isTextual();
+            default -> false;
+        };
+    }
+
+    private static boolean present(JsonNode data, String field) {
+        JsonNode value = data.get(field);
+        return value != null && !value.isNull() && value.isValueNode()
+                && !value.asText("").isBlank();
+    }
+
+    private record Timestamp(Instant at, boolean fallback) {
     }
 
     /**

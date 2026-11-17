@@ -32,6 +32,31 @@ qqconnect:
     maxDownloadBytes: 33554432
     timeoutSeconds: 20
 
+# QQ 官方机器人（D-074..D-077）。默认不配置账号、不触网。
+# AppSecret 禁止 inline；appSecretEnv 与 appSecretFile 二选一，enabled=true 时必须给一个。
+# 本段不接受 ${ENV:...} 插值：appSecretEnv 直接填写环境变量名，不填写变量值。
+# 首版 shard 只允许 [0, 1]。凭据文件必须由操作者保证 owner-only（0600）。
+qqofficial:
+  accounts:
+    # - accountId: qq-official-main
+    #   appId: "<APP_ID>"
+    #   appSecretEnv: BMA3_QQ_OFFICIAL_APP_SECRET
+    #   # 或者使用受保护文件（不要同时配置）：
+    #   # appSecretFile: /path/to/qq-official-app-secret
+    #   enabled: false
+    #   shard: [0, 1]
+  transport: websocket
+  reconnect:
+    initialMs: 1000
+    maxMs: 60000
+    jitter: true
+  http:
+    connectTimeoutSeconds: 10
+    requestTimeoutSeconds: 20
+  matching:
+    mode: strict          # strict | loose | off
+    strictTimeToleranceSeconds: 5
+
 inbox:
   inboxId: bma3
   httpPort: 46500
@@ -81,6 +106,8 @@ weighting:
     "*": 0
     qq_private: 300
     qq_group: 200
+    qq_official_private: 300   # 与 OneBot 单聊同档；官方 openid 不按 QQ 号解释
+    qq_official_group: 200     # 群 @ 再由 qq_at_bot 等全局 attributes 加分
     # qq_group/955432692: 350   # 更具体者胜
   attributes:
     qq_at_bot: 100

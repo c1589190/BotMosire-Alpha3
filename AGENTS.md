@@ -75,7 +75,7 @@
 4. **改**：一次只做一个可独立验证的责任区。
 5. **验**：按 `VERIFICATION.md` 留下命令、rc、测试数与证据路径；没跑写 `NOT_RUN`。
 6. **记**：更新 `STATUS.md`；有设计影响时同步 spec 与裁定索引。
-7. **子 Agent 模型**（M-003）：默认显式选用 `deepseek-flash`；当次用户另有指定时从其指令。先查询可用 provider/model，若不可用则如实报告，不静默换模型。
+7. **子 Agent**（M-005）：按任务需要自行决定是否委派及使用何种可用模型；局部问题可直接修复。当次用户另有指定时遵从当次指令。
 
 ## 6. 目录现状
 
@@ -85,6 +85,7 @@ BotMosire-Alpha3/
 ├── bma3-core/           # 领域模型 + SQLite 消息板 + 配置/日志原语
 ├── bma3-agentlib/       # AgentLib ToolRegistry/MCP Bearer 包装
 ├── bma3-qqconnect/      # OneBot 11 正向 WS、账号 registry、QQ AgentTools
+├── bma3-qq-official-connect/ # 官方 QQ 机器人适配器（实施状态见 STATUS）
 ├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
 ├── bma3-webconnect/     # Selenium + 系统 Chromium 浏览器 AgentTools
 ├── bma3-xvfb/           # Xvfb 工作区（虚拟桌面）+ 平台检测 + 12 个 xvfb_* 工具

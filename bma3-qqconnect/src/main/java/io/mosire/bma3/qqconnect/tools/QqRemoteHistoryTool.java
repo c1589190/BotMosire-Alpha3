@@ -269,7 +269,7 @@ public final class QqRemoteHistoryTool implements AgentTool {
             log(action, count, -1, started, -1, "failed");
             return failure("HISTORY_FAILED", targetId, chatType, count,
                     failure.getClass().getSimpleName(), -1, started,
-                    "请求失败：" + failure.getMessage());
+                    "请求失败（provider 错误详情已省略）");
         } finally {
             gate.set(false);
         }

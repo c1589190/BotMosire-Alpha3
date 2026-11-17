@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -36,6 +37,8 @@ public final class InboxService {
     private static final int PURGE_EVERY_APPENDS = 100;
     private static final int MAX_RECENT_ERRORS = 20;
     private static final int MAX_DISMISS_PREVIEW = 50;
+    private static final Set<String> EVIDENCE_RESERVED_SUMMARY_FIELDS = Set.of(
+            "observedByChannel", "evidence", "evidenceKeys", "lastEvidenceAt");
 
     private final InboxStore store;
     private final Supplier<DeliveryPolicy> policy;
@@ -126,6 +129,10 @@ public final class InboxService {
      * same source (D-043), marked {@code continued} so the panel can say the source is still active.
      */
     public synchronized InboxItem appendOrMerge(AppendItem request) {
+        if (request != null && (!request.displayChannel().isEmpty()
+                || (request.entry() != null && !request.entry().channel().isEmpty()))) {
+            return appendOrMergeProjected(request);
+        }
         long revision = nextRevision();
         var active = store.activeForSource(request.source().raw());
         if (active.isEmpty()) {
@@ -143,6 +150,489 @@ public final class InboxService {
             return created;
         }
         return mergeInto(active.orElseThrow(), request, revision);
+    }
+
+    /**
+     * Generic projected append. This is the canonical-source entry point used by channel-aware
+     * callers: it merges body entries only when the incoming observation belongs to the item's
+     * selected display channel. Observations from any other channel are routed to the evidence-only
+     * path and can never add a body line, create a second item, or schedule a push.
+     *
+     * <p>The item write and the panel-revision advance are committed in one SQLite transaction.</p>
+     */
+    public synchronized InboxItem appendProjected(AppendItem request) {
+        return appendOrMergeProjected(request);
+    }
+
+    /**
+     * Projected append/merge with the same D-043 lifetimes as {@link #appendOrMerge}: only an open
+     * item is a merge target. Once frozen, the next body message opens a new item and may select a
+     * different display channel; older frozen/ACK items never dictate the next item's channel.
+     * A different-channel observation against an existing open item is evidence-only. Late evidence
+     * for an older item must be supplied explicitly via {@link #appendEvidenceOnly(InboxEvidenceUpdate)}
+     * with that item id.
+     */
+    public synchronized InboxItem appendOrMergeProjected(AppendItem request) {
+        if (request == null) {
+            throw new IllegalArgumentException("APPEND_REQUEST_EMPTY");
+        }
+        long nextRevision = panelRevision + 1;
+        ProjectedOutcome[] outcome = new ProjectedOutcome[1];
+        store.inTransaction(() -> {
+            outcome[0] = applyProjectedInternal(request, nextRevision,
+                    "itm-" + UUID.randomUUID());
+            if (outcome[0].bodyChanged()) {
+                store.savePanelRevision(nextRevision);
+            }
+        });
+        ProjectedOutcome applied = outcome[0];
+        if (applied.bodyChanged()) {
+            panelRevision = nextRevision;
+            afterAppend(applied.item());
+        }
+        return applied.item();
+    }
+
+    /**
+     * Idempotent projected append. The durable receipt, the item write (when any) and the
+     * panel-revision advance all commit in the same SQLite transaction.
+     *
+     * <p>Replaying the same {@code requestKey} is a pure read: it never appends body entries,
+     * never creates a new item, never changes an existing item, and never advances the panel or
+     * push revision. If the originally associated item still exists it is returned (including when
+     * it is now ACKED); if it was removed by retention, the duplicate returns {@code null} while
+     * still leaving the receipt in place.</p>
+     */
+    public synchronized InboxItem appendProjectedOnce(String requestKey, AppendItem request) {
+        String key = requestKey == null ? "" : requestKey.trim();
+        if (key.isEmpty()) {
+            throw new IllegalArgumentException("REQUEST_KEY_REQUIRED");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("APPEND_REQUEST_EMPTY");
+        }
+        long nextRevision = panelRevision + 1;
+        String candidateId = "itm-" + UUID.randomUUID();
+        String source = request.source().raw();
+        String channel = resolveDisplayChannel(request);
+        ProjectedOutcome[] outcome = new ProjectedOutcome[1];
+        boolean[] applied = new boolean[1];
+        store.inTransaction(() -> {
+            if (!store.claimReceipt(key, candidateId, "appendProjected", source, channel)) {
+                return;
+            }
+            ProjectedOutcome result = applyProjectedInternal(request, nextRevision, candidateId);
+            store.setReceiptItemId(key, result.item().id());
+            if (result.bodyChanged()) {
+                store.savePanelRevision(nextRevision);
+            }
+            outcome[0] = result;
+            applied[0] = true;
+        });
+        if (!applied[0]) {
+            InboxStore.Receipt receipt = store.receipt(key).orElse(null);
+            if (receipt == null) {
+                // A store that claimed the key but cannot return its binding cannot prove that the
+                // replay belongs to the same source/channel. Fail closed instead of losing an item.
+                throw new IllegalStateException("RECEIPT_METADATA_MISSING: key=" + key);
+            }
+            if (!source.equals(safe(receipt.source())) || !channel.equals(safe(receipt.channel()))) {
+                throw new IllegalArgumentException("RECEIPT_CONFLICT: key=" + key
+                        + " boundSource=" + safe(receipt.source())
+                        + " boundChannel=" + safe(receipt.channel())
+                        + " requestSource=" + source + " requestChannel=" + channel);
+            }
+            String itemId = safe(receipt.itemId());
+            return itemId.isEmpty() ? null : store.item(itemId).orElse(null);
+        }
+        ProjectedOutcome result = outcome[0];
+        if (result.bodyChanged()) {
+            panelRevision = nextRevision;
+            afterAppend(result.item());
+        }
+        return result.item();
+    }
+
+    private record ProjectedOutcome(InboxItem item, boolean bodyChanged) { }
+
+    private ProjectedOutcome applyProjectedInternal(AppendItem request, long revision,
+                                                     String candidateId) {
+        String selected = resolveDisplayChannel(request);
+        if (selected.isEmpty()) {
+            // appendProjectedOnce also supports a caller that has not selected a channel yet.
+            var active = store.activeForSource(request.source().raw());
+            if (active.isPresent()) {
+                return mergeLegacy(active.orElseThrow(), request, revision);
+            }
+            return createLegacy(request, revision, candidateId);
+        }
+
+        String bodyChannel = bodyChannel(request, selected);
+        if (!bodyChannel.equals(selected)) {
+            throw new IllegalArgumentException("CHANNEL_MISMATCH: selected=" + selected
+                    + " body=" + bodyChannel);
+        }
+        var active = store.activeForSource(request.source().raw());
+        if (active.isPresent()) {
+            InboxItem target = active.orElseThrow();
+            String display = target.displayChannel();
+            if (display.isEmpty()) {
+                return mergeProjected(target, request, bodyChannel, revision);
+            }
+            if (!bodyChannel.equals(display)) {
+                return mergeProjectedEvidence(target, request, bodyChannel);
+            }
+            return mergeProjected(target, request, display, revision);
+        }
+
+        // No open item: D-043 explicitly allows the next item to choose a new display channel.
+        // Never infer a channel from a previously frozen/ACK item; late evidence for such an item
+        // is an explicit itemId-addressed evidence-only operation.
+        return createProjected(request, selected, bodyChannel, revision, candidateId);
+    }
+
+    private ProjectedOutcome createLegacy(AppendItem request, long revision, String candidateId) {
+        InboxEntry entry = request.entry();
+        List<InboxEntry> entries = entry == null ? List.of() : List.of(entry);
+        String summary = entry == null ? request.summary() : entry.render();
+        boolean continued = store.hasUnackedFrozenForSource(request.source().raw());
+        InboxItem created = new InboxItem(
+                candidateId, request.source().raw(), request.source().label(),
+                summary, entries, 1, revision, request.priority(),
+                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1,
+                0L, continued);
+        store.append(created);
+        return new ProjectedOutcome(created, true);
+    }
+
+    private ProjectedOutcome mergeLegacy(InboxItem target, AppendItem request, long revision) {
+        InboxEntry incoming = request.entry();
+        List<InboxEntry> entries = new ArrayList<>(target.entries());
+        String summary;
+        if (incoming != null) {
+            entries.add(incoming);
+            entries = trim(entries);
+            summary = renderCapped(entries);
+        } else {
+            summary = target.summary().isBlank() ? request.summary()
+                    : target.summary() + "\n" + request.summary();
+        }
+        InboxItem updated = target.withPanelState(
+                summary, entries, target.totalMessages() + 1, revision,
+                Math.max(target.priority(), request.priority()), Instant.now(),
+                target.revision() + 1);
+        store.update(updated);
+        return new ProjectedOutcome(updated, true);
+    }
+
+    private ProjectedOutcome createProjected(AppendItem request, String selected,
+                                             String bodyChannel, long revision,
+                                             String candidateId) {
+        InboxEntry entry = request.entry() == null ? null
+                : withBodyChannel(request.entry(), bodyChannel);
+        List<InboxEntry> entries = entry == null ? List.of() : List.of(entry);
+        String summary = entry == null ? request.summary() : entry.render();
+        boolean continued = store.hasUnackedFrozenForSource(request.source().raw());
+        InboxItem created = new InboxItem(
+                candidateId, request.source().raw(), request.source().label(),
+                summary, entries, 1, revision, request.priority(),
+                ItemStatus.AVAILABLE, request.availableAt(), Instant.now(), Instant.now(), 1,
+                0L, continued, selected, request.channelSummary());
+        store.append(created);
+        return new ProjectedOutcome(created, true);
+    }
+
+    private ProjectedOutcome mergeProjected(InboxItem target, AppendItem request,
+                                            String bodyChannel, long revision) {
+        InboxEntry incoming = request.entry() == null ? null
+                : withBodyChannel(request.entry(), bodyChannel);
+        List<InboxEntry> entries = new ArrayList<>(target.entries());
+        String summary;
+        if (incoming != null) {
+            entries.add(incoming);
+            entries = trim(entries);
+            summary = renderCapped(entries);
+        } else {
+            summary = target.summary().isBlank() ? request.summary()
+                    : target.summary() + "\n" + request.summary();
+        }
+        Map<String, Object> mergedSummary = mergeSummary(target.channelSummary(),
+                request.channelSummary());
+        // A legacy/open item with no channel adopts the first projected body channel. Once set,
+        // the channel never changes for this item's lifetime.
+        InboxItem projected = target.displayChannel().isEmpty()
+                ? target.withChannelProjection(bodyChannel, mergedSummary) : target;
+        InboxItem updated = projected.withPanelState(
+                summary, entries, target.totalMessages() + 1, revision,
+                Math.max(target.priority(), request.priority()), Instant.now(),
+                target.revision() + 1, mergedSummary);
+        store.update(updated);
+        return new ProjectedOutcome(updated, true);
+    }
+
+    /**
+     * Non-display body observations become evidence only. The open item's body window, summary,
+     * total count, revision and pending deadline are deliberately untouched.
+     */
+    private ProjectedOutcome mergeProjectedEvidence(InboxItem target, AppendItem request,
+                                                    String channel) {
+        InboxEntry entry = request.entry();
+        Map<String, Object> evidence = entry == null ? Map.of() : entry.evidence();
+        boolean matched = isMatchedEvidence(evidence);
+        InboxEvidenceUpdate update = new InboxEvidenceUpdate(target.id(), target.source(), channel,
+                evidence, request.channelSummary(), evidencePriority(evidence), matched,
+                Instant.now(), "");
+        return new ProjectedOutcome(applyEvidenceOnly(target, update), false);
+    }
+
+    /**
+     * Explicit evidence-only entry. It never creates an item, never appends body entries, never
+     * advances panel/push revisions and never calls {@link #afterAppend}, so a late second-channel
+     * observation cannot schedule another wake. Frozen items only accept summary/evidence metadata;
+     * their entries, summary, priority and push watermark stay byte-for-byte unchanged.
+     *
+     * <p>Replay safety is enforced by either a persisted {@code evidenceKey} (incremental updates)
+     * or absolute snapshot replacement (unkeyed updates). Repeating either form cannot accumulate
+     * counters or evidence rows.</p>
+     */
+    public synchronized InboxItem appendEvidenceOnly(InboxEvidenceUpdate update) {
+        if (update == null || !update.hasTarget()) {
+            throw new IllegalArgumentException("EVIDENCE_TARGET_REQUIRED");
+        }
+        if (!update.evidenceKey().isEmpty()) {
+            rejectReservedEvidenceSummaryFields(update.channelSummary());
+        }
+        InboxItem target;
+        if (!update.itemId().isEmpty()) {
+            target = store.item(update.itemId())
+                    .orElseThrow(() -> new IllegalArgumentException("ITEM_NOT_FOUND: "
+                            + update.itemId()));
+            if (!update.source().isEmpty() && !target.source().equals(update.source())) {
+                throw new IllegalArgumentException("SOURCE_MISMATCH: itemId=" + update.itemId()
+                        + " actualSource=" + target.source()
+                        + " requestedSource=" + update.source());
+            }
+        } else {
+            target = store.activeForSource(update.source())
+                    .or(() -> store.latestForSource(update.source()))
+                    .orElseThrow(() -> new IllegalArgumentException("ITEM_NOT_FOUND: "
+                            + update.source()));
+        }
+        return applyEvidenceOnly(target, update);
+    }
+
+    /** Convenience snapshot evidence-only update addressed by item id. */
+    public synchronized InboxItem appendEvidenceOnly(String itemId, String channel,
+                                                      Map<String, Object> evidence) {
+        return appendEvidenceOnly(InboxEvidenceUpdate.forItem(itemId, channel, evidence));
+    }
+
+    /** Convenience snapshot evidence-only update addressed by canonical source. */
+    public synchronized InboxItem appendEvidenceOnlyForSource(String source, String channel,
+                                                               Map<String, Object> evidence) {
+        return appendEvidenceOnly(InboxEvidenceUpdate.forSource(source, channel, evidence));
+    }
+
+    private InboxItem applyEvidenceOnly(InboxItem target, InboxEvidenceUpdate update) {
+        EvidenceOutcome outcome;
+        if (update.evidenceKey().isEmpty()) {
+            outcome = applyEvidenceUpdate(target, update, false);
+        } else {
+            EvidenceOutcome[] applied = new EvidenceOutcome[1];
+            store.inTransaction(() -> {
+                if (!store.claimEvidenceKey(target.id(), update.evidenceKey(),
+                        update.observedAt().toString())) {
+                    return;
+                }
+                applied[0] = applyEvidenceUpdate(target, update, true);
+            });
+            outcome = applied[0] == null
+                    ? new EvidenceOutcome(target, false) : applied[0];
+        }
+        // A priority rise changes dueFor() from normalDelay to importantDelay. Waiting push
+        // callers must re-evaluate now; this is not a panel/push revision bump and frozen/ACK
+        // evidence still cannot raise priority (so it never reaches this branch).
+        if (outcome.priorityRaised()) {
+            notifyAll();
+        }
+        return outcome.item();
+    }
+
+    private record EvidenceOutcome(InboxItem item, boolean priorityRaised) { }
+
+    private EvidenceOutcome applyEvidenceUpdate(InboxItem target, InboxEvidenceUpdate update,
+                                                boolean keyed) {
+        Map<String, Object> summary = mergeSummary(target.channelSummary(),
+                update.channelSummary());
+        summary = recordEvidence(summary, update, keyed);
+        int nextPriority = target.priority();
+        // A matched priority is only meaningful before freeze. Once pushed, the already-injected
+        // content/priority is immutable even if the second channel confirms it later.
+        if (!target.frozen() && target.status() != ItemStatus.ACKED
+                && update.matched() && update.matchedPriority() != null) {
+            nextPriority = Math.max(nextPriority, update.matchedPriority());
+        }
+        boolean priorityRaised = nextPriority > target.priority();
+        if (summary.equals(target.channelSummary()) && !priorityRaised) {
+            return new EvidenceOutcome(target, false);
+        }
+        InboxItem updated = target.withEvidenceState(nextPriority, summary);
+        store.update(updated);
+        return new EvidenceOutcome(updated, priorityRaised);
+    }
+
+    private static void rejectReservedEvidenceSummaryFields(Map<String, Object> patch) {
+        if (patch == null || patch.isEmpty()) {
+            return;
+        }
+        for (String field : EVIDENCE_RESERVED_SUMMARY_FIELDS) {
+            if (patch.containsKey(field)) {
+                throw new IllegalArgumentException("EVIDENCE_SUMMARY_RESERVED_FIELD: " + field);
+            }
+        }
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static Map<String, Object> mergeSummary(Map<String, Object> current,
+                                                    Map<String, Object> patch) {
+        if (patch == null || patch.isEmpty()) {
+            return current;
+        }
+        Map<String, Object> next = new LinkedHashMap<>(current);
+        next.putAll(patch);
+        return InboxEntry.immutableMap(next);
+    }
+
+    private static Map<String, Object> recordEvidence(Map<String, Object> summary,
+                                                      InboxEvidenceUpdate update,
+                                                      boolean keyed) {
+        Map<String, Object> next = new LinkedHashMap<>(summary);
+        // Dedupe keys live in inbox_evidence_key now; remove any pre-migration copy so the
+        // serialized channel summary stays bounded.
+        next.remove("evidenceKeys");
+        if (keyed) {
+            if (!update.channel().isEmpty()) {
+                Map<String, Object> counts = new LinkedHashMap<>();
+                Object raw = next.get("observedByChannel");
+                if (raw instanceof Map<?, ?> current) {
+                    for (Map.Entry<?, ?> entry : current.entrySet()) {
+                        if (entry.getKey() != null) {
+                            counts.put(String.valueOf(entry.getKey()), entry.getValue());
+                        }
+                    }
+                }
+                long observed = counts.get(update.channel()) instanceof Number number
+                        ? number.longValue() : 0L;
+                counts.put(update.channel(), observed + 1L);
+                next.put("observedByChannel", InboxEntry.immutableMap(counts));
+            }
+            if (!update.evidence().isEmpty()) {
+                List<Object> evidence = evidenceRows(next);
+                evidence.add(evidenceRow(update));
+                next.put("evidence", List.copyOf(tail(evidence, 64)));
+            }
+            if (!update.evidence().isEmpty() || !update.channel().isEmpty()) {
+                next.put("lastEvidenceAt", update.observedAt().toString());
+            }
+        } else {
+            // Snapshot mode: callers pass absolute aggregates in channelSummary. Never increment.
+            // If a lone evidence observation is supplied, it replaces the bounded evidence window;
+            // counts supplied by the caller are preserved verbatim.
+            if (!update.evidence().isEmpty()) {
+                next.put("evidence", List.of(evidenceRow(update)));
+            }
+            if (!update.channel().isEmpty()
+                    && !update.channelSummary().containsKey("observedByChannel")) {
+                next.put("observedByChannel", InboxEntry.immutableMap(
+                        Map.of(update.channel(), 1L)));
+            }
+            if (!update.evidence().isEmpty() || !update.channel().isEmpty()) {
+                next.put("lastEvidenceAt", update.observedAt().toString());
+            }
+        }
+        return InboxEntry.immutableMap(next);
+    }
+
+    private static List<Object> evidenceRows(Map<String, Object> summary) {
+        List<Object> evidence = new ArrayList<>();
+        Object raw = summary.get("evidence");
+        if (raw instanceof List<?> existing) {
+            evidence.addAll(existing);
+        }
+        return evidence;
+    }
+
+    private static Map<String, Object> evidenceRow(InboxEvidenceUpdate update) {
+        Map<String, Object> row = new LinkedHashMap<>(update.evidence());
+        if (!update.channel().isEmpty()) {
+            row.putIfAbsent("channel", update.channel());
+        }
+        row.putIfAbsent("observedAt", update.observedAt().toString());
+        if (!update.evidenceKey().isEmpty()) {
+            row.putIfAbsent("evidenceKey", update.evidenceKey());
+        }
+        if (update.matched()) {
+            row.putIfAbsent("matched", true);
+            row.putIfAbsent("state", "MATCHED");
+        }
+        return InboxEntry.immutableMap(row);
+    }
+
+    private static List<Object> tail(List<Object> values, int max) {
+        if (values.size() <= max) {
+            return values;
+        }
+        return new ArrayList<>(values.subList(values.size() - max, values.size()));
+    }
+
+    private static String resolveDisplayChannel(AppendItem request) {
+        if (!request.displayChannel().isEmpty()) {
+            return request.displayChannel();
+        }
+        return request.entry() == null ? "" : request.entry().channel();
+    }
+
+    private static String bodyChannel(AppendItem request, String selected) {
+        String entryChannel = request.entry() == null ? "" : request.entry().channel();
+        return entryChannel.isEmpty() ? selected : entryChannel;
+    }
+
+    private static InboxEntry withBodyChannel(InboxEntry entry, String channel) {
+        return entry.channel().isEmpty()
+                ? entry.withChannelEvidence(channel, entry.evidence()) : entry;
+    }
+
+    private static boolean isMatchedEvidence(Map<String, Object> evidence) {
+        if (evidence == null || evidence.isEmpty()) {
+            return false;
+        }
+        Object matched = evidence.get("matched");
+        if (Boolean.TRUE.equals(matched)) {
+            return true;
+        }
+        Object state = evidence.get("state");
+        return state != null && "MATCHED".equalsIgnoreCase(String.valueOf(state));
+    }
+
+    private static Integer evidencePriority(Map<String, Object> evidence) {
+        if (evidence == null) {
+            return null;
+        }
+        Object raw = evidence.get("priority");
+        if (raw instanceof Number number) {
+            return number.intValue();
+        }
+        if (raw instanceof String text) {
+            try {
+                return Integer.valueOf(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /** Appends one message to the source's open (not yet pushed) item. */
@@ -1158,7 +1648,8 @@ public final class InboxService {
         int omitted = includeOmitted ? Math.max(0, item.totalMessages() - entries.size()) : 0;
         return new PanelItem(index, item.id(), item.source(), item.sourceLabel(), item.priority(),
                 entries, item.totalMessages(), omitted, item.status(), item.updatedAt(),
-                item.continued(), truncatedChars, item.frozenRevision(), waitingForQuiet);
+                item.continued(), truncatedChars, item.frozenRevision(), waitingForQuiet,
+                item.displayChannel(), item.channelSummary());
     }
 
     /** Keeps the newest entries that fit; a single over-long entry is truncated. */
@@ -1194,7 +1685,8 @@ public final class InboxService {
         if (!markers.contains("…")) {
             markers.add("…");
         }
-        return new InboxEntry(entry.localSeq(), entry.at(), entry.sender(), text, markers);
+        return new InboxEntry(entry.localSeq(), entry.at(), entry.sender(), text, markers,
+                entry.channel(), entry.evidence());
     }
 
     private void recordError(String code) {

@@ -21,7 +21,14 @@ public record OneBotEvent(
         /** Group card / 群名片; blank for private chats and for members without a card. */
         String senderCard,
         /** OneBot role: owner/admin/member; blank when the provider did not send it. */
-        String senderRole) {
+        String senderRole,
+        /** True when {@link #at()} is a server fallback rather than a trusted platform timestamp. */
+        boolean timestampFallback,
+        /**
+         * True only when the codec saw a complete, understood segment array and changed nothing.
+         * Older constructors default this to false because their provenance is unknown.
+         */
+        boolean contentComplete) {
 
     public OneBotEvent {
         segments = segments == null ? List.of() : List.copyOf(segments);
@@ -29,6 +36,19 @@ public record OneBotEvent(
         replyToMessageId = replyToMessageId == null ? "" : replyToMessageId;
         senderCard = senderCard == null ? "" : senderCard;
         senderRole = senderRole == null ? "" : senderRole;
+    }
+
+    /**
+     * Compatibility constructor for callers that have an explicit timestamp but do not know
+     * whether the segment payload was complete. The explicit time is treated as reliable;
+     * content completeness is conservatively false.
+     */
+    public OneBotEvent(String postType, String messageType, String subType, long selfId,
+                       long userId, long groupId, long messageId, Instant at,
+                       String senderName, List<Segment> segments, String replyToMessageId,
+                       String senderCard, String senderRole) {
+        this(postType, messageType, subType, selfId, userId, groupId, messageId, at,
+                senderName, segments, replyToMessageId, senderCard, senderRole, false, false);
     }
 
     /** Compatibility constructor used by older callers/tests. */

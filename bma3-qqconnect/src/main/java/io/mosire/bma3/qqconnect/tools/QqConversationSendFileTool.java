@@ -123,7 +123,8 @@ public final class QqConversationSendFileTool implements AgentTool {
 
             String action = "qq_group".equals(source.platform())
                     ? "upload_group_file" : "upload_private_file";
-            Map<String, Object> baseParams = targetParams(source);
+            QqSendSupport.SendRoute route = QqSendSupport.route(source, action, Map.of());
+            Map<String, Object> baseParams = route.targetParams();
             OneBot11Client client = QqToolSupport.client(context, source);
 
             List<Candidate> candidates = new ArrayList<>();
@@ -302,16 +303,6 @@ public final class QqConversationSendFileTool implements AgentTool {
     }
 
     private record Candidate(String via, String file) {
-    }
-
-    private static Map<String, Object> targetParams(SourceAddress source) {
-        Map<String, Object> params = new LinkedHashMap<>();
-        if ("qq_group".equals(source.platform())) {
-            params.put("group_id", Long.parseLong(source.segments().get(1)));
-        } else {
-            params.put("user_id", Long.parseLong(source.segments().get(1)));
-        }
-        return params;
     }
 
     private Path localPath(String raw) {

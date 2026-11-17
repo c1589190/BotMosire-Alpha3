@@ -31,6 +31,7 @@ dataDir: $TMP/data
 server:
   host: 127.0.0.1
   port: 18865
+  healthPort: 18867
   mcpPath: /mcp
   tokenEnv: BMA3_SMOKE_TOKEN
 qqconnect:

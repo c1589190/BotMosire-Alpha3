@@ -22,6 +22,20 @@ public interface InboxStore extends AutoCloseable {
     Optional<InboxItem> activeForSource(String source);
 
     /**
+     * Newest stored item for one source, regardless of status (open, frozen or ACKED).
+     *
+     * <p>SQL stores should implement this as a source-filtered {@code ORDER BY ... LIMIT 1} query
+     * so callers do not deserialize the whole inbox. The default keeps third-party stores
+     * source-compatible.</p>
+     */
+    default Optional<InboxItem> latestForSource(String source) {
+        return items().stream()
+                .filter(item -> item.source().equals(source))
+                .max(java.util.Comparator.comparing(InboxItem::createdAt)
+                        .thenComparing(InboxItem::updatedAt));
+    }
+
+    /**
      * Whether this source already has a pushed-but-unacked item. A new item created in that state
      * is marked {@code continued} so the panel can say "（消息更新活跃）".
      */
@@ -82,6 +96,50 @@ public interface InboxStore extends AutoCloseable {
     long pushRevision();
 
     void savePushRevision(long revision);
+
+    /** Durable request receipt including the binding fields used for conflict checks. */
+    record Receipt(String requestKey, String itemId, String kind, String source, String channel) { }
+
+    /**
+     * Atomically claims a request idempotency receipt in the same database as the inbox data.
+     *
+     * <p>The default fails closed for stores that do not implement durable receipts; the SQLite
+     * store implements it. Returning {@code false} means the key was already committed by an
+     * earlier call and the caller must not write an item or advance a revision again.</p>
+     */
+    default boolean claimReceipt(String requestKey, String itemId, String kind) {
+        throw new UnsupportedOperationException("该 InboxStore 不支持持久请求回执");
+    }
+
+    /**
+     * Atomically claims a receipt bound to source/channel. Returning {@code false} means the key
+     * already exists; the caller must read {@link #receipt(String)} and validate the binding.
+     * The default delegates to the legacy three-argument hook for third-party stores.
+     */
+    default boolean claimReceipt(String requestKey, String itemId, String kind,
+                                 String source, String channel) {
+        return claimReceipt(requestKey, itemId, kind);
+    }
+
+    /** Returns the durable receipt, including binding fields, if the key exists. */
+    default Optional<Receipt> receipt(String requestKey) {
+        return Optional.empty();
+    }
+
+    /** Atomically claims an evidence dedupe key scoped to one item. */
+    default boolean claimEvidenceKey(String itemId, String evidenceKey, String observedAt) {
+        throw new UnsupportedOperationException("该 InboxStore 不支持持久证据去重键");
+    }
+
+    /** Updates the item associated with an already-claimed receipt (inside the same transaction). */
+    default void setReceiptItemId(String requestKey, String itemId) {
+        throw new UnsupportedOperationException("该 InboxStore 不支持持久请求回执");
+    }
+
+    /** Returns the item id stored with a receipt, or empty when the key was never claimed. */
+    default java.util.Optional<String> receiptItemId(String requestKey) {
+        return java.util.Optional.empty();
+    }
 
     /** Free-form text state (plugin session id, desired control id, …). */
     String state(String key);

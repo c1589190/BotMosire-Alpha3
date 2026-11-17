@@ -74,11 +74,11 @@ public record SourceAddress(String value) {
         }
         String[] tokens = raw.split("/", -1);
         if (tokens.length < 2) {
-            throw new IllegalArgumentException("source 至少需要 platform/route: " + raw);
+            throw new IllegalArgumentException("source 至少需要 platform/route");
         }
         for (String token : tokens) {
             if (token.isBlank()) {
-                throw new IllegalArgumentException("source 不能包含空段: " + raw);
+                throw new IllegalArgumentException("source 不能包含空段");
             }
         }
     }

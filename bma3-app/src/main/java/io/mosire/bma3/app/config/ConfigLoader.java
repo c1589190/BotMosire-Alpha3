@@ -1,5 +1,6 @@
 package io.mosire.bma3.app.config;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -20,7 +21,23 @@ import java.util.regex.Pattern;
 public final class ConfigLoader {
 
     private static final Pattern ENV_REF = Pattern.compile("\\$\\{ENV:([A-Za-z_][A-Za-z0-9_]*)}");
+    private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
     private static final Set<String> LOG_LEVELS = Set.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR");
+    private static final Set<String> QQOFFICIAL_FIELDS =
+            Set.of("accounts", "transport", "reconnect", "http", "matching");
+    private static final Set<String> QQOFFICIAL_ACCOUNT_FIELDS =
+            Set.of("accountId", "appId", "appSecretEnv", "appSecretFile",
+                    "secretEnv", "secretFile", "enabled", "shard");
+    private static final Set<String> QQOFFICIAL_RECONNECT_FIELDS =
+            Set.of("initialMs", "maxMs", "jitter");
+    private static final Set<String> QQOFFICIAL_HTTP_FIELDS =
+            Set.of("connectTimeoutSeconds", "requestTimeoutSeconds");
+    private static final Set<String> QQOFFICIAL_MATCHING_FIELDS =
+            Set.of("mode", "strictTimeToleranceSeconds");
+    /** Inline credential-bearing keys are rejected recursively, even inside unknown objects. */
+    private static final Set<String> INLINE_SECRET_FIELDS = Set.of(
+            "appsecret", "clientsecret", "client_secret", "secret", "password",
+            "token", "accesstoken", "access_token", "authorization", "auth_token");
 
     private ConfigLoader() {
     }
@@ -35,20 +52,22 @@ public final class ConfigLoader {
             return AppConfig.defaults();
         }
         try {
-            String raw = interpolate(Files.readString(file), env);
-            JsonNode node = new ObjectMapper(new YAMLFactory()).readTree(raw);
-            AppConfig config = parse(node == null ? new ObjectMapper().createObjectNode() : node);
+            String raw = Files.readString(file);
+            rejectEnvInterpolationInQqOfficial(raw);
+            String interpolated = interpolate(raw, env);
+            JsonNode node = YAML.readTree(interpolated);
+            AppConfig config = parse(node == null ? YAML.createObjectNode() : node);
             List<ConfigError> errors = validate(config);
             if (!errors.isEmpty()) {
                 throw new ConfigException(errors);
             }
             return config;
-        } catch (IOException failure) {
-            throw new ConfigException("config", "读取失败: " + failure.getMessage());
         } catch (ConfigException failure) {
             throw failure;
+        } catch (IOException failure) {
+            throw new ConfigException("config", safeIoMessage(failure));
         } catch (RuntimeException failure) {
-            throw new ConfigException("config", failure.getMessage());
+            throw new ConfigException("config", safeRuntimeMessage(failure));
         }
     }
 
@@ -87,6 +106,15 @@ public final class ConfigLoader {
                 }
             }
         }
+        Set<String> officialAccountIds = new HashSet<>();
+        for (AppConfig.QqOfficial.Account account : config.qqOfficial().accounts()) {
+            if (account.accountId() == null || account.accountId().isBlank()) {
+                errors.add(new ConfigError("qqofficial.accounts.accountId", "不能为空"));
+            } else if (!officialAccountIds.add(account.accountId())) {
+                // The id is already validated as a safe single segment, but never echo it.
+                errors.add(new ConfigError("qqofficial.accounts.accountId", "重复"));
+            }
+        }
         return List.copyOf(errors);
     }
 
@@ -119,6 +147,7 @@ public final class ConfigLoader {
         JsonNode inboxWait = inbox.path("wait");
         JsonNode send = node.path("qqconnect").path("send");
         JsonNode media = node.path("qqconnect").path("media");
+        AppConfig.QqOfficial qqOfficial = parseQqOfficial(node.path("qqofficial"));
         JsonNode webconnect = node.path("webconnect");
         List<String> allowedHosts = new ArrayList<>();
         for (JsonNode host : webconnect.path("allowedHosts")) {
@@ -148,6 +177,7 @@ public final class ConfigLoader {
                                 integer(media, "maxInlineBytes", 65536),
                                 integer(media, "maxDownloadBytes", 33_554_432),
                                 integer(media, "timeoutSeconds", 20))),
+                qqOfficial,
                 new AppConfig.Inbox(
                         text(inbox, "inboxId", "bma3"),
                         integer(inbox, "httpPort", 46500),
@@ -231,6 +261,252 @@ public final class ConfigLoader {
                         integer(schedule, "tickSeconds", 1),
                         integer(schedule, "maxSchedules", 200),
                         text(schedule, "defaultMissedPolicy", "skip")));
+    }
+
+    /**
+     * The official-account section is reference-only. Interpolating it before parsing would copy a
+     * real secret into the Jackson tree, where validation errors or future code could expose it.
+     * Parse the untouched YAML and reject the section before the generic interpolation pass.
+     */
+    private static void rejectEnvInterpolationInQqOfficial(String raw) throws IOException {
+        JsonNode root = YAML.readTree(raw);
+        if (root == null || !root.isObject()) {
+            return;
+        }
+        JsonNode qqOfficial = root.get("qqofficial");
+        if (containsEnvInterpolation(qqOfficial)) {
+            throw new ConfigException("qqofficial",
+                    "禁止使用 ${ENV:...} 插值；请直接填写环境变量名或凭据文件路径");
+        }
+    }
+
+    private static boolean containsEnvInterpolation(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return false;
+        }
+        if (node.isTextual()) {
+            return ENV_REF.matcher(node.asText()).find();
+        }
+        if (node.isObject()) {
+            var fields = node.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                if (ENV_REF.matcher(entry.getKey()).find()
+                        || containsEnvInterpolation(entry.getValue())) {
+                    return true;
+                }
+            }
+        } else if (node.isArray()) {
+            for (JsonNode item : node) {
+                if (containsEnvInterpolation(item)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** YAML parser messages can contain the offending line; return only location metadata. */
+    private static String safeIoMessage(IOException failure) {
+        if (failure instanceof JsonProcessingException parseFailure
+                && parseFailure.getLocation() != null) {
+            return "YAML 解析失败（line " + parseFailure.getLocation().getLineNr()
+                    + ", column " + parseFailure.getLocation().getColumnNr() + "）";
+        }
+        return "读取失败";
+    }
+
+    /**
+     * Runtime validation messages are authored locally and never include the offending value.
+     * Keep the useful field path but never fall back to an exception class name or null text.
+     */
+    private static String safeRuntimeMessage(RuntimeException failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank() ? "配置校验失败" : message;
+    }
+
+    /** Keeps arbitrary YAML keys from becoming unbounded/control-character error output. */
+    private static String safeFieldPath(String path, String field) {
+        if (field != null && field.matches("[A-Za-z0-9_.-]{1,64}")) {
+            return path + "." + field;
+        }
+        return path + ".<unknown>";
+    }
+
+    private static AppConfig.QqOfficial parseQqOfficial(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return AppConfig.QqOfficial.defaults();
+        }
+        if (!node.isObject()) {
+            throw new IllegalArgumentException("qqofficial 必须是对象");
+        }
+        rejectInlineSecrets(node, "qqofficial");
+        rejectUnknownFields(node, "qqofficial", QQOFFICIAL_FIELDS);
+
+        List<AppConfig.QqOfficial.Account> accounts = new ArrayList<>();
+        JsonNode accountRows = node.path("accounts");
+        if (!accountRows.isMissingNode() && !accountRows.isNull()) {
+            if (!accountRows.isArray()) {
+                throw new IllegalArgumentException("qqofficial.accounts 必须是数组");
+            }
+            int index = 0;
+            for (JsonNode row : accountRows) {
+                String path = "qqofficial.accounts[" + index + "]";
+                if (!row.isObject()) {
+                    throw new IllegalArgumentException(path + " 必须是对象");
+                }
+                rejectInlineSecrets(row, path);
+                rejectUnknownFields(row, path, QQOFFICIAL_ACCOUNT_FIELDS);
+                String env = aliasText(row, "appSecretEnv", "secretEnv", path);
+                String file = aliasText(row, "appSecretFile", "secretFile", path);
+                accounts.add(new AppConfig.QqOfficial.Account(
+                        text(row, "accountId", ""),
+                        text(row, "appId", ""),
+                        env,
+                        file,
+                        strictBoolean(row, "enabled", false, path),
+                        shard(row, path)));
+                index++;
+            }
+        }
+
+        JsonNode reconnect = objectOrMissing(node, "reconnect", "qqofficial.reconnect");
+        rejectInlineSecrets(reconnect, "qqofficial.reconnect");
+        rejectUnknownFields(reconnect, "qqofficial.reconnect",
+                QQOFFICIAL_RECONNECT_FIELDS);
+        JsonNode http = objectOrMissing(node, "http", "qqofficial.http");
+        rejectInlineSecrets(http, "qqofficial.http");
+        rejectUnknownFields(http, "qqofficial.http", QQOFFICIAL_HTTP_FIELDS);
+        JsonNode matching = objectOrMissing(node, "matching", "qqofficial.matching");
+        rejectInlineSecrets(matching, "qqofficial.matching");
+        rejectUnknownFields(matching, "qqofficial.matching",
+                QQOFFICIAL_MATCHING_FIELDS);
+
+        return new AppConfig.QqOfficial(
+                accounts,
+                text(node, "transport", "websocket"),
+                new AppConfig.QqOfficial.Reconnect(
+                        strictInteger(reconnect, "initialMs", 1000, "qqofficial.reconnect"),
+                        strictInteger(reconnect, "maxMs", 60_000, "qqofficial.reconnect"),
+                        strictBoolean(reconnect, "jitter", true, "qqofficial.reconnect")),
+                new AppConfig.QqOfficial.Http(
+                        strictInteger(http, "connectTimeoutSeconds", 10, "qqofficial.http"),
+                        strictInteger(http, "requestTimeoutSeconds", 20, "qqofficial.http")),
+                new AppConfig.QqOfficial.Matching(
+                        text(matching, "mode", "strict"),
+                        strictInteger(matching, "strictTimeToleranceSeconds", 5,
+                                "qqofficial.matching")));
+    }
+
+    /**
+     * Reads one credential reference field and its documented short alias. Supplying both is
+     * ambiguous and therefore rejected; blank values count as absent so an enabled account still
+     * has to provide exactly one usable reference.
+     */
+    private static String aliasText(JsonNode row, String canonical, String alias, String path) {
+        JsonNode canonicalNode = row.path(canonical);
+        JsonNode aliasNode = row.path(alias);
+        boolean hasCanonical = !canonicalNode.isMissingNode() && !canonicalNode.isNull();
+        boolean hasAlias = !aliasNode.isMissingNode() && !aliasNode.isNull();
+        if (hasCanonical && hasAlias) {
+            throw new IllegalArgumentException(
+                    path + "." + canonical + "/" + alias + " 只能设置一个");
+        }
+        return hasCanonical ? canonicalNode.asText("") : aliasNode.asText("");
+    }
+
+    private static List<Integer> shard(JsonNode row, String path) {
+        JsonNode node = row.path("shard");
+        if (node.isMissingNode() || node.isNull()) {
+            return List.of(0, 1);
+        }
+        if (!node.isArray()) {
+            throw new IllegalArgumentException(path + ".shard 必须是 [0, 1]");
+        }
+        List<Integer> values = new ArrayList<>();
+        for (JsonNode value : node) {
+            if (!value.isIntegralNumber() || !value.canConvertToInt()) {
+                throw new IllegalArgumentException(path + ".shard 必须是整数数组 [0, 1]");
+            }
+            values.add(value.intValue());
+        }
+        if (values.size() != 2 || values.get(0) != 0 || values.get(1) != 1) {
+            throw new IllegalArgumentException(path + ".shard 首版只允许 [0, 1]");
+        }
+        return List.copyOf(values);
+    }
+
+    private static boolean strictBoolean(JsonNode node, String field, boolean fallback,
+                                         String path) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            return fallback;
+        }
+        if (!value.isBoolean()) {
+            throw new IllegalArgumentException(path + "." + field + " 必须是布尔值");
+        }
+        return value.booleanValue();
+    }
+
+    private static int strictInteger(JsonNode node, String field, int fallback, String path) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            return fallback;
+        }
+        if (!value.isIntegralNumber() || !value.canConvertToInt()) {
+            throw new IllegalArgumentException(path + "." + field + " 必须是整数");
+        }
+        return value.intValue();
+    }
+
+    private static JsonNode objectOrMissing(JsonNode parent, String field, String path) {
+        JsonNode node = parent.path(field);
+        if (node.isMissingNode() || node.isNull()) {
+            return new ObjectMapper().createObjectNode();
+        }
+        if (!node.isObject()) {
+            throw new IllegalArgumentException(path + " 必须是对象");
+        }
+        return node;
+    }
+
+    /** Rejects inline credentials before schema validation can accidentally ignore an unknown key. */
+    private static void rejectInlineSecrets(JsonNode node, String path) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
+        }
+        if (node.isObject()) {
+            var fields = node.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                String field = entry.getKey();
+                String fieldPath = safeFieldPath(path, field);
+                String normalized = field.toLowerCase(java.util.Locale.ROOT)
+                        .replace("-", "").replace("_", "");
+                if (INLINE_SECRET_FIELDS.contains(normalized)
+                        || INLINE_SECRET_FIELDS.contains(field.toLowerCase(java.util.Locale.ROOT))) {
+                    throw new IllegalArgumentException(
+                            fieldPath + " 禁止 inline secret；请使用 appSecretEnv 或 appSecretFile");
+                }
+                rejectInlineSecrets(entry.getValue(), fieldPath);
+            }
+        } else if (node.isArray()) {
+            for (int index = 0; index < node.size(); index++) {
+                rejectInlineSecrets(node.get(index), path + "[" + index + "]");
+            }
+        }
+    }
+
+    private static void rejectUnknownFields(JsonNode node, String path, Set<String> allowed) {
+        if (node == null || !node.isObject()) {
+            return;
+        }
+        node.fieldNames().forEachRemaining(field -> {
+            if (!allowed.contains(field)) {
+                throw new IllegalArgumentException(
+                        safeFieldPath(path, field) + " 不是支持的字段");
+            }
+        });
     }
 
     private static String interpolate(String raw, Map<String, String> env) {

@@ -173,9 +173,7 @@ public final class QqMediaViewTool implements AgentTool {
             context.mediaDiagnostics().success(fetched.bytes().length, split);
             return ToolResult.ok(root.toString());
         } catch (IllegalArgumentException failure) {
-            String code = failure.getMessage() == null ? "MEDIA_ERROR" : failure.getMessage();
-            int split = code.indexOf(':');
-            context.mediaDiagnostics().failure(split > 0 ? code.substring(0, split) : code);
+            context.mediaDiagnostics().failure(QqToolSupport.safeDiagnosticCode(failure));
             return QqToolSupport.invalid(failure);
         }
     }

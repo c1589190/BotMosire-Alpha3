@@ -2,6 +2,7 @@ package io.mosire.bma3.inbox.core;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * One bounded source window in the aggregate panel.
@@ -18,6 +19,10 @@ import java.util.List;
  * was never handed to a push. It is the provable "already pushed" eligibility a guarded ACK needs:
  * an item that no push ever carried cannot have been shown to the caller, so it must not be
  * acknowledged through that path.</p>
+ *
+ * <p>{@code displayChannel} / {@code channelSummary} are the generic projection metadata copied
+ * from the underlying item. Legacy items expose empty values and old clients can ignore the extra
+ * JSON fields.</p>
  */
 public record PanelItem(
         int index,
@@ -33,7 +38,9 @@ public record PanelItem(
         boolean continued,
         int truncatedChars,
         long frozenRevision,
-        boolean waitingForQuiet) {
+        boolean waitingForQuiet,
+        String displayChannel,
+        Map<String, Object> channelSummary) {
 
     public PanelItem {
         source = source == null ? "" : source;
@@ -43,6 +50,8 @@ public record PanelItem(
         lastAt = lastAt == null ? Instant.now() : lastAt;
         truncatedChars = Math.max(0, truncatedChars);
         frozenRevision = Math.max(0L, frozenRevision);
+        displayChannel = displayChannel == null ? "" : displayChannel.trim();
+        channelSummary = InboxEntry.immutableMap(channelSummary);
     }
 
     /** Compatibility constructor: no panel position, no truncation/push metadata. */
@@ -50,7 +59,7 @@ public record PanelItem(
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt) {
         this(0, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, false, 0, 0L, false);
+                status, lastAt, false, 0, 0L, false, "", Map.of());
     }
 
     /** Compatibility constructor: no truncation/push metadata. */
@@ -58,12 +67,22 @@ public record PanelItem(
                      List<InboxEntry> entries, int totalMessages, int omittedMessages,
                      ItemStatus status, Instant lastAt, boolean continued) {
         this(index, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
-                status, lastAt, continued, 0, 0L, false);
+                status, lastAt, continued, 0, 0L, false, "", Map.of());
+    }
+
+    /** Compatibility constructor for callers created before channel projection. */
+    public PanelItem(int index, String id, String source, String sourceLabel, int priority,
+                     List<InboxEntry> entries, int totalMessages, int omittedMessages,
+                     ItemStatus status, Instant lastAt, boolean continued, int truncatedChars,
+                     long frozenRevision, boolean waitingForQuiet) {
+        this(index, id, source, sourceLabel, priority, entries, totalMessages, omittedMessages,
+                status, lastAt, continued, truncatedChars, frozenRevision, waitingForQuiet,
+                "", Map.of());
     }
 
     public PanelItem withIndex(int newIndex) {
         return new PanelItem(newIndex, id, source, sourceLabel, priority, entries, totalMessages,
                 omittedMessages, status, lastAt, continued, truncatedChars, frozenRevision,
-                waitingForQuiet);
+                waitingForQuiet, displayChannel, channelSummary);
     }
 }

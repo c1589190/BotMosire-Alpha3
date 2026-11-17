@@ -8,6 +8,7 @@ public record AppConfig(
         Path dataDir,
         Server server,
         QqConnect qqconnect,
+        QqOfficial qqOfficial,
         Inbox inbox,
         Webconnect webconnect,
         Weighting weighting,
@@ -23,6 +24,7 @@ public record AppConfig(
         dataDir = dataDir == null ? Path.of("data") : dataDir;
         server = server == null ? Server.defaults() : server;
         qqconnect = qqconnect == null ? new QqConnect(List.of()) : qqconnect;
+        qqOfficial = qqOfficial == null ? QqOfficial.defaults() : qqOfficial;
         inbox = inbox == null ? Inbox.defaults() : inbox;
         webconnect = webconnect == null ? Webconnect.defaults() : webconnect;
         weighting = weighting == null ? Weighting.defaults() : weighting;
@@ -37,10 +39,10 @@ public record AppConfig(
 
     public static AppConfig defaults() {
         return new AppConfig(Path.of("data"), Server.defaults(),
-                new QqConnect(List.of()), Inbox.defaults(), Webconnect.defaults(),
-                Weighting.defaults(), Logging.defaults(), Deployer.defaults(),
-                Watchdog.defaults(), Xvfb.defaults(), Security.defaults(), Debug.defaults(),
-                Schedule.defaults());
+                new QqConnect(List.of()), QqOfficial.defaults(), Inbox.defaults(),
+                Webconnect.defaults(), Weighting.defaults(), Logging.defaults(),
+                Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults(),
+                Security.defaults(), Debug.defaults(), Schedule.defaults());
     }
 
     /**
@@ -210,6 +212,170 @@ public record AppConfig(
     }
 
     /**
+     * QQ 官方机器人配置（D-074..D-077）。本阶段只保存结构与凭据引用，不读取凭据文件，
+     * 也不发起任何网络请求。AppSecret 永远不能内联在配置中，只能通过环境变量或受保护文件引用。
+     */
+    public record QqOfficial(List<Account> accounts, String transport, Reconnect reconnect,
+                             Http http, Matching matching) {
+
+        public QqOfficial {
+            accounts = accounts == null ? List.of() : List.copyOf(accounts);
+            transport = transport == null || transport.isBlank()
+                    ? "websocket" : transport.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!"websocket".equals(transport)) {
+                throw new IllegalArgumentException("qqofficial.transport 只支持 websocket");
+            }
+            reconnect = reconnect == null ? Reconnect.defaults() : reconnect;
+            http = http == null ? Http.defaults() : http;
+            matching = matching == null ? Matching.defaults() : matching;
+        }
+
+        public static QqOfficial defaults() {
+            return new QqOfficial(List.of(), "websocket", Reconnect.defaults(),
+                    Http.defaults(), Matching.defaults());
+        }
+
+        /**
+         * 一个官方机器人账号。{@code appSecretEnv} 与 {@code appSecretFile} 只能二选一；
+         * {@code shard} 首版只允许 {@code [0,1]}。
+         */
+        public record Account(String accountId, String appId, String appSecretEnv,
+                              String appSecretFile, boolean enabled, List<Integer> shard) {
+
+            public Account {
+                appId = appId == null ? "" : appId.trim();
+                appSecretEnv = appSecretEnv == null ? "" : appSecretEnv.trim();
+                appSecretFile = appSecretFile == null ? "" : appSecretFile.trim();
+                shard = shard == null ? List.of(0, 1) : List.copyOf(shard);
+                if (accountId == null || accountId.isBlank()) {
+                    throw new IllegalArgumentException("qqofficial.accounts.accountId 不能为空");
+                }
+                if (!safeSingleSegment(accountId)) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts.accountId 必须是安全单段"
+                                    + "（不得含 /、空白或控制字符）");
+                }
+                if (enabled && appId.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts.appId 在 enabled=true 时不能为空");
+                }
+                boolean envRef = !appSecretEnv.isEmpty();
+                boolean fileRef = !appSecretFile.isEmpty();
+                if (envRef && fileRef) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts.appSecretEnv/appSecretFile 只能二选一");
+                }
+                if (enabled && !envRef && !fileRef) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts 在 enabled=true 时必须设置 appSecretEnv 或 appSecretFile");
+                }
+                if (envRef && !appSecretEnv.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts.appSecretEnv 必须是合法环境变量名");
+                }
+                if (shard.size() != 2 || !Integer.valueOf(0).equals(shard.get(0))
+                        || !Integer.valueOf(1).equals(shard.get(1))) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.accounts.shard 首版只允许 [0, 1]");
+                }
+            }
+
+            public Account(String accountId, String appId, String appSecretEnv,
+                           String appSecretFile, boolean enabled) {
+                this(accountId, appId, appSecretEnv, appSecretFile, enabled, List.of(0, 1));
+            }
+
+            /** Phase 2 credential resolver convenience aliases. */
+            public String secretEnv() {
+                return appSecretEnv;
+            }
+
+            /** Phase 2 credential resolver convenience aliases. */
+            public String secretFile() {
+                return appSecretFile;
+            }
+
+            public boolean hasSecretReference() {
+                return !appSecretEnv.isEmpty() || !appSecretFile.isEmpty();
+            }
+
+            /**
+             * Account ids become part of canonical raw sources and audit/log fields. Keep them to
+             * one visible token so they cannot alter source routing or forge log lines.
+             */
+            private static boolean safeSingleSegment(String value) {
+                if (value.length() > 128 || !value.equals(value.strip())) {
+                    return false;
+                }
+                return value.codePoints().noneMatch(codePoint ->
+                        codePoint == '/'
+                                || codePoint == '|'
+                                || Character.isWhitespace(codePoint)
+                                || Character.isISOControl(codePoint)
+                                || Character.getType(codePoint) == Character.FORMAT
+                                || Character.getType(codePoint) == Character.LINE_SEPARATOR
+                                || Character.getType(codePoint) == Character.PARAGRAPH_SEPARATOR);
+            }
+        }
+
+        public record Reconnect(int initialMs, int maxMs, boolean jitter) {
+
+            public Reconnect {
+                if (initialMs < 100 || initialMs > 60_000) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.reconnect.initialMs 必须在 100..60000");
+                }
+                if (maxMs < initialMs || maxMs > 600_000) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.reconnect.maxMs 必须在 initialMs..600000");
+                }
+            }
+
+            public static Reconnect defaults() {
+                return new Reconnect(1000, 60_000, true);
+            }
+        }
+
+        public record Http(int connectTimeoutSeconds, int requestTimeoutSeconds) {
+
+            public Http {
+                if (connectTimeoutSeconds < 1 || connectTimeoutSeconds > 300) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.http.connectTimeoutSeconds 必须在 1..300");
+                }
+                if (requestTimeoutSeconds < 1 || requestTimeoutSeconds > 600) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.http.requestTimeoutSeconds 必须在 1..600");
+                }
+            }
+
+            public static Http defaults() {
+                return new Http(10, 20);
+            }
+        }
+
+        public record Matching(String mode, int strictTimeToleranceSeconds) {
+
+            public Matching {
+                mode = mode == null || mode.isBlank()
+                        ? "strict" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+                if (!"strict".equals(mode) && !"loose".equals(mode) && !"off".equals(mode)) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.matching.mode 只能是 strict/loose/off");
+                }
+                if (strictTimeToleranceSeconds < 0 || strictTimeToleranceSeconds > 300) {
+                    throw new IllegalArgumentException(
+                            "qqofficial.matching.strictTimeToleranceSeconds 必须在 0..300");
+                }
+            }
+
+            public static Matching defaults() {
+                return new Matching("strict", 5);
+            }
+        }
+    }
+
+    /**
      * One OneBot account. {@code selfQq}/{@code selfName} are optional overrides for the bot's own
      * identity; when blank, the identity is learned from {@code get_login_info} on connect.
      */
@@ -229,8 +395,8 @@ public record AppConfig(
 
     /** Same configuration with a different security mode (used by {@code --no-auth}). */
     public AppConfig withSecurity(Security replacement) {
-        return new AppConfig(dataDir, server, qqconnect, inbox, webconnect, weighting, logging,
-                deployer, watchdog, xvfb, replacement);
+        return new AppConfig(dataDir, server, qqconnect, qqOfficial, inbox, webconnect,
+                weighting, logging, deployer, watchdog, xvfb, replacement, debug, schedule);
     }
 
     /**
@@ -265,6 +431,15 @@ public record AppConfig(
         public static Schedule defaults() {
             return new Schedule(true, 1, 200, "skip");
         }
+    }
+
+    /** 13-arg compatibility constructor for profiles created before QQ official support. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
+                     Webconnect webconnect, Weighting weighting, Logging logging,
+                     Deployer deployer, Watchdog watchdog, Xvfb xvfb, Security security,
+                     Debug debug, Schedule schedule) {
+        this(dataDir, server, qqconnect, QqOfficial.defaults(), inbox, webconnect, weighting,
+                logging, deployer, watchdog, xvfb, security, debug, schedule);
     }
 
     /** 12-arg compatibility constructor for profiles created before the scheduler. */
@@ -540,6 +715,8 @@ public record AppConfig(
             rules.put("*", 0);
             rules.put("qq_private", 300);
             rules.put("qq_group", 200);
+            rules.put("qq_official_private", 300);
+            rules.put("qq_official_group", 200);
             return java.util.Map.copyOf(rules);
         }
 

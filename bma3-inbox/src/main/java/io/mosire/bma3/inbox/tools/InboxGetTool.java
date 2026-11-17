@@ -29,7 +29,8 @@ public final class InboxGetTool implements AgentTool {
     public String description() {
         return "按 itemId 或当前 panel index 取一个 inbox 条目的完整窗口（≤ maxMessagesPerItem 条 entries，"
                 + "含 sender/时间/序号/markers/渲染行）、totalMessages、priority、status、revision、"
-                + "continued（true=这条在被推送过之后又续上了新消息，行尾带「续」标）。"
+                + "continued（true=这条在被推送过之后又续上了新消息，行尾带「续」标）、"
+                + "displayChannel/channelSummary（单渠道正文与通用证据摘要；旧单渠道为空）。"
                 + "index 可带 revision 防漂移；已 ack 的条目仍可按 itemId 取，但不再出现在面板里。";
     }
 
@@ -76,6 +77,8 @@ public final class InboxGetTool implements AgentTool {
                 row.put("sender", entry.sender());
                 row.put("text", entry.text());
                 row.put("markers", entry.markers());
+                row.put("channel", entry.channel());
+                row.put("evidence", entry.evidence());
                 row.put("line", entry.line());
                 entries.add(row);
             }
@@ -93,6 +96,8 @@ public final class InboxGetTool implements AgentTool {
             body.put("createdAt", item.createdAt().toString());
             body.put("updatedAt", item.updatedAt().toString());
             body.put("continued", item.continued());
+            body.put("displayChannel", item.displayChannel());
+            body.put("channelSummary", item.channelSummary());
             body.put("entries", entries);
             return InboxTools.json(body);
         } catch (IllegalArgumentException failure) {

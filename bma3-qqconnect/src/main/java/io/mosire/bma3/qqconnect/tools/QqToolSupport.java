@@ -14,10 +14,30 @@ import io.mosire.bma3.core.source.SourceAddress;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 final class QqToolSupport {
 
     static final ObjectMapper JSON = new ObjectMapper();
+    private static final Pattern TEXT_TOO_LONG = Pattern.compile(
+            "^TEXT_TOO_LONG:\\s*actual=(\\d+)\\s+max=(\\d+).*$");
+    /**
+     * Bounded diagnoses whose text is generated locally and cannot contain caller/provider data.
+     * Any other exception text is replaced by the generic INVALID_ARGUMENT message.
+     */
+    private static final Set<String> SAFE_DIAGNOSTIC_CODES = Set.of(
+            "ACCOUNT_NOT_FOUND",
+            "TEXT_TOO_LONG",
+            "INVALID_FILE_ID",
+            "MEDIA_TOO_LARGE",
+            "MEDIA_NOT_FOUND",
+            "MEDIA_FETCH_FAILED",
+            "MEMBER_NOT_FOUND",
+            "DIRECTORY_UNAVAILABLE",
+            "QQ_EXTRA_STORE_UNAVAILABLE",
+            "REVISION_CONFLICT");
 
     private QqToolSupport() {
     }
@@ -181,7 +201,11 @@ final class QqToolSupport {
             return number.intValue();
         }
         if (raw instanceof String value && !value.isBlank()) {
-            return Integer.parseInt(value);
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException(name + " 必须是整数");
+            }
         }
         return fallback;
     }
@@ -192,7 +216,11 @@ final class QqToolSupport {
             return number.longValue();
         }
         if (raw instanceof String value && !value.isBlank()) {
-            return Long.parseLong(value);
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException(name + " 必须是整数");
+            }
         }
         throw new IllegalArgumentException(name + " 不能为空");
     }
@@ -221,14 +249,34 @@ final class QqToolSupport {
     }
 
     static ToolResult invalid(IllegalArgumentException failure) {
-        String message = failure.getMessage() == null ? "参数错误" : failure.getMessage();
-        if (message.startsWith("ACCOUNT_NOT_FOUND:")) {
-            return ToolResult.error("ACCOUNT_NOT_FOUND", message);
+        String code = safeDiagnosticCode(failure);
+        if ("ACCOUNT_NOT_FOUND".equals(code)) {
+            return ToolResult.error(code, "账号不存在");
         }
-        if (message.startsWith("TEXT_TOO_LONG:")) {
-            return ToolResult.error("TEXT_TOO_LONG", message);
+        if ("TEXT_TOO_LONG".equals(code)) {
+            Matcher matcher = TEXT_TOO_LONG.matcher(failure.getMessage() == null
+                    ? "" : failure.getMessage());
+            if (matcher.matches()) {
+                return ToolResult.error(code,
+                        "TEXT_TOO_LONG: actual=" + matcher.group(1)
+                                + " max=" + matcher.group(2));
+            }
+            return ToolResult.error(code, "TEXT_TOO_LONG");
         }
-        return ToolResult.error("INVALID_ARGUMENT", message);
+        return SAFE_DIAGNOSTIC_CODES.contains(code) && !"INVALID_ARGUMENT".equals(code)
+                ? ToolResult.error("INVALID_ARGUMENT", code)
+                : ToolResult.error("INVALID_ARGUMENT", "参数无效");
+    }
+
+    /** Returns only a bounded locally-known code; arbitrary exception text is never returned. */
+    static String safeDiagnosticCode(IllegalArgumentException failure) {
+        String message = failure == null || failure.getMessage() == null
+                ? "" : failure.getMessage().strip();
+        int colon = message.indexOf(':');
+        String candidate = (colon >= 0 ? message.substring(0, colon) : message).strip();
+        return candidate.matches("[A-Z][A-Z0-9_]{0,63}")
+                && SAFE_DIAGNOSTIC_CODES.contains(candidate)
+                ? candidate : "INVALID_ARGUMENT";
     }
 
     static String messageText(Message message) {

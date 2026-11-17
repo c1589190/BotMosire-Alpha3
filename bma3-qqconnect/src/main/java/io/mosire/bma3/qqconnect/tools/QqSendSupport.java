@@ -81,6 +81,7 @@ final class QqSendSupport {
     static List<QqDelivery.Outcome> sendParts(QqToolContext context, SourceAddress source,
                                               String text, String replyToMessageId,
                                               String actionName, Map<String, Object> extras) {
+        SendRoute route = route(source, actionName, extras);
         QqSendPolicy policy = context.policy();
         List<String> chunks = chunks(text, policy);
         OneBot11Client client = QqToolSupport.client(context, source);
@@ -103,21 +104,7 @@ final class QqSendSupport {
             } else {
                 message = chunk;
             }
-            Map<String, Object> params;
-            if ("qq_group".equals(source.platform())) {
-                params = Map.of("group_id", Long.parseLong(source.segments().get(1)),
-                        "message", message);
-            } else if (extras.isEmpty()) {
-                params = Map.of("user_id", Long.parseLong(source.segments().get(1)),
-                        "message", message);
-            } else {
-                // 群临时会话：user_id + group_id 一起给
-                Map<String, Object> withExtras = new LinkedHashMap<>();
-                withExtras.put("user_id", Long.parseLong(source.segments().get(1)));
-                withExtras.put("message", message);
-                withExtras.putAll(extras);
-                params = withExtras;
-            }
+            Map<String, Object> params = route.params(message);
             // Persist PENDING only after the request is fully built, and before it is dispatched.
             // A failed part write must not lose the earlier parts' structured results, and this
             // part's provider must not be called.
@@ -129,8 +116,9 @@ final class QqSendSupport {
                 outcomes.add(QqDelivery.boardWriteFailure(operationId, index + 1, chunks.size()));
                 break;
             }
-            QqDelivery.ProviderResult providerResult = QqDelivery.dispatch(client, actionName,
-                    params, QqDelivery.TEXT_WAIT);
+            QqDelivery.ProviderResult providerResult = client.connected()
+                    ? QqDelivery.dispatch(client, actionName, params, QqDelivery.TEXT_WAIT)
+                    : QqDelivery.failedBeforeSend(QqDelivery.NOT_DISPATCHED);
             QqDelivery.Outcome outcome = QqDelivery.finish(context, pending, providerResult);
             outcomes.add(outcome);
             if (outcome.status() != DeliveryStatus.SENT || !outcome.recorded()) {
@@ -140,33 +128,97 @@ final class QqSendSupport {
         return outcomes;
     }
 
-    static void validateText(String text, QqToolContext context) {
-        QqSendPolicy policy = context.policy();
-        int count = text == null ? 0 : text.codePointCount(0, text.length());
-        if (count > policy.maxTextChars()) {
-            throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
-                    + " max=" + policy.maxTextChars() + "（当前上限，见 set_config/qq_policy）");
+    /**
+     * Strict OneBot source/action routing. This runs before both the board PENDING row and the
+     * provider call. Only the two existing QQ platforms are accepted, each source must be exactly
+     * {@code platform/accountId/positiveNumericTarget}, and extras are limited to the existing
+     * private temporary-conversation {@code group_id}.
+     */
+    static SendRoute route(SourceAddress source, String actionName, Map<String, Object> extras) {
+        if (source == null) {
+            throw new IllegalArgumentException("QQ source 不能为空");
+        }
+        String platform = source.platform();
+        if (!"qq_group".equals(platform) && !"qq_private".equals(platform)) {
+            throw new IllegalArgumentException("不支持的 QQ source platform");
+        }
+        if (source.segments().size() != 2) {
+            throw new IllegalArgumentException(
+                    "QQ source 必须严格为 platform/accountId/target");
+        }
+        String action = actionName == null ? "" : actionName;
+        if ("qq_group".equals(platform)) {
+            if (!"send_group_msg".equals(action) && !"upload_group_file".equals(action)) {
+                throw new IllegalArgumentException(
+                        "qq_group 只能使用 send_group_msg 或 upload_group_file");
+            }
+        } else if (!"send_private_msg".equals(action)
+                && !"upload_private_file".equals(action)) {
+            throw new IllegalArgumentException(
+                    "qq_private 只能使用 send_private_msg 或 upload_private_file");
+        }
+
+        String targetText = source.segments().get(1);
+        if (!targetText.matches("[1-9][0-9]{0,18}")) {
+            throw new IllegalArgumentException("QQ source 目标必须是正整数");
+        }
+        long target;
+        try {
+            target = Long.parseLong(targetText);
+        } catch (NumberFormatException overflow) {
+            throw new IllegalArgumentException("QQ source 目标必须是正整数");
+        }
+        if (target <= 0L) {
+            throw new IllegalArgumentException("QQ source 目标必须是正整数");
+        }
+
+        Map<String, Object> extra = extras == null ? Map.of() : extras;
+        Long temporaryGroup = null;
+        if (!extra.isEmpty()) {
+            if (!"qq_private".equals(platform) || extra.size() != 1
+                    || !extra.containsKey("group_id")) {
+                throw new IllegalArgumentException(
+                        "QQ 发送 extras 仅允许 qq_private 的 group_id 临时会话");
+            }
+            temporaryGroup = positiveIntegral(extra.get("group_id"));
+        }
+        return new SendRoute(platform, target, temporaryGroup);
+    }
+
+    private static long positiveIntegral(Object value) {
+        if (value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long) {
+            long number = ((Number) value).longValue();
+            if (number > 0L) {
+                return number;
+            }
+        }
+        throw new IllegalArgumentException("group_id 必须是正整数");
+    }
+
+    static record SendRoute(String platform, long target, Long temporaryGroup) {
+
+        Map<String, Object> targetParams() {
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("qq_group".equals(platform) ? "group_id" : "user_id", target);
+            return values;
+        }
+
+        Map<String, Object> params(Object message) {
+            Map<String, Object> values = targetParams();
+            values.put("message", message);
+            if (temporaryGroup != null) {
+                values.put("group_id", temporaryGroup);
+            }
+            return values;
         }
     }
 
+    static void validateText(String text, QqToolContext context) {
+        context.policy().textPolicy().validate(text);
+    }
+
     static List<String> chunks(String text, QqSendPolicy policy) {
-        String value = text == null ? "" : text;
-        int count = value.codePointCount(0, value.length());
-        if (count <= policy.maxTextChars()) {
-            return List.of(value);
-        }
-        if ("reject".equals(policy.overflow())) {
-            throw new IllegalArgumentException("TEXT_TOO_LONG: actual=" + count
-                    + " max=" + policy.maxTextChars() + "（当前上限，见 set_config/qq_policy）");
-        }
-        List<String> chunks = new ArrayList<>();
-        int start = 0;
-        while (start < value.length()) {
-            int end = value.offsetByCodePoints(start,
-                    Math.min(policy.maxTextChars(), value.codePointCount(start, value.length())));
-            chunks.add(value.substring(start, end));
-            start = end;
-        }
-        return chunks.isEmpty() ? List.of("") : chunks;
+        return policy.textPolicy().chunks(text);
     }
 }

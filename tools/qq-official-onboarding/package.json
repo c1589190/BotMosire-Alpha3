@@ -1,0 +1,24 @@
+{
+  "name": "@bma3/qq-official-onboarding",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated QQ official bot QR onboarding helper for BMA3",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "qq-official-onboarding": "bin/qq-official-onboarding.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-connector": "1.2.0",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "jsqr": "1.4.0",
+    "pngjs": "7.0.0"
+  }
+}

@@ -416,6 +416,69 @@ public final class SqliteMessageBoardStore
     }
 
     @Override
+    public synchronized Optional<Message> findInbound(SourceAddress source, String messageId) {
+        Objects.requireNonNull(source, "source");
+        if (messageId == null || messageId.isBlank()) {
+            return Optional.empty();
+        }
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT local_seq, message_key, source, account_id, direction,
+                       message_id, at, text, sender_id, sender_name, sender_card, sender_role,
+                       segments_json, external_message_id,
+                       delivery_status, delivery_operation_id, delivery_part_index,
+                       delivery_part_total, delivery_error_code
+                FROM chat_message
+                WHERE source = ? AND direction = ? AND message_id = ?
+                ORDER BY local_seq DESC
+                LIMIT 1
+                """)) {
+            statement.setString(1, source.format());
+            statement.setString(2, Direction.INBOUND.name());
+            statement.setString(3, messageId);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(map(result)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("按入站消息 id 查询失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized boolean hasInbound(SourceAddress source) {
+        Objects.requireNonNull(source, "source");
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT 1 FROM chat_message
+                WHERE source = ? AND direction = ?
+                LIMIT 1
+                """)) {
+            statement.setString(1, source.format());
+            statement.setString(2, Direction.INBOUND.name());
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("查写入站观察失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized long maxLocalSeq(SourceAddress source) {
+        Objects.requireNonNull(source, "source");
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT COALESCE(MAX(local_seq), 0) FROM chat_message WHERE source = ?")) {
+            statement.setString(1, source.format());
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? result.getLong(1) : 0L;
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 source 最大 local seq 失败", failure);
+        }
+    }
+
+    @Override
     public synchronized long readSeq(ConsumerId consumer, SourceAddress source) {
         Objects.requireNonNull(consumer, "consumer");
         Objects.requireNonNull(source, "source");

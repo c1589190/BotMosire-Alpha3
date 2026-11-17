@@ -1,15 +1,51 @@
 # STATUS —— 更新时间：2026-11-17 (UTC+8)
 
+## 2026-11-17：QQ 官方机器人与双渠道开发检查点（未完工）
+
+- 用户要求「保存目前工作状态。同时告诉我，目前推进到哪一步了？是否理论可用？提交并推送一下」；本检查点获授权提交并推送当前分支，不代表计划完成、发布或真实平台验收。实施前基线 `feat/0.0.8-windows-mcp` / `43b57b4`；检查点后的实际 HEAD、远端和工作树以 `git status --short --branch && git log -1 --oneline` 为准。保留并纳入此前已有的文档变更及 `packaging/smoke.sh` 健康端口修复。
+- 按[完整计划](../superpowers/plans/2026-11-17-qq-official-connect-and-channel-correlation-plan.md)分阶段推进但尚未全部验收：Phase 0–5 的主要组件、Phase 6 文本/回复、Phase 7 A/B 二维码代码以及 Phase 8–10 的绑定、投影、匹配与证据链已有实现；渠道控制工具、OneBot 和官方入站已接到组合根。Phase 6 媒体/撤回未完成；Phase 11 的真实环境、安全及故障验收与 Phase 12 打包/用户文档尚未关账。各阶段存在并行和未验收内容，不应理解为 Phase 10 及之前已全部完成。
+- **可用性判断**：fake OneBot + fake 官方端与真实 BMA3/MCP 的集成测试已走通单 item/单唤醒；官方文本/回复、只读和双渠道基本路径有条件地具备本地试验基础，但新实现尚无真实 QQ 消息收发、真实扫码或双渠道实机证据，不宜称为实际可用、生产就绪或完整交付。本批未发送真实 QQ 消息。此前独立预检的 token、`/users/@me`、`/gateway/bot`、WSS READY 与分享 URL 已 PASS，但不能替代新实现的真实入站/外发验收。
+- **媒体安全阻塞**：`OfficialQqLocalMediaPolicy` / 媒体直传仅为未注册的草稿，独立复核指出同 UID 可在打开叶文件与路径属性核验之间替换叶节点，Java `SecureDirectoryStream` 的路径属性无法证明已打开文件描述符身份；现有测试通过不代表此 TOCTOU 已消除。修复并独立复核前不得将官方媒体发送工具接入 app 或投入使用。大文件分片和消息撤回尚未实现；Windows 安全目录流与 ACL 的真实验证也为 `NOT_RUN`。
+- **恢复与一致性限制**：跨库由持久意图/消息板/投影和恢复协调，不是原子事务；若崩溃在 body-free 入站意图之后、消息板写入之前，恢复正文仍依赖上游重放，而 OneBot 回调异常及上游是否重放并无保证。双渠道缺少共同消息 ID 时，保守匹配可能返回 `UNVERIFIED`、fallback 或溢出保护可能抑制有效唤醒；无法保证任意延迟下跨平台恰好一次。
+- **本次最新全量门禁**：`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，**863 tests / 0 failures / 0 errors / 1 skipped**、`BUILD SUCCESS`，证据 `/tmp/bma3-checkpoint-maven.log`；跳过的是环境门控的真实浏览器测试。此后仅将 `QqThreadBindTool` 的数字示例替换为明确占位符，相关聚焦 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -pl bma3-app -am -Dtest=ChannelToolsTest,ChannelBindingCoordinatorToolsTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0，16/16，`/tmp/bma3-checkpoint-bind-tools.log`。Node onboarding：`cd tools/qq-official-onboarding && npm test` rc=0，35/35，`/tmp/bma3-onboarding-test.log`；DSH 插件：`cd dsh-plugin && npm test` rc=0，167/167，`/tmp/bma3-dsh-regression.log`。完整打包 `packaging/smoke.sh`、Windows 原生构建/ACL、实际手机 A/B 扫码、官方实际消息入站/发送/回复、真实双渠道关联及真实宿主联调均为 `NOT_RUN`。此前 app 聚焦端到端 79 项 rc=0，`/tmp/channel-app-integration.log`，并非真实 QQ。
+- **外部依赖**：扫码 CLI 锁定的官方 SDK `@tencent-connect/qqbot-connector@1.2.0` 标为 `UNLICENSED`；只通过包依赖使用，未复制 SDK 源码，分发前需处理其授权，Node 不是常驻服务运行依赖。
+- **恢复顺序**：先 `git status --short --branch && git log -1 --oneline`，重读本条、专题设计与计划；优先修正并重新独立审查媒体文件身份竞态，继续 Phase 6 与 Phase 11 跨库故障/重启/并发验收，再执行隔离打包 smoke、补齐 Phase 12 文档和用户参与的真实平台验收。未经单独授权不发真实 QQ 消息；不要清理或覆盖已有 `build/app-image`、`dist/botmosire-a3*`，打包 smoke 应在隔离副本运行。
+
+## 2026-11-17：QQ 官方机器人与双渠道计划实施记录（历史，以上检查点为准）
+
+- 用户要求恢复工作状态、确认无额外裁定后直接开始实现。现有 D-074..D-077、已确认专题设计与完整计划覆盖当前范围；未发现需要追加用户裁定的阻塞项，真实外发仍须另行授权。随后用户撤销子 Agent 模型限制（M-005），局部问题可直接修复。
+- 当前范围：官方只读、文本/回复和 B 分享二维码已接入组合根；双渠道的共享 gate、绑定恢复、OneBot/官方入站路由及控制工具已完成初步接线，正进行合流复核；媒体/撤回尚未完成。现有 `packaging/smoke.sh` 未提交修复及已有文档变更均保留。
+- Phase 1 聚焦验证（实施代理，后续字节仍需复验）：`./mvnw -B -ntp -pl bma3-qq-official-connect -am test` rc=0（依赖 core 20、agentlib 5 测试；新模块当时无测试）；`./mvnw -B -ntp -pl bma3-app -am -DskipTests package` rc=0；安全加固和 `get_config` 后 `./mvnw -B -ntp -pl bma3-app -am -Dtest=ConfigLoaderTest,SetConfigToolTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0（33 项）。证据为各模块 `target/surefire-reports/`，可能被后续运行覆盖。
+- 官方接入基础组件、只读工具、Gateway、事件入板和 A/B 二维码已编写，已装配官方原始只读入口；凭据支持纯文本与扫码 JSON（AppID 不匹配 fail-closed）。实施代理报告 app 聚焦 47 项通过（配置 29、配置工具 4、fake 集成 13、重载并发 1）：先 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -Dmaven.test.skip=true -pl bma3-app -am install`，再 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -pl bma3-app -Dtest=ConfigLoaderTest,SetConfigToolTest,Bma3OfficialAppIntegrationTest,OfficialQqServiceConcurrencyTest -Dsurefire.failIfNoSpecifiedTests=false test`，均 rc=0，证据为相应 `target/surefire-reports/`。早期聚焦：`./mvnw -B -ntp -pl bma3-qq-official-connect -am -Dtest=OfficialQqCredentialResolverTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0（12 项，`/tmp/bma3-official-credential-test.log`）；同命令改 `OfficialQqDirectoryStoreTest` rc=0（3 项，`/tmp/bma3-official-directory-test.log`）。实施代理后续单模块聚焦与全量有更高测试数，仍须所有源码稳定后由主 Agent 合流复测。
+- 安全复核发现 HTTP headers 后 body 迟迟不到时请求超时失效；已改为有界订阅及整体 deadline，fake 慢响应/redirect 聚焦测试由实施代理报告 59 项通过。官方发送已补账号/transport 绑定、同来源回复、错误脱敏、消息板三态及 eventId 白名单，并接入 app；实施代理最新 app 聚焦 53 项通过（`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -pl bma3-app -Dtest=ConfigLoaderTest,SetConfigToolTest,Bma3OfficialAppIntegrationTest,OfficialQqServiceConcurrencyTest -Dsurefire.failIfNoSpecifiedTests=false test`，证据 `target/surefire-reports/`）。所有结果仍待源码稳定后主 Agent 合流复测；真实外发绝未执行。
+- 渠道 registry、Inbox 通用投影/旧库迁移、匹配内核、持久 observation 和路由/绑定恢复组件已编写，已初步接入两个入站路径和渠道工具；仍需更多重启、并发与故障验收。复核发现的 fallback 不同已映射发送者误压制、pending route 恢复遗漏关联已由主 Agent 直接修复；`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -pl bma3-app -am -Dtest=QqChannelRouterTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0（32 项，`/tmp/router-lead-regression-after.log`），补充两条聚焦回归 rc=0（`/tmp/router-lead-regression2.log`）。跨库恢复和完整装配仍需继续验证，工程复核见 [双渠道路由实施前复核](../superpowers/reports/2026-11-17-qq-channel-router-preimplementation-review.md)。扫码工具 `cd tools/qq-official-onboarding && npm test` rc=0（35 项，`/tmp/bma3-onboarding-test.log`）；`cd dsh-plugin && npm test` rc=0（167 项，`/tmp/bma3-dsh-regression.log`）。Windows ACL 与真实扫码仍未验证。
+- 复核澄清：D-027/D-028 的 `dropBelow` 直接丢弃且不落库继续生效；只有通过过滤的消息在绑定/暂停时保留原始事实。新逻辑列表工具命名为 `qq_channel_thread_list`，避免与现有 OneBot `qq_thread_list` 冲突；已同步专题设计/计划，无需新增裁定。
+- 当时基线：`feat/0.0.8-windows-mcp` / `43b57b4`；当时工作树有实现中源码和既有 dirty 文档，真实 QQ 消息收发、A/B 真实扫码和双渠道联调均为 `NOT_RUN`。后续提交和推送授权以顶部检查点为准。
+- 下一步：对组合根接线、绑定 epoch 与恢复继续做端到端和故障审查；`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -pl bma3-app -am -Dtest=Bma3AppFakeQqTest,Bma3OfficialAppIntegrationTest,QqChannelRuntimeTest,QqChannelRouterTest,QqBindingCoordinatorTest,ChannelBindingCoordinatorToolsTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0（79 项；`/tmp/channel-app-integration.log`），含 fake OneBot + fake 官方 + 真 MCP 的单 item/单唤醒，不等于真实 QQ。媒体直传还未接线，大文件分片与撤回尚未实现；源码稳定后再跑全量、插件及隔离 app-image smoke。
+
+## 2026-11-17：QQ 官方机器人 + 双渠道 Inbox 设计与计划已确认（历史）
+
+- 用户确认 [D-074..D-077](../superpowers/DESIGN_RULINGS.md)：官方 QQ 机器人首期接入 `bma3-qq-official-connect`，A+B 二维码都要；OneBot 与官方机器人双渠道在 Inbox 层统一逻辑来源、单渠道展示、跨渠道一致性校验；Agent 是绑定/注入控制面的用户。
+- 设计：[QQ 官方机器人接入与双渠道 Inbox 一致性设计](../superpowers/specs/2026-11-17-qq-official-connect-and-inbox-channel-correlation-design.md)。
+- 完整开发计划：[QQ 官方机器人与双渠道一致性计划](../superpowers/plans/2026-11-17-qq-official-connect-and-channel-correlation-plan.md)。
+- 上游契约：[QQ 官方机器人 API 摘要](../upstream/2026-11-17-qq-official-bot-api.md)。
+- 预检证据：[QQ 官方机器人接入预检](../superpowers/reports/2026-11-17-qq-official-connect-preflight.md)：AccessToken、`/users/@me`、`/gateway/bot`、真实 WSS `Hello -> Identify -> READY`、`generate_url_link` 均 PASS；未发送 QQ 消息。凭据只存仓库外 `0600` 文件，未进入仓库或 MCP 结果。
+- 当前只完成设计/计划/预检文档；**产品代码尚未开始**。计划实施顺序、每阶段验证命令与回滚点见计划文档 §3。
+- 当前分支 `feat/0.0.8-windows-mcp`，HEAD `43b57b4`。工作树另有此前 Linux smoke 修复 `packaging/smoke.sh` 及本 STATUS 变更；本轮未 commit/push。
+- 下一步：用户放行后从计划 Phase 1（新模块骨架、配置、`bma3-app` 依赖）开始；不跳阶段、不把预检 PASS 冒充真实消息联调。
+
 ## 2026-11-17：0.0.8 实现进行中
 
 - 用户要求优先易用性和跨 OneBot provider 通用性（[D-072](../superpowers/DESIGN_RULINGS.md)）；当前会话有 Windows Computer Use 工具，本版本不实现 Xvfb 替代。实现范围见[设计](../superpowers/specs/2026-11-17-windows-codex-snowluma-design.md)与[计划](../superpowers/plans/2026-11-17-windows-codex-snowluma-plan.md)。
 - 本轮只使用 Windows 工作区、Windows Git 和原生工具链；WSL 项目独立维护，不访问其仓库、依赖或运行实例。
-- Windows 原生构建：添加 Maven wrapper 和固定上游源码及 SHA-256 的 `tools/windows/bootstrap-agentlib.ps1`；已从公开 ProjectMosire 源码构建 AgentLib `0.2.5` 并成功打包 `0.0.8-SNAPSHOT`（依赖引导不运行上游测试）。Windows 全量 `mvnw.cmd -B -ntp -fae test` rc=0，334 项、0 failures、0 errors、2 skipped；随后新增纯 MCP 推送探针设置，相关 `OptionalCapabilitiesTest,ConfigLoaderTest,SetConfigToolTest` 16 项 rc=0；最新包用 `-DskipTests package` rc=0。Linux 全量回归未运行。
+- Windows 原生构建：添加 Maven wrapper 和固定上游源码及 SHA-256 的 `tools/windows/bootstrap-agentlib.ps1`；已从公开 ProjectMosire 源码构建 AgentLib `0.2.5` 并成功打包 `0.0.8-SNAPSHOT`（依赖引导不运行上游测试）。Windows 全量 `mvnw.cmd -B -ntp -fae test` rc=0，334 项、0 failures、0 errors、2 skipped；随后新增纯 MCP 推送探针设置，相关 `OptionalCapabilitiesTest,ConfigLoaderTest,SetConfigToolTest` 16 项 rc=0；最新包用 `-DskipTests package` rc=0。
+- Linux 回归（2026-11-17，`feat/0.0.8-windows-mcp` / `43b57b4`）：`./mvnw -B -ntp test` rc=0，334 项、0 failures、0 errors、1 skipped，`BUILD SUCCESS`；`dsh-plugin npm test` rc=0，167 pass / 0 fail；`packaging/smoke.sh` rc=0，app-image 启动且 `/healthz` 200。另用 app-image 在本机回环地址验证标准 HTTP MCP：未认证请求 401，initialize 200，`tools/list` 200 且发现 68 个工具，`qq_account_list`/`qq_conversation_history`/`qq_remote_history` 均在工具面。真实 Linux QQ/SnowLuma provider 联调仍为 `NOT_RUN`，不冒充真实宿主验收。
+- Linux smoke 修复：本机沙箱保留默认端口 8765/8766，smoke 片段此前只覆盖 MCP/Inbox 端口而沿用默认 health `8766`，导致健康服务无法绑定；现显式设置 smoke 的 `server.healthPort: 18867`（`packaging/smoke.sh`，未提交）。
 - 已实现：Windows 私有运行目录、Windows DPAPI 可选保存 OneBot 凭据、受保护的 BMA3/诊断文件、Codex 标准 HTTP MCP header helper、禁用 Xvfb/DSH 心跳时的健康语义；群请求兼容 SnowLuma 扁平数组，历史扩展区分 SnowLuma、LLBot 和未知 provider，未知分页不伪造游标。Windows 测试还修复了旧测试的 SQLite 句柄清理和 Linux 路径假设。
 - 真实只读验证：Windows 原生 BMA3 曾成功连接本机 SnowLuma；MCP 鉴权拒绝错误 token、允许正确 token；工具发现 54 项，账号状态、群/好友列表、非空群请求、消息板历史均成功。SnowLuma 群历史两页均非空、相邻页无重复。独立临时 Codex 客户端加载用户已配置的 `bma3` MCP，实际调用 `qq_account_list` 和 `qq_conversation_history` 成功；没有发送 QQ 消息。
 - 当前运行：Windows 用户目录 `%LOCALAPPDATA%/BotMosire-Alpha3` 有受 ACL 保护的运行数据，OneBot token 以当前 Windows 用户 DPAPI 加密；Codex 用户配置追加 `bma3` HTTP MCP，不含 token。SnowLuma 一度停止监听，用户重启后 BMA3 自动重连；已平滑重启为最新包，watchdog 整体 `UP`、QQ `UP`，未使用的 DSH/Xvfb/推送积压探针标为 `disabled`。重启后的 Codex 临时客户端再次实际读取账号和消息板成功；当前聊天启动时并未注册新 MCP，需新建 Codex 会话加载配置。
 - 用户明确读取 QQ 应通过 BMA3 封装的 MCP 工具，不依赖 Inbox 注入（[D-073](../superpowers/DESIGN_RULINGS.md)）。
-- 剩余限制：其他 provider 的真实实例、Linux 全量回归、SnowLuma 非空群请求的操作 flag 映射及完整媒体契约仍未验证；不实现 Codex 插件或会话自动唤醒。
+- 剩余限制：其他 provider 的真实实例、Linux 上的真实 QQ/SnowLuma 联调、SnowLuma 非空群请求的操作 flag 映射及完整媒体契约仍未验证；不实现 Codex 插件或会话自动唤醒。
 
 ## 2026-11-17：0.0.8 Windows / 纯 MCP 分支
 
@@ -192,7 +228,7 @@
 
 **停工前测试证据（2026-11-15，本机会话运行）**：`./mvnw -q -o test` rc=0，Surefire 汇总 276 tests / 0 failures / 0 errors / 1 skipped（真实浏览器 smoke）；`dsh-plugin` 的 `npm test -- --test-reporter=dot` rc=0、155 个测试点，输出有 Undici 实验性警告；`git diff --check` rc=0。本地真实 Inbox Java 服务 + 真实插件客户端、fake DSH 的 ACK 丢响应/客户端重建联调由子 Agent 运行 33/33、rc=0，证据 [Task 3 报告](../../.superpowers/sdd/2026-11-15-inbox-ack-recovery/task-3-report.md)；旧 SSE 排队帧未在该回环中单独强制构造。真实 QQ/LLBot、真实 DSH 宿主、远端、掉电、升级/回滚及 `packaging/smoke.sh` 均 `NOT_RUN`。
 
-**待用户重新授权后再做**：先读取当前工作树和 [Inbox 进度](../../.superpowers/sdd/2026-11-15-inbox-ack-recovery/progress.md)、[发送进度](../../.superpowers/sdd/2026-11-15-outbound-delivery-safety/progress.md)，确认被中断的整体复核是否有结果并处理残余风险；不重复运行已有测试，除非代码变化或确有必要。旧插件与新服务端不可混用；升级/回滚须按计划停旧写者并作 SQLite 一致性备份。用户明确要求减少冗余测试，子 Agent 默认 `deepseek-flash`（M-003）。
+**待用户重新授权后再做**：先读取当前工作树和 [Inbox 进度](../../.superpowers/sdd/2026-11-15-inbox-ack-recovery/progress.md)、[发送进度](../../.superpowers/sdd/2026-11-15-outbound-delivery-safety/progress.md)，确认被中断的整体复核是否有结果并处理残余风险；不重复运行已有测试，除非代码变化或确有必要。旧插件与新服务端不可混用；升级/回滚须按计划停旧写者并作 SQLite 一致性备份。当时用户要求减少冗余测试及子 Agent 默认 `deepseek-flash`（M-003；模型限制后由 M-005 取代）。
 
 **0.0.6 远端反馈调查（2026-11-15，只读）**：用户授权检查远端部署；详细证据和限制见 [调查报告](../superpowers/reports/2026-11-15-remote-006-investigation.md)。当前进程打开预期的 `bot.db` / `inbox.db`；插件文件与本地一致、检查时绑定存在且未停止。现存 10,840 条面板 entry 均能按 seq、来源、入站方向、时间对应消息板；会话中找到 Agent 对 `#14457` 的转述，但未找到独立的原始面板记录，根因仍未确认。watchdog 曾记录更新时段 UNBOUND/PUSH_STALLED，当前 UP；真实自动恢复与 fetch 404 根因仍 `NOT_RUN`。本轮无产品代码变更，构建/测试 `NOT_RUN`。
 

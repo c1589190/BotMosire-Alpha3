@@ -33,7 +33,8 @@ public final class InboxItemsTool implements AgentTool {
     @Override
     public String description() {
         return "列出所有未 ack 的 inbox 条目（含面板窗口外的）：index/source/priority/status/条数/"
-                + "最近时间/一行预览，不含正文。用 inbox_get 取某个条目的完整 entries。";
+                + "最近时间/displayChannel/channelSummary/一行预览，不含正文。"
+                + "用 inbox_get 取某个条目的完整 entries 与证据详情。";
     }
 
     @Override
@@ -66,6 +67,8 @@ public final class InboxItemsTool implements AgentTool {
             row.put("entriesShown", Math.min(item.entries().size(), Integer.MAX_VALUE));
             row.put("lastAt", item.updatedAt().toString());
             row.put("continued", item.continued());
+            row.put("displayChannel", item.displayChannel());
+            row.put("channelSummary", item.channelSummary());
             row.put("preview", preview(item));
             rows.add(row);
         }

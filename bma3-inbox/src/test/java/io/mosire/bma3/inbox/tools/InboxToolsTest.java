@@ -96,6 +96,38 @@ class InboxToolsTest {
     }
 
     @Test
+    void panelAndGetExposeGenericChannelProjectionAndEvidence() throws Exception {
+        try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("channel-tools.db"))) {
+            InboxService service = service(store, Duration.ofSeconds(30));
+            String source = "qq_thread/channel-tools";
+            var view = io.mosire.bma3.core.source.SourceView.of(source, "逻辑会话");
+            var entry = new io.mosire.bma3.inbox.core.InboxEntry(1L, Instant.now(), "u",
+                    "display body", List.of(), "onebot", Map.of("messageId", "m-1"));
+            var item = service.appendProjected(AppendItem.projected(view, entry, 250,
+                    Instant.now(), "onebot", Map.of("matched", 0)));
+            service.appendEvidenceOnly(item.id(), "qq_official",
+                    Map.of("observationId", "obs-2", "state", "CHANNEL_ONLY"));
+
+            List<AgentTool> tools = InboxTools.all(service);
+            JsonNode panel = mapper.readTree(tool(tools, "inbox_list")
+                    .execute(call(Map.of())).message());
+            JsonNode panelItem = panel.path("items").get(0);
+            assertThat(panelItem.path("displayChannel").asText()).isEqualTo("onebot");
+            assertThat(panelItem.path("channelSummary").path("evidence")).hasSize(1);
+
+            JsonNode detail = mapper.readTree(tool(tools, "inbox_get")
+                    .execute(call(Map.of("itemId", item.id()))).message());
+            assertThat(detail.path("displayChannel").asText()).isEqualTo("onebot");
+            assertThat(detail.path("channelSummary").path("evidence").get(0)
+                    .path("observationId").asText()).isEqualTo("obs-2");
+            assertThat(detail.path("entries").get(0).path("channel").asText())
+                    .isEqualTo("onebot");
+            assertThat(detail.path("entries").get(0).path("evidence").path("messageId").asText())
+                    .isEqualTo("m-1");
+        }
+    }
+
+    @Test
     void ackIsPerItemAndRejectsAStaleRevision() throws Exception {
         try (SqliteInboxStore store = new SqliteInboxStore(tempDir.resolve("ack.db"))) {
             InboxService service = service(store);

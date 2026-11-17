@@ -29,6 +29,11 @@
     </dependency>
     <dependency>
       <groupId>io.mosire.bma3</groupId>
+      <artifactId>bma3-qq-official-connect</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.mosire.bma3</groupId>
       <artifactId>bma3-inbox</artifactId>
       <version>${project.version}</version>
     </dependency>

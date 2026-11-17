@@ -1,10 +1,12 @@
 package io.mosire.bma3.core.store;
 
 import io.mosire.bma3.core.message.DeliveryStatus;
+import io.mosire.bma3.core.message.Direction;
 import io.mosire.bma3.core.message.InboundMessage;
 import io.mosire.bma3.core.message.Message;
 import io.mosire.bma3.core.source.SourceAddress;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 /** Message board persistence port. */
@@ -59,6 +61,38 @@ public interface MessageBoardStore extends AutoCloseable {
 
     /** Reverse lookup used to answer "is the quoted message one of mine?". */
     Optional<Message> findByExternalMessageId(SourceAddress source, String externalMessageId);
+
+    /**
+     * Exact inbound fact lookup for channel replay/recovery. Unlike
+     * {@link #findByExternalMessageId(SourceAddress, String)}, this query is restricted to
+     * {@link Direction#INBOUND} and matches the persisted platform {@code message_id}, not the
+     * optional outbound external id.
+     */
+    default Optional<Message> findInbound(SourceAddress source, String messageId) {
+        throw new UnsupportedOperationException("findInbound is not implemented");
+    }
+
+    /**
+     * Highest local sequence currently persisted for one raw source, or {@code 0} when the source
+     * has no rows. Channel binding uses this as an inclusive future scan boundary.
+     */
+    default long maxLocalSeq(SourceAddress source) {
+        throw new UnsupportedOperationException("maxLocalSeq is not implemented");
+    }
+
+    /**
+     * True only when at least one {@link Direction#INBOUND} row exists for the exact source.
+     *
+     * <p>This is an observation predicate, not a sequence heuristic: outbound rows in any delivery
+     * state must never make it return true. Non-SQLite implementations that do not support the
+     * query return {@code false} (fail-closed); callers must not fall back to
+     * {@link #maxLocalSeq(SourceAddress)} because outbound rows would then masquerade as inbound
+     * observation.</p>
+     */
+    default boolean hasInbound(SourceAddress source) {
+        Objects.requireNonNull(source, "source");
+        return false;
+    }
 
     /**
      * Full-text-ish search over the board: message text, sender nickname and group card.

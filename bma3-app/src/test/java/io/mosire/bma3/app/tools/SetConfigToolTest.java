@@ -2,6 +2,8 @@ package io.mosire.bma3.app.tools;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosire.agentlib.permission.AccessToken;
 import io.mosire.agentlib.permission.AgentIdentity;
 import io.mosire.agentlib.permission.AgentPermissionSet;
@@ -68,6 +70,72 @@ class SetConfigToolTest {
             assertThat(Files.readString(root.resolve("config/app.yaml")))
                     .contains("qq_group: 150");
         }
+    }
+
+    @Test
+    void getConfigExposesOfficialSafeViewWithoutSecretValues() throws Exception {
+        Path configDir = root.resolve("config");
+        Files.createDirectories(configDir);
+        Files.writeString(configDir.resolve("app.yaml"), """
+                qqofficial:
+                  accounts:
+                    - accountId: official-main
+                      appId: "synthetic-app-id-main"
+                      appSecretEnv: BMA3_QQ_OFFICIAL_APP_SECRET
+                      enabled: true
+                      shard: [0, 1]
+                    - accountId: official-disabled
+                      appId: "synthetic-app-id-disabled"
+                      appSecretFile: /run/secrets/synthetic-official.secret
+                      enabled: false
+                      shard: [0, 1]
+                  transport: websocket
+                  reconnect:
+                    initialMs: 1500
+                    maxMs: 120000
+                    jitter: false
+                  http:
+                    connectTimeoutSeconds: 7
+                    requestTimeoutSeconds: 25
+                  matching:
+                    mode: loose
+                    strictTimeToleranceSeconds: 12
+                """);
+        String sentinelSecret = "phase1-get-config-secret-sentinel-6d82";
+        Map<String, String> env = Map.of(
+                "BMA3_QQ_OFFICIAL_APP_SECRET", sentinelSecret);
+        AppConfig config = ConfigLoader.load(root, env);
+        GetConfigTool tool = new GetConfigTool(new ConfigToolContext(root, env, () -> config));
+
+        ToolResult result = tool.execute(call(Map.of()));
+
+        assertThat(result.success()).as(result.message()).isTrue();
+        JsonNode official = new ObjectMapper().readTree(result.message()).path("qqofficial");
+        assertThat(official.path("transport").asText()).isEqualTo("websocket");
+        assertThat(official.path("accounts").size()).isEqualTo(2);
+        JsonNode enabled = official.path("accounts").get(0);
+        assertThat(enabled.path("accountId").asText()).isEqualTo("official-main");
+        assertThat(enabled.path("appId").asText()).isEqualTo("synthetic-app-id-main");
+        assertThat(enabled.path("enabled").asBoolean()).isTrue();
+        assertThat(enabled.path("shard").toString()).isEqualTo("[0,1]");
+        assertThat(enabled.path("appSecretEnv").asText())
+                .isEqualTo("BMA3_QQ_OFFICIAL_APP_SECRET");
+        assertThat(enabled.path("appSecretFile").asText()).isEmpty();
+        JsonNode disabled = official.path("accounts").get(1);
+        assertThat(disabled.path("accountId").asText()).isEqualTo("official-disabled");
+        assertThat(disabled.path("enabled").asBoolean()).isFalse();
+        assertThat(disabled.path("appSecretEnv").asText()).isEmpty();
+        assertThat(disabled.path("appSecretFile").asText())
+                .isEqualTo("/run/secrets/synthetic-official.secret");
+        assertThat(official.path("reconnect").path("initialMs").asInt()).isEqualTo(1500);
+        assertThat(official.path("reconnect").path("jitter").asBoolean()).isFalse();
+        assertThat(official.path("http").path("requestTimeoutSeconds").asInt()).isEqualTo(25);
+        assertThat(official.path("matching").path("mode").asText()).isEqualTo("loose");
+        assertThat(official.path("matching").path("strictTimeToleranceSeconds").asInt())
+                .isEqualTo(12);
+        assertThat(result.message())
+                .doesNotContain(sentinelSecret)
+                .doesNotContain("phase1-get-config-secret-sentinel");
     }
 
     @Test

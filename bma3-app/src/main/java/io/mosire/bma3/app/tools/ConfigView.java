@@ -49,6 +49,33 @@ final class ConfigView {
             item.put("selfName", account.selfName());
         }
 
+        ObjectNode qqofficial = root.putObject("qqofficial");
+        ArrayNode officialAccounts = qqofficial.putArray("accounts");
+        for (AppConfig.QqOfficial.Account account : config.qqOfficial().accounts()) {
+            ObjectNode item = officialAccounts.addObject();
+            item.put("accountId", account.accountId());
+            item.put("appId", account.appId());
+            item.put("enabled", account.enabled());
+            item.set("shard", JSON.valueToTree(account.shard()));
+            // Reference names only. The environment value / file content never enters AppConfig.
+            item.put("appSecretEnv", account.appSecretEnv());
+            item.put("appSecretFile", account.appSecretFile());
+        }
+        qqofficial.put("transport", config.qqOfficial().transport());
+        ObjectNode officialReconnect = qqofficial.putObject("reconnect");
+        officialReconnect.put("initialMs", config.qqOfficial().reconnect().initialMs());
+        officialReconnect.put("maxMs", config.qqOfficial().reconnect().maxMs());
+        officialReconnect.put("jitter", config.qqOfficial().reconnect().jitter());
+        ObjectNode officialHttp = qqofficial.putObject("http");
+        officialHttp.put("connectTimeoutSeconds",
+                config.qqOfficial().http().connectTimeoutSeconds());
+        officialHttp.put("requestTimeoutSeconds",
+                config.qqOfficial().http().requestTimeoutSeconds());
+        ObjectNode officialMatching = qqofficial.putObject("matching");
+        officialMatching.put("mode", config.qqOfficial().matching().mode());
+        officialMatching.put("strictTimeToleranceSeconds",
+                config.qqOfficial().matching().strictTimeToleranceSeconds());
+
         ObjectNode weighting = root.putObject("weighting");
         weighting.put("immediateThreshold", config.weighting().immediateThreshold());
         weighting.put("dropBelow", config.weighting().dropBelow());

@@ -86,7 +86,9 @@ public final class SqliteInboxStore implements InboxStore {
                           updated_at TEXT,
                           revision INTEGER NOT NULL,
                           frozen_revision INTEGER NOT NULL DEFAULT 0,
-                          continued INTEGER NOT NULL DEFAULT 0
+                          continued INTEGER NOT NULL DEFAULT 0,
+                          display_channel TEXT NOT NULL DEFAULT '',
+                          channel_summary_json TEXT NOT NULL DEFAULT '{}'
                         )
                         """);
                 ensureColumn(statement, "inbox_item", "source_label", "TEXT");
@@ -96,6 +98,18 @@ public final class SqliteInboxStore implements InboxStore {
                 ensureColumn(statement, "inbox_item", "updated_at", "TEXT");
                 ensureColumn(statement, "inbox_item", "frozen_revision", "INTEGER NOT NULL DEFAULT 0");
                 ensureColumn(statement, "inbox_item", "continued", "INTEGER NOT NULL DEFAULT 0");
+                ensureColumn(statement, "inbox_item", "display_channel",
+                        "TEXT NOT NULL DEFAULT ''");
+                ensureColumn(statement, "inbox_item", "channel_summary_json",
+                        "TEXT NOT NULL DEFAULT '{}'");
+                statement.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_inbox_item_active_source
+                        ON inbox_item(source, status, frozen_revision, created_at)
+                        """);
+                statement.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_inbox_item_latest_source
+                        ON inbox_item(source, created_at DESC, updated_at DESC, id DESC)
+                        """);
                 statement.execute("""
                         CREATE TABLE IF NOT EXISTS inbox_meta (
                           key TEXT PRIMARY KEY,
@@ -114,6 +128,31 @@ public final class SqliteInboxStore implements InboxStore {
                           identity TEXT NOT NULL,
                           created_at TEXT NOT NULL
                         )
+                        """);
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS inbox_receipt (
+                          request_key TEXT PRIMARY KEY,
+                          item_id TEXT,
+                          kind TEXT NOT NULL,
+                          source TEXT NOT NULL DEFAULT '',
+                          channel TEXT NOT NULL DEFAULT '',
+                          created_at TEXT NOT NULL
+                        )
+                        """);
+                ensureColumn(statement, "inbox_receipt", "source", "TEXT NOT NULL DEFAULT ''");
+                ensureColumn(statement, "inbox_receipt", "channel", "TEXT NOT NULL DEFAULT ''");
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS inbox_evidence_key (
+                          item_id TEXT NOT NULL,
+                          evidence_key TEXT NOT NULL,
+                          observed_at TEXT NOT NULL,
+                          created_at TEXT NOT NULL,
+                          PRIMARY KEY(item_id, evidence_key)
+                        )
+                        """);
+                statement.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_inbox_evidence_key_item
+                        ON inbox_evidence_key(item_id, evidence_key)
                         """);
             }
             // Fail closed: a store without a readable identity must never serve ACKs, because the
@@ -136,7 +175,8 @@ public final class SqliteInboxStore implements InboxStore {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO inbox_item (id, source, source_label, summary, entries_json,
                   total_messages, event_revision, priority, status, available_at, created_at,
-                  updated_at, revision, frozen_revision, continued) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  updated_at, revision, frozen_revision, continued, display_channel,
+                  channel_summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             bindInsert(statement, item);
             statement.executeUpdate();
@@ -152,7 +192,8 @@ public final class SqliteInboxStore implements InboxStore {
                 UPDATE inbox_item SET source = ?, source_label = ?, summary = ?,
                   entries_json = ?, total_messages = ?, event_revision = ?, priority = ?,
                   status = ?, available_at = ?, created_at = ?, updated_at = ?, revision = ?,
-                  frozen_revision = ?, continued = ?
+                  frozen_revision = ?, continued = ?, display_channel = ?,
+                  channel_summary_json = ?
                 WHERE id = ?
                 """)) {
             bindUpdate(statement, item);
@@ -186,10 +227,10 @@ public final class SqliteInboxStore implements InboxStore {
         bindBody(statement, item, 2);
     }
 
-    /** Binds the 14 UPDATE SET values, then the id at position 15. */
+    /** Binds the 16 UPDATE SET values, then the id at position 17. */
     private void bindUpdate(PreparedStatement statement, InboxItem item) throws SQLException {
         bindBody(statement, item, 1);
-        statement.setString(15, item.id());
+        statement.setString(17, item.id());
     }
 
     private void bindBody(PreparedStatement statement, InboxItem item, int offset)
@@ -212,6 +253,12 @@ public final class SqliteInboxStore implements InboxStore {
         statement.setInt(offset + 11, item.revision());
         statement.setLong(offset + 12, item.frozenRevision());
         statement.setInt(offset + 13, item.continued() ? 1 : 0);
+        statement.setString(offset + 14, item.displayChannel());
+        try {
+            statement.setString(offset + 15, JSON.writeValueAsString(item.channelSummary()));
+        } catch (Exception failure) {
+            throw new SQLException("序列化 Inbox channelSummary 失败", failure);
+        }
     }
 
     @Override
@@ -246,6 +293,24 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
+    public synchronized Optional<InboxItem> latestForSource(String source) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT * FROM inbox_item
+                WHERE source = ?
+                ORDER BY created_at DESC, updated_at DESC, id DESC
+                LIMIT 1
+                """)) {
+            statement.setString(1, source);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() ? Optional.of(mapItem(result)) : Optional.empty();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 latest Inbox item 失败", failure);
+        }
+    }
+
+    @Override
     public synchronized void delete(java.util.List<String> itemIds) {
         ensureOpen();
         if (itemIds == null || itemIds.isEmpty()) {
@@ -258,8 +323,20 @@ public final class SqliteInboxStore implements InboxStore {
                 statement.addBatch();
             }
             statement.executeBatch();
+            deleteOrphanEvidenceKeys();
         } catch (SQLException failure) {
             throw new IllegalStateException("删除 Inbox item 失败", failure);
+        }
+    }
+
+    private void deleteOrphanEvidenceKeys() throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    DELETE FROM inbox_evidence_key
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM inbox_item WHERE inbox_item.id = inbox_evidence_key.item_id
+                    )
+                    """);
         }
     }
 
@@ -322,6 +399,7 @@ public final class SqliteInboxStore implements InboxStore {
                     removed += statement.executeUpdate();
                 }
             }
+            deleteOrphanEvidenceKeys();
             return removed;
         } catch (SQLException failure) {
             throw new IllegalStateException("清理 Inbox item 失败", failure);
@@ -532,6 +610,113 @@ public final class SqliteInboxStore implements InboxStore {
     }
 
     @Override
+    public synchronized boolean claimReceipt(String requestKey, String itemId, String kind) {
+        return claimReceipt(requestKey, itemId, kind, "", "");
+    }
+
+    @Override
+    public synchronized boolean claimReceipt(String requestKey, String itemId, String kind,
+                                             String source, String channel) {
+        ensureOpen();
+        if (requestKey == null || requestKey.isBlank()) {
+            throw new IllegalArgumentException("REQUEST_KEY_REQUIRED");
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT OR IGNORE INTO inbox_receipt
+                  (request_key, item_id, kind, source, channel, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """)) {
+            statement.setString(1, requestKey);
+            statement.setString(2, itemId == null ? "" : itemId);
+            statement.setString(3, kind == null || kind.isBlank() ? "append" : kind);
+            statement.setString(4, source == null ? "" : source);
+            statement.setString(5, channel == null ? "" : channel);
+            statement.setString(6, Instant.now().toString());
+            return statement.executeUpdate() == 1;
+        } catch (SQLException failure) {
+            throw new IllegalStateException("写入 Inbox 请求回执失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized Optional<InboxStore.Receipt> receipt(String requestKey) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT item_id, kind, source, channel FROM inbox_receipt WHERE request_key = ?
+                """)) {
+            statement.setString(1, requestKey);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(new InboxStore.Receipt(
+                        requestKey,
+                        result.getString("item_id"),
+                        result.getString("kind"),
+                        result.getString("source"),
+                        result.getString("channel")));
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 Inbox 请求回执失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized boolean claimEvidenceKey(String itemId, String evidenceKey,
+                                                 String observedAt) {
+        ensureOpen();
+        if (itemId == null || itemId.isBlank() || evidenceKey == null || evidenceKey.isBlank()) {
+            throw new IllegalArgumentException("EVIDENCE_KEY_REQUIRED");
+        }
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT OR IGNORE INTO inbox_evidence_key
+                  (item_id, evidence_key, observed_at, created_at)
+                VALUES (?, ?, ?, ?)
+                """)) {
+            statement.setString(1, itemId);
+            statement.setString(2, evidenceKey);
+            statement.setString(3, observedAt == null ? "" : observedAt);
+            statement.setString(4, Instant.now().toString());
+            return statement.executeUpdate() == 1;
+        } catch (SQLException failure) {
+            throw new IllegalStateException("写入 Inbox 证据去重键失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized void setReceiptItemId(String requestKey, String itemId) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE inbox_receipt SET item_id = ? WHERE request_key = ?")) {
+            statement.setString(1, itemId == null ? "" : itemId);
+            statement.setString(2, requestKey);
+            if (statement.executeUpdate() != 1) {
+                throw new SQLException("请求回执不存在: " + requestKey);
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("更新 Inbox 请求回执失败", failure);
+        }
+    }
+
+    @Override
+    public synchronized Optional<String> receiptItemId(String requestKey) {
+        ensureOpen();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT item_id FROM inbox_receipt WHERE request_key = ?")) {
+            statement.setString(1, requestKey);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) {
+                    return Optional.empty();
+                }
+                String itemId = result.getString(1);
+                return itemId == null || itemId.isBlank() ? Optional.empty() : Optional.of(itemId);
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("读取 Inbox 请求回执失败", failure);
+        }
+    }
+
+    @Override
     public synchronized String state(String key) {
         ensureOpen();
         try (PreparedStatement statement = connection.prepareStatement(
@@ -649,6 +834,17 @@ public final class SqliteInboxStore implements InboxStore {
         }
         Instant createdAt = Instant.parse(result.getString("created_at"));
         String updatedRaw = result.getString("updated_at");
+        String displayChannel = result.getString("display_channel");
+        String summaryJson = result.getString("channel_summary_json");
+        java.util.Map<String, Object> channelSummary = java.util.Map.of();
+        if (summaryJson != null && !summaryJson.isBlank()) {
+            try {
+                channelSummary = JSON.readValue(summaryJson,
+                        new TypeReference<java.util.Map<String, Object>>() { });
+            } catch (Exception ignored) {
+                channelSummary = java.util.Map.of();
+            }
+        }
         return new InboxItem(
                 result.getString("id"),
                 source,
@@ -664,7 +860,9 @@ public final class SqliteInboxStore implements InboxStore {
                 updatedRaw == null ? createdAt : Instant.parse(updatedRaw),
                 result.getInt("revision"),
                 result.getLong("frozen_revision"),
-                result.getInt("continued") != 0);
+                result.getInt("continued") != 0,
+                displayChannel == null ? "" : displayChannel,
+                channelSummary);
     }
 
 }
