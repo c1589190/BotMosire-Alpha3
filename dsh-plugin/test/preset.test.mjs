@@ -17,8 +17,7 @@ test('preset mounts the thin face: persona + terminal + image + subagents + plug
     'tool-subagent',
     'media',
     'tool-plugin-manager',
-    'compaction-basic',
-    'command-compact',
+    'tool-session-query',
   ])
   assert.match(definition.plugins[0].name, /persona\.js$/, '行名必须是独立入口文件而不是包名')
 
@@ -34,21 +33,22 @@ test('preset mounts the thin face: persona + terminal + image + subagents + plug
   assert.equal(definition.defaultTools, undefined)
 })
 
-test('preset owns the compaction backend and /compact, which the web host leaves to presets', () => {
+test('preset mounts the read-only session-query tools and no compaction backend', () => {
   const definition = presetDefinition({ get: () => undefined })
   const rows = new Map(definition.plugins.map((row) => [row.id, row]))
 
-  // dsh-web-app/cordis.patch.yml 在 host 平面把这两行置 disabled:true（"Presets own the human
-  // command and model-facing tool"）。预设不挂 = 既没有 /compact，也没有自动压缩后端。
-  const backend = rows.get('compaction-basic')
-  const command = rows.get('command-compact')
-  assert.ok(backend, '缺少 compaction-basic：压力下永不产生摘要，会话只能溢出')
-  assert.ok(command, '缺少 command-compact：/compact（/压缩）不可用')
+  // dsh-web-app 把 session-query 服务留在 host 平面、把模型面工具留给预设；不挂这一行，Agent 就只能读
+  // jar 自己那份滚动副本（memory_context），读不到真相层。
+  const sessionQuery = rows.get('tool-session-query')
+  assert.ok(sessionQuery, '缺少 tool-session-query：Agent 读不到宿主会话日志')
   // 名字要能落到宿主安装树里的绝对入口（测试进程下可能解析失败退回裸 specifier，两者都接受）。
-  assert.match(backend.name, /dsh-compaction-basic/)
-  assert.match(command.name, /dsh-command-compact/)
-  assert.equal(backend.disabled, undefined, '后端行不能是 disabled，否则等于没挂')
-  assert.equal(command.disabled, undefined, '命令行不能是 disabled，否则等于没挂')
+  assert.match(sessionQuery.name, /dsh-tool-session-query/)
+  assert.equal(sessionQuery.disabled, undefined, '这一行不能是 disabled，否则等于没挂')
+
+  // 压缩归 billion-context（D-082）：预设里再挂一套就会重复压缩，且它按 row.name 精确匹配
+  // `file:` URL 形式的行名，拦不住。
+  assert.equal(rows.has('compaction-basic'), false, '压缩后端应交给 billion-context，不在预设里挂')
+  assert.equal(rows.has('command-compact'), false, '/compact 由宿主决定，不在预设里开')
 })
 
 test('plugin-manager is only mounted when the host publishes profileContext', () => {

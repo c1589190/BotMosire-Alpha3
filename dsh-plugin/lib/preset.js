@@ -8,8 +8,9 @@
  *    (`defaultTools` + `resolveToolGroups`) was deleted because it depended on other plugins
  *    having registered names, and because its allow list was computed from the global view and
  *    therefore masked the preset's own rows.
- *  - `sessionRows` mounts the compaction backend and `/compact` itself, because the web host
- *    leaves both to presets (see the comment on `sessionRows`).
+ *  - `sessionRows` mounts the read-only session-query tools, so the Agent can read the host's own
+ *    session log (the truth layer) instead of only its own copy. Compaction is deliberately **not**
+ *    here: this deploy runs under `dsh web`, where billion-context owns compression (D-082).
  *
  * The Agent extends its own face at runtime:
  *  - MCP servers (the bma3 jar among them) → `mcp_connector_configure`, tools arrive as
@@ -80,25 +81,22 @@ function toolRows(ctx) {
 /**
  * Session-plane rows a preset must own because the host deliberately does not.
  *
- * `@deepseek-ai/dsh-web-app/cordis.patch.yml:566-581` disables `compaction-basic` and
- * `command-compact` at the *host* plane with the note "Presets own the human command and
- * model-facing tool". A preset that mounts neither therefore loses two things at once: the
- * `/compact` (and `/压缩`) command, and — worse — the compaction backend itself, so pressure
- * never produces a summary and the session can only overflow.
+ * `@deepseek-ai/dsh-web-app/cordis.patch.yml` keeps the session-query service on the host plane and
+ * leaves the *model-facing* tools to presets, so a preset that mounts nothing here gives the Agent no
+ * way to read its own session log — only the jar's rolling copy (`memory_context`).
  *
- * The ids match the host rows they replace (same shape as `tool-subagent` below): preset children
- * live in their own loader scope, so reusing the id does not collide with the host-plane row.
+ * The five tools are read-only and the row adds their schemas to every request, which is why only
+ * this one row is mounted (see D-079 ②).
+ *
+ * Compaction is **not** mounted here: `dsh web` leaves `compaction-basic`/`command-compact` to
+ * presets, but this deploy also runs billion-context, whose gate owns compression and whose
+ * `file:`-URL row names the gate cannot see would otherwise compress twice (D-082).
  */
 function sessionRows() {
   return [
     {
-      // The backend: reads the host-plane token meter, writes `compaction/summary` + surface replace.
-      id: 'compaction-basic',
-      name: hostToolRowName('@deepseek-ai/dsh-compaction-basic'),
-    },
-    {
-      id: 'command-compact',
-      name: hostToolRowName('@deepseek-ai/dsh-command-compact'),
+      id: 'tool-session-query',
+      name: hostToolRowName('@deepseek-ai/dsh-tool-session-query'),
     },
   ]
 }

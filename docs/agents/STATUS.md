@@ -1,5 +1,15 @@
 # STATUS —— 更新时间：2026-11-18 (UTC+8)
 
+## 2026-11-18：预设层撤回压缩、改挂会话查询工具（D-082）
+
+- 用户裁定（m01525）："我一般不会使用无头dsh，把插件层有关compact的相关改动撤回"；同一轮对"给 BMA3 预设挂几个 DSH 会话工具"选 **A**（5 个全挂）。
+- **撤回** `487bbc3` 在 `dsh-plugin/lib/preset.js` 挂的 `compaction-basic` + `command-compact` 两行：插件层不再参与压缩，`/compact`（`/压缩`）维持不开放。压缩归 `billion-context`（`dsh web` 部署下的代理层）。`docs/superpowers/DESIGN_RULINGS.md` 记 **D-082**，上方那条 `/compact` 修复条目标为被取代。
+- **改挂** `@deepseek-ai/dsh-tool-session-query`（一个 row，五个只读工具 `session_search`/`session_event_search`/`session_trace`/`session_event_trace`/`session_event_read`）：补齐 [D-079](../superpowers/DESIGN_RULINGS.md) ②，Agent 从此能读宿主自己的会话日志（真相层），不再只有 jar 那份滚动副本。行名仍走 `hostToolRowName()`，解析失败退回裸 specifier。
+- 顺带解掉一处隐患：`billion-context` 的 gate 按 `row.name === '@deepseek-ai/dsh-compaction-basic'` 精确匹配后置 `disabled`，而预设行名是 `file:` URL、本就拦不住——撤回后不再存在"bili + 原生后端同时压缩"的路径。
+- **已知取舍**：本机 `bma3test` profile 的 bundles 里没有 `billion-context`，所以在无头宿主上 BMA3 会话没有任何压缩后端（压力下不产摘要、只能溢出）。用户明确不使用该形态，因此不作为缺口修；若将来要跑无头，需要重新裁定（挂后端但不挂命令，或在 profile 层补 bili）。
+- 门禁：`cd dsh-plugin && node --test` **182 / 0 fail**（`preset.test.mjs` 的 id 清单与用例已同步：改为断言 `tool-session-query` 存在、且 `compaction-basic`/`command-compact` **不存在**）。
+- `NOT_RUN`：重启宿主后确认五个会话工具真的出现在 BMA3 会话的工具面里（宿主启动时注册预设，必须重启）。
+
 ## 2026-11-18：记忆层 P2–P4（推送器 + 水位探针 + 导入闭环 + 检索评估）已落地并过门禁
 
 - 按[设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 一次做完 P2/P3/P4。三块内容：插件侧上下文推送器、watchdog `plugin-context` 水位探针、`memory_write(file=…)` 导入闭环，最后用 A18 的 50 条语料给检索打分。
@@ -35,7 +45,7 @@
 - `NOT_RUN`：真实 QQ 会话里 Agent 自己写/翻记忆；P1 的 `context_digest` 与 `/plugin/context` 未开始。未提交（等用户指示）。
 - A16（零注入）本轮只做到"没有任何注入点、工具清单里只有四个 memory 工具"的结构性保证，逐字对比 `systemPrompt` 与回合内容的快照用例留到 P1 与宿主侧一起做。
 
-## 2026-11-18：BMA3 预设缺失压缩后端与 `/compact`（已修，待重启宿主验证）
+## 2026-11-18：BMA3 预设缺失压缩后端与 `/compact`（**已被 D-082 取代：预设层不再挂压缩**）
 
 - 用户报告「bma3 会话疑似无法使用 `/compact` 命令等 dsh 自带命令」，要求先排查再修。
 - **根因（只读排查）**：`@deepseek-ai/dsh-web-app/cordis.patch.yml:579-580` 在 **host 平面**把 `compaction-basic` 与 `command-compact` 置 `disabled: true`，同处注释写明 "Presets own the human command and model-facing tool"；而 `dsh-plugin/lib/preset.js` 的 BMA3 预设此前只挂 `persona` + 7 个工具行，压缩后端和命令都没挂。命中该组合的正是 `dsh web` 宿主下的 BMA3 会话（`dsh-bma3test` 由 web profile 派生）。后果不止是没有 `/compact`：**压力下没有任何压缩后端**，`CompactionEngine` 无处产生摘要，会话只能溢出。
