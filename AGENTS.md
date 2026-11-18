@@ -89,6 +89,7 @@ BotMosire-Alpha3/
 ├── bma3-inbox/          # 单 Inbox 状态机 + HTTP + AgentTools
 ├── bma3-webconnect/     # Selenium + 系统 Chromium 浏览器 AgentTools
 ├── bma3-xvfb/           # Xvfb 工作区（虚拟桌面）+ 平台检测 + 12 个 xvfb_* 工具
+├── bma3-memory/         # 记事本式长期记忆：追加式记忆项 + 标签优先检索 + 四个 memory_* 工具
 ├── bma3-app/            # 组合根：config/logging/MCP/health/Main
 ├── dsh-plugin/          # @mosire/bma3-dsh，四个模块（inbox/preset/self/persona-legacy）
 ├── packaging/           # jlink/jpackage + 用户级 installer

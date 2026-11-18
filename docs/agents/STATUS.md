@@ -1,5 +1,16 @@
 # STATUS —— 更新时间：2026-11-18 (UTC+8)
 
+## 2026-11-18：记忆层 P0（记忆内核 + 四个工具）已落地并过门禁
+
+- 用户「开始开发？」后按 [设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 的分期进 P0，门禁判据是 A1–A6、A13、A16。
+- 新增模块 `bma3-memory`（`io.mosire.bma3.memory`）：`MemoryOptions`（全部阈值带校验，`defaults()` 是唯一数值来源）、`MemoryItem`/`MemoryHit`、`MemoryStore`（`write/search/view/rate/ping`，无 delete/forget）、`SqliteMemoryStore`（`memory_item` + `memory_fts`（`tokenize='trigram'`、`content='memory_item'`）+ `memory_item_ai` 触发器；标签腿走 `tags_norm` 的 `LIKE '%|term|%'`，正文腿走 BM25 或 <3 码点的 `LIKE` 回退，两腿用 RRF 合并；`rate` 的 `mute` 是唯一能产生 `weight=-1` 的路径，其余增量在 `memory.rate.floor` 处 clamp）。
+- 四个模型面工具在 `io.mosire.bma3.memory.tools`：`memory_write`（正文/标签/来源锚点；`source_kind=message_board` 时 `source_ref` 必须是真实存在的 `local_seq`）、`memory_search`（缩略 + `next_cursor` 偏移翻页）、`memory_view`（正文并记账 `use_count`）、`memory_rate`（`useful`/`useless`/`mute`）。**零自动注入**：没有任何 prompt 段、没有回合位置插入，只有 Agent 调用才出现。
+- 接入：`AppConfig` 新增第 15 个组件 `Memory`（含校验与 `toOptions()`，并补 14/13/12 参兼容构造器）、`ConfigLoader.memory(JsonNode)` 读 `memory.search.tagBoost`/`memory.search.limit`/`memory.rate.{usefulDelta,uselessDelta,floor}`/`memory.write.maxTextChars`、`Bma3App` 在 `dataDir/memory.db` 建独立库（不碰 `bot.db`，options 走 `() -> current.get().memory().toOptions()` 以便 `set_config` 立即生效）、`MessageBoardStore.hasLocalSeq` 新增并实现。
+- 门禁：`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，**890 tests / 0 failures / 0 errors / 1 skipped**（新增 `SqliteMemoryStoreTest` 11 例、`MemoryToolsTest` 9 例）；覆盖 A1（建表/重开）、A2（正文命中）、A3（二字中文标签）、A4（标签优先于正文）、A5（静音与 floor clamp）、A6（工具面无 delete/forget）、A13（脱敏先于落库）。
+- 实现期把两处设计改成能用的口径并回写文书：[D-080](../superpowers/DESIGN_RULINGS.md)（正文腿 <3 码点回退 `LIKE`；`cursor` 改整数偏移并登记已知取舍），spec §6 同步。
+- `NOT_RUN`：真实 QQ 会话里 Agent 自己写/翻记忆；P1 的 `context_digest` 与 `/plugin/context` 未开始。未提交（等用户指示）。
+- A16（零注入）本轮只做到"没有任何注入点、工具清单里只有四个 memory 工具"的结构性保证，逐字对比 `systemPrompt` 与回合内容的快照用例留到 P1 与宿主侧一起做。
+
 ## 2026-11-18：BMA3 预设缺失压缩后端与 `/compact`（已修，待重启宿主验证）
 
 - 用户报告「bma3 会话疑似无法使用 `/compact` 命令等 dsh 自带命令」，要求先排查再修。
@@ -9,6 +20,7 @@
 - 门禁：`cd dsh-plugin && npm test` rc=0，**168 tests / 0 fail**（原 167，+1）。
 - `NOT_RUN`：真实 BMA3 会话里 `/压缩` 生效、以及压力下自动摘要产出。改动落在已 link 进 `~/.dsh/profiles/web/node_modules/@mosire/bma3-dsh` 的源码上，但宿主（pid 948，`dsh web`）启动时已注册预设，**必须重启宿主**才生效；`dsh plugin` 只把参数转发给 pnpm，没有热重载命令。
 - 未提交、未推送；本轮没有改 BMA3 的其他行。
+- 同日追加：记忆与上下文监控定稿前的文书已落——[D-078/D-079](../superpowers/DESIGN_RULINGS.md)（记事本定位、零注入、`weight=-1` 静音、无遗忘、读取面双份、watchdog 靠水位）与[设计草案](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md)（三层职责、`memory_item`/`context_digest` DDL、5 个工具、RRF 排序、`plugin-context` 水位探针、13 条不变量、A1–A18 验收判据、P0–P4 分期）。**产品代码仍未开始**，等用户确认 §13 三条待定后进 P0。
 
 ## 2026-11-17：QQ 官方机器人与双渠道开发检查点（未完工）
 

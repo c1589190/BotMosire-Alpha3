@@ -29,6 +29,7 @@
     <module>bma3-watchdog-spi</module>
     <module>bma3-watchdog</module>
     <module>bma3-scheduler</module>
+    <module>bma3-memory</module>
     <module>bma3-app</module>
   </modules>
 

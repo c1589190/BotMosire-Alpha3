@@ -587,6 +587,23 @@ public final class SqliteMessageBoardStore
     }
 
     @Override
+    public synchronized boolean hasLocalSeq(long localSeq) {
+        ensureOpen();
+        if (localSeq <= 0) {
+            return false;
+        }
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT 1 FROM chat_message WHERE local_seq = ?")) {
+            select.setLong(1, localSeq);
+            try (ResultSet result = select.executeQuery()) {
+                return result.next();
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException("查询消息板 local_seq 失败", failure);
+        }
+    }
+
+    @Override
     public synchronized boolean ping() {
         ensureOpen();
         try (Statement statement = connection.createStatement();

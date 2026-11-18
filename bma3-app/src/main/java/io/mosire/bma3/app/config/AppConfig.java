@@ -18,7 +18,8 @@ public record AppConfig(
         Xvfb xvfb,
         Security security,
         Debug debug,
-        Schedule schedule) {
+        Schedule schedule,
+        Memory memory) {
 
     public AppConfig {
         dataDir = dataDir == null ? Path.of("data") : dataDir;
@@ -35,6 +36,7 @@ public record AppConfig(
         security = security == null ? Security.defaults() : security;
         debug = debug == null ? Debug.defaults() : debug;
         schedule = schedule == null ? Schedule.defaults() : schedule;
+        memory = memory == null ? Memory.defaults() : memory;
     }
 
     public static AppConfig defaults() {
@@ -42,7 +44,7 @@ public record AppConfig(
                 new QqConnect(List.of()), QqOfficial.defaults(), Inbox.defaults(),
                 Webconnect.defaults(), Weighting.defaults(), Logging.defaults(),
                 Deployer.defaults(), Watchdog.defaults(), Xvfb.defaults(),
-                Security.defaults(), Debug.defaults(), Schedule.defaults());
+                Security.defaults(), Debug.defaults(), Schedule.defaults(), Memory.defaults());
     }
 
     /**
@@ -396,7 +398,8 @@ public record AppConfig(
     /** Same configuration with a different security mode (used by {@code --no-auth}). */
     public AppConfig withSecurity(Security replacement) {
         return new AppConfig(dataDir, server, qqconnect, qqOfficial, inbox, webconnect,
-                weighting, logging, deployer, watchdog, xvfb, replacement, debug, schedule);
+                weighting, logging, deployer, watchdog, xvfb, replacement, debug, schedule,
+                memory);
     }
 
     /**
@@ -433,13 +436,22 @@ public record AppConfig(
         }
     }
 
+    /** 14-arg compatibility constructor for call sites written before the memory notebook. */
+    public AppConfig(Path dataDir, Server server, QqConnect qqconnect, QqOfficial qqOfficial,
+                     Inbox inbox, Webconnect webconnect, Weighting weighting, Logging logging,
+                     Deployer deployer, Watchdog watchdog, Xvfb xvfb, Security security,
+                     Debug debug, Schedule schedule) {
+        this(dataDir, server, qqconnect, qqOfficial, inbox, webconnect, weighting, logging,
+                deployer, watchdog, xvfb, security, debug, schedule, Memory.defaults());
+    }
+
     /** 13-arg compatibility constructor for profiles created before QQ official support. */
     public AppConfig(Path dataDir, Server server, QqConnect qqconnect, Inbox inbox,
                      Webconnect webconnect, Weighting weighting, Logging logging,
                      Deployer deployer, Watchdog watchdog, Xvfb xvfb, Security security,
                      Debug debug, Schedule schedule) {
         this(dataDir, server, qqconnect, QqOfficial.defaults(), inbox, webconnect, weighting,
-                logging, deployer, watchdog, xvfb, security, debug, schedule);
+                logging, deployer, watchdog, xvfb, security, debug, schedule, Memory.defaults());
     }
 
     /** 12-arg compatibility constructor for profiles created before the scheduler. */
@@ -1021,6 +1033,40 @@ public record AppConfig(
 
         public static Logging defaults() {
             return new Logging("INFO", "logs");
+        }
+    }
+
+    /**
+     * Memory notebook knobs. Every value is configuration: the store and the tools read these and
+     * never carry their own literals. The single hard-coded constant in the feature is the
+     * {@code -1} mute sentinel, which is protocol rather than tuning.
+     */
+    public record Memory(double tagBoost, int searchLimit, double usefulDelta,
+            double uselessDelta, double floor, int maxTextChars) {
+
+        public Memory {
+            if (!(tagBoost > 0)) {
+                throw new IllegalArgumentException("memory.search.tagBoost 必须大于 0");
+            }
+            if (searchLimit < 1 || searchLimit > 50) {
+                throw new IllegalArgumentException("memory.search.limit 必须在 1..50");
+            }
+            if (!(floor > -1) || floor >= 1_000_000) {
+                throw new IllegalArgumentException("memory.rate.floor 必须大于 -1 且小于 1000000");
+            }
+            if (maxTextChars < 1 || maxTextChars > 1_048_576) {
+                throw new IllegalArgumentException("memory.write.maxTextChars 必须在 1..1048576");
+            }
+        }
+
+        public static Memory defaults() {
+            return new Memory(10.0, 20, 1.0, -1.0, -0.9, 8000);
+        }
+
+        /** Plain carrier so the memory module never depends on this config class. */
+        public io.mosire.bma3.memory.MemoryOptions toOptions() {
+            return new io.mosire.bma3.memory.MemoryOptions(searchLimit, tagBoost, usefulDelta,
+                    uselessDelta, floor, maxTextChars);
         }
     }
 }

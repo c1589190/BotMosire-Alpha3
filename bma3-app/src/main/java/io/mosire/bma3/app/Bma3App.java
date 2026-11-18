@@ -3,6 +3,9 @@ package io.mosire.bma3.app;
 import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
 import io.mosire.bma3.app.config.ConfigWatcher;
+import io.mosire.bma3.app.logging.Redactor;
+import io.mosire.bma3.memory.SqliteMemoryStore;
+import io.mosire.bma3.memory.tools.MemoryTools;
 import io.mosire.bma3.app.config.RuntimePolicy;
 import io.mosire.bma3.app.channel.QqChannelRegistry;
 import io.mosire.bma3.app.channel.QqChannelRuntime;
@@ -105,6 +108,7 @@ public final class Bma3App implements AutoCloseable {
 
     private final AppConfig config;
     private final SqliteMessageBoardStore board;
+    private final SqliteMemoryStore memoryStore;
     private final SqliteInboxStore inboxStore;
     private final InboxService inboxService;
     private final HealthServer health;
@@ -123,7 +127,7 @@ public final class Bma3App implements AutoCloseable {
     private final SingleInstanceLock instanceLock;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
-                    SqliteInboxStore inboxStore, InboxService inboxService,
+                    SqliteMemoryStore memoryStore, SqliteInboxStore inboxStore, InboxService inboxService,
                     HealthServer health, InboxHttpServer inboxHttp,
                     AccountRegistry accounts, Bma3McpServer mcp,
                     BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
@@ -133,6 +137,7 @@ public final class Bma3App implements AutoCloseable {
                     SingleInstanceLock instanceLock) {
         this.config = config;
         this.board = board;
+        this.memoryStore = memoryStore;
         this.inboxStore = inboxStore;
         this.inboxService = inboxService;
         this.health = health;
@@ -232,6 +237,13 @@ public final class Bma3App implements AutoCloseable {
                 new AtomicReference<>();
         AtomicReference<OfficialQqService> officialServiceRef = new AtomicReference<>();
         AtomicReference<AppConfig> current = new AtomicReference<>(config);
+        // Notebook storage is its own file: the fact source (bot.db) must stay untouched and a
+        // lost or replayed memory database may never cost a message. Live options keep set_config
+        // effective without restarting anything.
+        SqliteMemoryStore memoryStore = new SqliteMemoryStore(
+                config.dataDir().resolve("memory.db"),
+                () -> current.get().memory().toOptions(),
+                Redactor::redact);
         AtomicReference<RuntimePolicy> runtime =
                 new AtomicReference<>(RuntimePolicy.from(config));
         SourceLabels sourceLabels = SourceLabels.builder()
@@ -444,6 +456,8 @@ public final class Bma3App implements AutoCloseable {
             tools.addAll(officialService.tools());
             tools.addAll(channels.tools());
             tools.addAll(InboxTools.all(inboxService, Main.VERSION));
+            tools.addAll(MemoryTools.all(memoryStore,
+                    () -> current.get().memory().toOptions(), board::hasLocalSeq));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
             tools.addAll(WatchdogTools.all(watchdog, watchdogDiagnostics));
@@ -556,7 +570,7 @@ public final class Bma3App implements AutoCloseable {
             watchdog.start();
             watchdogRef.set(watchdog);
 
-            return new Bma3App(config, board, inboxStore, inboxService, health,
+            return new Bma3App(config, board, memoryStore, inboxStore, inboxService, health,
                     inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
                     directory, scheduleRef.get(), officialService, channels, instanceLock);
         } catch (RuntimeException failure) {
@@ -960,6 +974,7 @@ public final class Bma3App implements AutoCloseable {
         inboxHttp.close();
         health.close();
         inboxStore.close();
+        memoryStore.close();
         board.close();
         if (instanceLock != null) {
             instanceLock.close();

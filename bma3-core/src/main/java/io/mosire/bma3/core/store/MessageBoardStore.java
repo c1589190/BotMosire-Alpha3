@@ -108,6 +108,18 @@ public interface MessageBoardStore extends AutoCloseable {
                          java.time.Instant to, long beforeSeq, int limit);
 
     /** Cheap liveness check used by the watchdog. */
+    /**
+     * Whether {@code localSeq} names a row in this board. Memory entries that claim
+     * {@code source_kind=message_board} are validated through this, so a pointer can never name a
+     * message that does not exist.
+     *
+     * @param localSeq board-local sequence number
+     * @return true when the row exists
+     */
+    default boolean hasLocalSeq(long localSeq) {
+        throw new UnsupportedOperationException("hasLocalSeq is not implemented");
+    }
+
     boolean ping();
 
     @Override

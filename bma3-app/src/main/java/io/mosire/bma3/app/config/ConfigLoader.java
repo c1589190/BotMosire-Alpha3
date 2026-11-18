@@ -161,6 +161,7 @@ public final class ConfigLoader {
         JsonNode security = node.path("security");
         JsonNode debug = node.path("debug");
         JsonNode schedule = node.path("schedule");
+        JsonNode memory = node.path("memory");
         List<String> readyzCritical = new ArrayList<>();
         for (JsonNode critical : watchdog.path("readyzCritical")) {
             readyzCritical.add(critical.asText());
@@ -260,7 +261,8 @@ public final class ConfigLoader {
                         schedule.path("enabled").asBoolean(true),
                         integer(schedule, "tickSeconds", 1),
                         integer(schedule, "maxSchedules", 200),
-                        text(schedule, "defaultMissedPolicy", "skip")));
+                        text(schedule, "defaultMissedPolicy", "skip")),
+                memory(memory));
     }
 
     /**
@@ -588,6 +590,24 @@ public final class ConfigLoader {
     private static String text(JsonNode node, String field, String fallback) {
         JsonNode value = node.path(field);
         return value.isMissingNode() || value.isNull() ? fallback : value.asText(fallback);
+    }
+
+    /**
+     * {@code memory.*} — the notebook knobs. Absent sections fall back to
+     * {@link AppConfig.Memory#defaults()}, which is the only place a default number is written.
+     */
+    private static AppConfig.Memory memory(JsonNode memory) {
+        AppConfig.Memory defaults = AppConfig.Memory.defaults();
+        JsonNode search = memory.path("search");
+        JsonNode rate = memory.path("rate");
+        JsonNode write = memory.path("write");
+        return new AppConfig.Memory(
+                search.path("tagBoost").asDouble(defaults.tagBoost()),
+                integer(search, "limit", defaults.searchLimit()),
+                rate.path("usefulDelta").asDouble(defaults.usefulDelta()),
+                rate.path("uselessDelta").asDouble(defaults.uselessDelta()),
+                rate.path("floor").asDouble(defaults.floor()),
+                integer(write, "maxTextChars", defaults.maxTextChars()));
     }
 
     private static int integer(JsonNode node, String field, int fallback) {
