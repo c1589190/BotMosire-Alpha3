@@ -160,6 +160,7 @@
 | D-081 | 2026-11-18 | 本会话实现取舍（P4 评估首次跑分后立即回写） | 〔转述〕A18 要求的「50 条语料、20 条真实提问、`recall@8 ≥ 0.7`」fixture 写完后首跑得 **0.30**（20 条只中 6 条）：整句被当作**一个短语**丢给 `memory_fts MATCH "\"phrase\""` 或 `text LIKE '%phrase%'`，而"谁负责部署"这类问句在正文里从不逐字出现，只有恰好是正文子串的短词（`站会`）能中。 | **引入 CJK 二字扩展**（`bma3-memory/src/main/java/io/mosire/bma3/memory/QueryTerms.java`）：每块整体保留、块内每个 CJK 连续段展开成全部二字 gram（＋段本身），去重后截到 `MAX_TERMS = 16`；正文腿改为**逐词检索**再按「命中不同词数降序 → 词内最小排名升序」编号，标签腿改用同一组取词。仍是纯词法匹配（无模型、无 embedding）。改后 `recall@8 = 1.00`，`RECALL_FLOOR` 未下调。见 [设计](specs/2026-11-18-memory-and-context-monitor-design.md) §6 与 §12。 |
 
 | D-082 | 2026-11-18 | 用户裁定（m01525） | 〔原话〕"我一般不会使用无头dsh，把插件层有关compact的相关改动撤回"；同一轮对「给 BMA3 预设挂几个 DSH 会话工具」选 **A**（5 个全挂）。 | **① 撤回** `487bbc3` 在预设层挂的 `compaction-basic` + `command-compact` 两行：插件层不再参与压缩，`/compact` 维持"不开放"。**② 压缩归 `billion-context`**（`dsh web` 部署下的代理层压缩）；本机 `bma3test` profile 的 bundles 里没有 `billion-context`，但用户明确不使用无头宿主形态，这一点记为已知取舍而不是缺口。**③ 预设改挂 `@deepseek-ai/dsh-tool-session-query`**，Agent 因此能读宿主自己的会话日志（真相层），补齐 D-079 ②。**④ 顺带解掉一处隐患**：`billion-context` 的 gate 按 `row.name === '@deepseek-ai/dsh-compaction-basic'` 精确匹配后置 `disabled`，而预设行名是 `file:` URL，本就拦不住——撤回后不再存在"双压缩"这条路径。见 `dsh-plugin/lib/preset.js` 的 `sessionRows()` 注释。 |
+| D-083 | 2026-11-19 | 本会话用户消息 | 「是的，你还要准备一个没有onebot连接时的纯调试状态测试机，包括基于http debug的简单调试推送和调试消息生成等，能做到吗？这次公开发布版本应当是0.0.8-early」 | 复用 `/debug/ask` 生成调试条目，空 QQ 账号列表，独立测试数据，经本机 `dsh web` 验收。见[调试机设计](specs/2026-11-19-debug-machine-design.md)。 |
 
 ## 待裁定
 

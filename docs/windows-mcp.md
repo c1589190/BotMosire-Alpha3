@@ -1,11 +1,10 @@
 # Windows 原生运行与 Codex MCP
 
-`0.0.8-SNAPSHOT` 是开发版本。下列步骤在 Windows PowerShell 中运行，不使用 WSL；需要 JDK 21、Git 和可访问 Maven Central/GitHub 的网络。Maven wrapper 首次使用时会下载 Maven。`AgentLib` 固定源码版本由脚本从公开上游获取并检查 SHA-256，再安装到当前 Windows 用户的 Maven 缓存。
+`0.0.8-early` 使用 JDK 21。在 Windows PowerShell 中运行下列步骤。Maven wrapper 首次使用时会下载 Maven，并从 ProjectMosire 的公开 Maven 仓库解析 AgentLib `0.2.7-early`。
 
 在仓库根目录执行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\windows\bootstrap-agentlib.ps1
 .\mvnw.cmd -B -ntp package
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\windows\start-bma3.ps1 -SaveToken
 ```
@@ -24,6 +23,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\windows\configur
 
 不同 OneBot 11 实现对扩展动作支持不同。`qq_remote_history` 自动识别已知的 LLBot 和 SnowLuma 历史接口，也可以显式指定 `historyDialect`；未知实现只尝试首页，不会虚构分页游标。群请求数据支持已识别的分类对象和扁平数组；没有可靠 flag 映射时不能直接决定请求。其他扩展操作要以实际 provider 的能力为准。BMA3 的 MCP 仍包含已有写操作，读取 QQ 不要求调用它们。
 
-如果下载依赖需要 HTTP 代理，可给依赖脚本传 `-ProxyUri 'http://127.0.0.1:端口'`；运行 Maven 时也可能需要在当前 PowerShell 进程设置 Java 的 `MAVEN_OPTS` 代理参数。代理地址和 token 不应写入仓库。上游 AgentLib 引导只构建依赖，不运行其测试；`mvnw.cmd package` 会运行 BMA3 的测试。
+如需从上游固定源码重建 AgentLib，可运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\windows\bootstrap-agentlib.ps1 -Rebuild`。该脚本校验源码 ZIP 的 SHA-256 后安装依赖，可传 `-ProxyUri 'http://127.0.0.1:端口'`。直接运行 Maven 时可在当前 PowerShell 进程设置 Java 的 `MAVEN_OPTS` 代理参数。
 
 Windows 的 Codex Computer Use 操作当前桌面，应用可能需要单独授权；它不等同于隔离的 Xvfb 虚拟桌面。该版本不额外实现 Windows 桌面自动化后端。

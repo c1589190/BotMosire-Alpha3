@@ -1,4 +1,14 @@
-# STATUS —— 更新时间：2026-11-18 (UTC+8)
+# STATUS —— 更新时间：2026-11-19 (UTC+8)
+
+## 2026-11-19：0.0.8-early 候选版与 HTTP 调试机
+
+- 基线 `feat/0.0.8-windows-mcp` / `2e35972`，开工时工作树干净。用户确认 AgentLib `0.2.7-early`，指定公开版本 `0.0.8-early`，需要无 OneBot 的调试机。见 [D-083](../superpowers/DESIGN_RULINGS.md)、[设计](../superpowers/specs/2026-11-19-debug-machine-design.md)与[实施计划](../superpowers/plans/2026-11-19-0.0.8-early-plan.md)。
+- `0.2.5` 基线 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，945 项、0 failures、0 errors、1 skipped。`dsh-plugin` 与 `tools/qq-official-onboarding` 各自的 `npm test` rc=0，分别 182、35 项通过。证据 `/tmp/bma3-008-early.Pqwtwqbs/baseline-{maven,dsh,onboarding}.log`。
+- 父 POM 使用 AgentLib `0.2.7-early`，jar、app-image 和 DSH 插件统一为 `0.0.8-early`。在不含 Mosire 构件的独立 Maven 缓存，用 `./mvnw -B -ntp -C -s /tmp/bma3-008-early.Pqwtwqbs/neutral-settings.xml -Dmaven.repo.local=/tmp/bma3-008-early.Pqwtwqbs/pom-repo-m2 -pl bma3-agentlib -am test` 验证只依赖 POM 声明的仓库，rc=0，35 项通过。证据 `pom-repo-gate.log`，发布 jar 内 233 个 AgentLib 类与公开构件逐个字节一致。
+- 在隔离源码副本用 `./mvnw -B -ntp -o -C -Dmaven.repo.local=/tmp/bma3-008-early.Pqwtwqbs/published-m2 test` 运行候选版全量，rc=0，945 项、0 failures、0 errors、1 skipped（真实浏览器）。`cd dsh-plugin && npm test` rc=0，183 项全部通过。隔离 `bash packaging/smoke.sh` rc=0，app-image 版本及健康检查通过。证据 `/tmp/bma3-008-early.Pqwtwqbs/{published-full-gate,candidate-dsh-verified,published-packaging-smoke}.log`。
+- 无 QQ 的调试机与独立 `dsh web` 正在运行，回环 MCP `19865`、Inbox `19866`、debug `19867`、Web `19868`。发布 jar 实测两类 QQ 账号为空，78 个 MCP 工具，单条推送及 3 条合成提问到达 SSE，HTTP 与 MCP 回答可查询，jar 重启后保留回答。命令 `NO_PROXY=127.0.0.1 python3 /tmp/bma3-008-early.Pqwtwqbs/debug-http-smoke.py`，rc=0，证据 `release-debug-http-smoke.log`。见[调试机用法](../../tools/e2e-local/README.md#无-qq-连接的-http-调试机)。
+- 本机 Web 宿主从发行 tgz 装载插件，以本地模型替身验证五个会话查询工具、SSE 唤醒、原生 MCP 回答、自动 ACK 和上下文副本。修复了 `sessionQuery` 晚于 Inbox 挂载和未填配置覆盖默认批次限制的问题。证据 `debug-machine/web-proof.json`，最终会话副本 5 条、最大序号 21。Watchdog 仍记录 `CONTEXT_GAP`（11 到 15），该判定待核对。
+- 发行候选资产位于 `/tmp/bma3-008-early.Pqwtwqbs/final-assets/`。`sha256sum -c SHA256SUMS` rc=0，Linux app-image、独立 jar 和 DSH tgz 均核验通过。Windows PowerShell 已通过两个改动脚本的语法解析。Windows 原生构建、真实 QQ、真实模型与 GitHub Release 均为 `NOT_RUN`。QQ 官方发送媒体及平台验收沿用下方检查点。
 
 ## 2026-11-18：预设层撤回压缩、改挂会话查询工具（D-082）
 

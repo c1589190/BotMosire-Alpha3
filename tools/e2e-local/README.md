@@ -63,6 +63,60 @@ weighting:
                 qq_reply_to_bot: 100, qq_self_name: 60, qq_command: 100}}
 ```
 
+## 无 QQ 连接的 HTTP 调试机
+
+在 Linux 上用 JDK 21 和 Python 3.9+ 启动独立调试实例。先在仓库根目录打包，再从同一终端以前台方式运行 jar。
+
+```bash
+./mvnw -B -ntp -pl bma3-app -am package -DskipTests
+STATE=$(mktemp -d /tmp/bma3-debug.XXXXXXXX)
+printf '%s\n' "$STATE"
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" serve \
+  --jar bma3-app/target/bma3-app-0.0.8-early.jar
+```
+
+在另一终端把 `STATE` 设为上面输出的目录。调试机默认绑定回环 MCP `19865`、Inbox `19866` 和 debug/健康检查 `19867`，Inbox ID 为 `bma3-debug`。可在首次 `serve` 时指定 `--mcp-port`、`--inbox-port`、`--debug-port`。相同目录和端口可重启并继续使用原数据。
+
+```bash
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" snapshot
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" push 'HTTP 调试推送'
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" generate 3
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" get <request-id>
+python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" answer <request-id> '已收到'
+```
+
+`push` 和 `generate` 逐条返回请求 ID、状态及 `bma3_debug/<requestId>` 来源。生成条目进入 Inbox 并保留真实问诊请求状态。缺少会话时可直接用 `answer` 回答。凭据由 jar 写入 `$STATE/.bma3env`，调试命令从文件读取对应 token。
+
+### 用 DSH Web 接收推送
+
+在测试目录内保存 `debug-web.patch.yml`。将 `<repo>` 替换为仓库绝对路径，将 `<state>` 替换为测试目录绝对路径。改过端口时也更新 `baseUrl`。
+
+```yaml
+- insert:
+    - id: bma3-debug-inbox
+      name: 'file://<repo>/dsh-plugin/index.js'
+      config:
+        module: inbox
+        baseUrl: http://127.0.0.1:19866
+        inboxId: bma3-debug
+        envFile: '<state>/.bma3env'
+        stateFile: '<state>/web-inbox.json'
+        autoStart: true
+    - id: bma3-debug-preset
+      name: 'file://<repo>/dsh-plugin/index.js'
+      config:
+        module: preset
+```
+
+Agent 回答需要再配置 [DSH 原生 MCP 客户端](../../dsh-plugin/README.md#一次性配置推荐)，MCP URL 使用 `http://127.0.0.1:19865/mcp`，Authorization 从调试机的 `.bma3env` 读取。独立 profile 中可把 MCP 客户端的 `name` 写成本机已安装 DSH 包入口的 `file:` URL。
+
+```bash
+DSH_HOME="$STATE/dsh" dsh web --patch "$STATE/debug-web.patch.yml" \
+  --host 127.0.0.1 --port 19868 --no-open
+```
+
+打开 DSH 打印的启动链接，创建 BMA3 预设会话并执行 `/inbox bind`。再用 `push` 或 `generate` 发送测试内容。`snapshot` 可核对插件心跳和绑定会话，`get` 可核对问诊回复。Web 会话使用这个测试目录下的 DSH 状态和独立 Inbox 状态文件。
+
 ## Inbox ACK 本地回环验证（当前代码）
 
 ```bash

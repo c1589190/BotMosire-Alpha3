@@ -1,8 +1,8 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。当前分支为 **`0.0.8-SNAPSHOT` 开发版本**，提供 Windows 原生、纯 MCP 的 QQ 接入；最新已有发布版为 `0.0.7-tolatest`，包含 Java 21 独立服务、QQ OneBot 11、Inbox、MCP、Selenium、Xvfb 和 DSH 插件。
+DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-early` 预发布版**，包含 Windows 原生、纯 MCP 的 QQ 接入和本地 HTTP 调试机。[预发布说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.8-early)
 
-> Release：<https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest>。本版加入来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作；上一正式 hotfix 基线为 `v0.0.7-hotfix1`。
+> 稳定版 `0.0.7-tolatest` 包含来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作。[稳定版说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest)
 
 - 远端：<https://github.com/c1589190/BotMosire-Alpha3>
 - 继承来源（只读参考）：`/home/cna/DevMosire-iiBot`
@@ -35,10 +35,11 @@ DevMosire-iiBot 的继承与重构。当前分支为 **`0.0.8-SNAPSHOT` 开发�
 
 ### 1. 下载或编译
 
-Release 资产（对应 tag `v0.0.7-tolatest`）：
+`v0.0.8-early` 提供以下发布资产。
 
-- app-image：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-tolatest/botmosire-a3-linux-x86_64.tar.gz>
-- DSH 插件：<https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.7-tolatest/mosire-bma3-dsh-0.0.7-tolatest.tgz>
+- Linux x86-64 app-image。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/botmosire-a3-linux-x86_64.tar.gz)
+- 独立 JAR，需要 JDK 21。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/bma3-app-0.0.8-early.jar)
+- DSH 插件。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/mosire-bma3-dsh-0.0.8-early.tgz)
 
 从源码构建 app-image：
 
@@ -47,7 +48,7 @@ bash packaging/build-app-image.sh
 ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 ```
 
-要求：JDK 21、Node.js 22（仅 DSH 插件需要）。源码构建还需要 `io.mosire:agentlib-mosire:0.2.5`；它当前从 `~/ProjectMosire/AgentLibMosire` 本地安装，不在公共 Maven 中央。只下载 release app-image 运行则不需要它。浏览器工具另需 Chromium/ChromeDriver；本机 Snap Chromium 的驱动路径见 [`docs/agents/ENVIRONMENT.md`](docs/agents/ENVIRONMENT.md)。
+源码构建需要 JDK 21。Maven 从 ProjectMosire 的公开仓库解析 `io.mosire:agentlib-mosire:0.2.7-early`。DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
 
 ### 2. 运行目录与配置
 
@@ -250,7 +251,7 @@ dsh plugin --profile web add link:$PWD/dsh-plugin
 没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
 `qq_*` 等工具不会出现。
 
-**`0.0.7-tolatest` 的唯一正确方式：写一行 DSH 原生的 `@deepseek-ai/dsh-mcp-client`**（插件不做桥接，D-066）。
+使用 DSH 原生的 `@deepseek-ai/dsh-mcp-client` 直接连接 jar（D-066）。
 
 jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
 
@@ -331,6 +332,8 @@ curl -H "Authorization: Bearer $(grep DEBUG_TOKEN .bma3env | cut -d= -f2)"      
   `bma3_debug_reply(requestId, text)` 回答，你那条 HTTP 请求就会返回答案。
 - 不做单飞：`debug.maxPending` 默认 32，`0` = 不限；超限返回 429。
 - `security.auth=none` 时整个 `/debug` 面**不挂载**（404）。这里**不能**执行命令，只能提问和看快照。
+
+需要在空 QQ 账号列表下复现推送时，可用[本地 HTTP 调试机](tools/e2e-local/README.md#无-qq-连接的-http-调试机)启动独立 jar，再用本机 `dsh web` 连接专用 Inbox。调试工具支持单条推送、批量生成、查询和回答。
 
 定时任务（`bma3_schedule_*`）：`once`（ISO 时刻）/`interval`（秒）/`cron`（5 字段）。
 到点只往 Inbox 注入一条 `source=bma3_task/<id>` 的通知，Agent 在会话里看到后自己决定做什么；

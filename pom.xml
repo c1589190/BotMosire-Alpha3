@@ -6,7 +6,7 @@
 
   <groupId>io.mosire.bma3</groupId>
   <artifactId>bma3-parent</artifactId>
-  <version>0.0.8-SNAPSHOT</version>
+  <version>0.0.8-early</version>
   <packaging>pom</packaging>
   <name>BotMosire-Alpha3</name>
   <description>Independent DSH-side IM/browser inbox service.</description>
@@ -37,7 +37,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
     <jackson.version>2.22.4</jackson.version>
-    <agentlib.version>0.2.5</agentlib.version>
+    <agentlib.version>0.2.7-early</agentlib.version>
     <sqlite.version>3.53.4.0</sqlite.version>
     <junit.version>6.1.3</junit.version>
     <assertj.version>3.27.7</assertj.version>
@@ -50,6 +50,23 @@
     <maven.jar.plugin.version>3.5.1</maven.jar.plugin.version>
     <maven.shade.plugin.version>3.6.1</maven.shade.plugin.version>
   </properties>
+
+  <repositories>
+    <repository>
+      <id>central</id>
+      <url>https://repo.maven.apache.org/maven2</url>
+    </repository>
+    <repository>
+      <id>projectmosire</id>
+      <url>https://c1589190.github.io/ProjectMosire/</url>
+      <releases>
+        <checksumPolicy>fail</checksumPolicy>
+      </releases>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
 
   <dependencyManagement>
     <dependencies>

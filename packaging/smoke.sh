@@ -8,9 +8,10 @@ bash packaging/build-app-image.sh
 
 BIN="$ROOT/dist/botmosire-a3/bin/botmosire-a3"
 [[ -x "$BIN" ]] || { echo "launcher missing: $BIN" >&2; exit 1; }
-"$BIN" --version | grep -q 'botmosire-a3'
+VERSION="$("$BIN" --version)"
+[[ "$VERSION" == 'botmosire-a3 0.0.8-early' ]]
 
-bash packaging/install.sh --version 0.0.8-SNAPSHOT \
+bash packaging/install.sh --version "${VERSION#botmosire-a3 }" \
   --archive "$ROOT/dist/botmosire-a3-linux-x86_64.tar.gz" \
   --prefix "$ROOT/build/install-smoke" --dry-run | grep -q 'systemctl --user'
 

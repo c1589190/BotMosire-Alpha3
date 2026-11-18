@@ -637,7 +637,7 @@ export class SseParser {
  * and only a complete per-item ACK proof removes that record. If any durable step is uncertain
  * the client fails closed instead of repeating a cross-system side effect.</p>
  */
-export function createInboxClient(ctx, config = {}) {
+export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => ctx?.get?.('sessionQuery')) {
   const fetchImpl = config.fetchImpl ?? fetch
   const paths = inboxStatePaths(config)
   const stateFile = paths.v2
@@ -787,9 +787,8 @@ export function createInboxClient(ctx, config = {}) {
   // `extractSessionEventText` is the host's own renderer, so the copy says exactly what the model
   // was told, in the host's own words. Without `sessionQuery` (older host, minimal profile) the
   // pusher stays silent and the jar's copy simply stops ageing.
-  const sessionQuery = typeof ctx?.get === 'function' ? ctx.get('sessionQuery') : undefined
   const contextPusher = createContextPusher({
-    sessionQuery,
+    resolveSessionQuery,
     resolveExtractText: () => loadEventTextExtractor(),
     fetchImpl,
     url: (suffix) => requestUrl(config.inboxId, suffix),
@@ -3795,7 +3794,23 @@ function registerInboxTool(ctx, client) {
 }
 
 export function apply(ctx, config = {}) {
-  const client = createInboxClient(ctx, config)
+  // In Web the Inbox can mount before the session reader. Give the reader its own
+  // injection scope so the rest of the Inbox can start as soon as the host is ready.
+  let sessionQuery
+  try {
+    ctx?.inject?.(['sessionQuery'], (scope) => {
+      const reader = scope.sessionQuery
+      scope.effect(() => {
+        sessionQuery = reader
+        return () => {
+          if (sessionQuery === reader) sessionQuery = undefined
+        }
+      })
+    })
+  } catch {
+    ctx?.logger?.('bma3-dsh')?.warn?.('context push: session reader injection failed')
+  }
+  const client = createInboxClient(ctx, config, () => sessionQuery ?? ctx?.get?.('sessionQuery'))
   const toolRegistration = registerInboxTool(ctx, client)
 
   if (typeof client.attachToolRegistrar === 'function') {

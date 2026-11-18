@@ -55,6 +55,7 @@ export function loadEventTextExtractor(entryPoint = process.argv[1]) {
  *
  * @param {object} options
  * @param {{listEvents?: Function, readEvent?: Function}} options.sessionQuery host query service
+ * @param {Function} [options.resolveSessionQuery] read the currently mounted host query service
  * @param {Function} [options.extractText] `(event) => string`, when already resolved
  * @param {Function} [options.resolveExtractText] `() => Promise<Function|undefined>`, resolved on
  *   the first tick — the host module is only importable from the host tree, and a profile reload
@@ -69,6 +70,7 @@ export function loadEventTextExtractor(entryPoint = process.argv[1]) {
 export function createContextPusher(options = {}) {
   const {
     sessionQuery,
+    resolveSessionQuery = () => sessionQuery,
     extractText,
     resolveExtractText,
     fetchImpl,
@@ -78,7 +80,8 @@ export function createContextPusher(options = {}) {
     now = () => Date.now(),
     limits = {},
   } = options
-  const config = { ...CONTEXT_DEFAULTS, ...limits }
+  const maxBatch = Number(limits.maxBatch ?? CONTEXT_DEFAULTS.maxBatch)
+  const maxEntryChars = Number(limits.maxEntryChars ?? CONTEXT_DEFAULTS.maxEntryChars)
 
   let session = ''
   let watermark = null
@@ -103,7 +106,7 @@ export function createContextPusher(options = {}) {
   }
 
   const cut = (text) => {
-    const limit = Math.max(1, Number(config.maxEntryChars))
+    const limit = Math.max(1, maxEntryChars)
     if (text.length <= limit) return text
     return text.slice(0, limit)
   }
@@ -161,9 +164,10 @@ export function createContextPusher(options = {}) {
         session = current
         watermark = null
       }
-      if (!sessionQuery || typeof sessionQuery.listEvents !== 'function') return { ...state }
       inFlight = true
       try {
+        const query = resolveSessionQuery()
+        if (typeof query?.listEvents !== 'function') return { ...state }
         let extract = typeof extractText === 'function' ? extractText : undefined
         if (extract === undefined && typeof resolveExtractText === 'function') {
           extract = await resolveExtractText().catch(() => undefined)
@@ -175,7 +179,7 @@ export function createContextPusher(options = {}) {
           return { ...state }
         }
         if (watermark === null) watermark = await restoreWatermark(current)
-        const records = await sessionQuery.listEvents(current)
+        const records = await query.listEvents(current)
         const fresh = (Array.isArray(records) ? records : [])
           .filter((record) => Number(record?.seq) > watermark
             && record?.surface === 'current'
@@ -185,12 +189,12 @@ export function createContextPusher(options = {}) {
           state = { ...state, session: current, watermark, error: null }
           return { ...state }
         }
-        const batch = fresh.slice(0, Math.max(1, Number(config.maxBatch)))
+        const batch = fresh.slice(0, Math.max(1, maxBatch))
         const entries = []
         for (const record of batch) {
           let text = ''
           try {
-            const window = await sessionQuery.readEvent({ sessionId: current, seq: record.seq })
+            const window = await query.readEvent({ sessionId: current, seq: record.seq })
             text = cut(String(extract(window?.target) ?? '').trim())
           } catch {
             // An event we cannot read still counts as processed; the jar would otherwise see a

@@ -25,7 +25,7 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
     complete: true                            # 可省，默认 true
 ```
 
-预设挂的 6 行（就是会话默认可见面）：
+预设为会话挂载以下组件。
 
 | 行 | 给什么 |
 |---|---|
@@ -34,6 +34,8 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 | `tool-fs` | **只有 `read_image`**（`read`/`write`/`edit` 关；文本读写走 bash） |
 | `tool-subagent-control` + `tool-subagent` | 子 Agent（`agentPreset: minimal`） |
 | `tool-plugin-manager` | 宿主有 `profileContext` 才挂；这是 Agent 自己挂插件的门 |
+| `media` | DeepSeek OCR / ASR |
+| `tool-session-query` | 五个只读会话查询工具 |
 
 要更宽的面就把行加进 `presetDefinition()` 的 `toolRows()`；要收窄就删行。**不需要改任何策略**。
 
@@ -46,7 +48,7 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## 连上 bma3 jar（0.0.7-tolatest）
+## 连上 bma3 jar（0.0.8-early）
 
 插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
 `@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。

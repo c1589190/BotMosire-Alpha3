@@ -88,6 +88,26 @@ test('the watermark makes a replay a no-op', async () => {
   assert.equal(pusher.snapshot().batches, 1)
 })
 
+test('a host session reader mounted after the Inbox is used on the next tick', async () => {
+  const record = { seq: 4, type: 'user/message', time: 1000, surface: 'current' }
+  const fetch = fakeFetch()
+  let query
+  const pusher = createContextPusher({
+    ...base, resolveSessionQuery: () => query, extractText, fetchImpl: fetch.impl,
+    limits: { maxBatch: undefined, maxEntryChars: undefined },
+  })
+
+  await pusher.tick()
+  assert.deepEqual(fetch.calls, [])
+
+  query = fakeQuery([record], { 4: 'late host reader' })
+  await pusher.tick()
+
+  const push = fetch.calls.find((call) => call.method === 'POST')
+  assert.equal(push.body.entries[0].text, 'late host reader')
+  assert.equal(pusher.snapshot().watermark, 4)
+})
+
 test('a failed push keeps the watermark so the range is retried', async () => {
   const records = [{ seq: 3, type: 'user/message', time: 1000, surface: 'current' }]
   const query = fakeQuery(records, { 3: 'a' })

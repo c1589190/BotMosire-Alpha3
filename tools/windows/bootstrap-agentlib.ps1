@@ -7,17 +7,17 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$revision = 'ec53381b97b043a8a3d849941d90d5677a45991d'
-$expectedHash = '3de4b15f887ccfd9219920444c112405860e499677b6a530d0fe50adda7d6df5'
-$sourceRoot = Join-Path $repoRoot 'build\dependencies\projectmosire-ec53381b97b0'
+$revision = '0f494df5c5dc800dffa37ddaabdbdbb31f1fe47e'
+$expectedHash = '73aca85f607c88f27ffe3c5a2c0c760fa1f5cb528b4ed59498d555ef640e3880'
+$sourceRoot = Join-Path $repoRoot 'build\dependencies\projectmosire-0f494df5c5dc'
 $artifactRoot = Join-Path $env:USERPROFILE '.m2\repository\io\mosire'
-$jar = Join-Path $artifactRoot 'agentlib-mosire\0.2.5\agentlib-mosire-0.2.5.jar'
-$pom = Join-Path $artifactRoot 'agentlib-mosire\0.2.5\agentlib-mosire-0.2.5.pom'
-$parent = Join-Path $artifactRoot 'mosire-parent\0.2.5\mosire-parent-0.2.5.pom'
+$jar = Join-Path $artifactRoot 'agentlib-mosire\0.2.7-early\agentlib-mosire-0.2.7-early.jar'
+$pom = Join-Path $artifactRoot 'agentlib-mosire\0.2.7-early\agentlib-mosire-0.2.7-early.pom'
+$parent = Join-Path $artifactRoot 'mosire-parent\0.2.7-early\mosire-parent-0.2.7-early.pom'
 
 if (-not $Rebuild -and (Test-Path -LiteralPath $jar) -and
         (Test-Path -LiteralPath $pom) -and (Test-Path -LiteralPath $parent)) {
-    Write-Host 'AgentLib 0.2.5 is already present in the Windows Maven cache.'
+    Write-Host 'AgentLib 0.2.7-early is already present in the Windows Maven cache.'
     Write-Host 'Use -Rebuild to reinstall it from the pinned public source.'
     return
 }
@@ -108,7 +108,7 @@ try {
     } finally {
         Pop-Location
     }
-    Write-Host 'AgentLib 0.2.5 is ready. Run BMA3 tests separately with .\mvnw.cmd test.'
+    Write-Host 'AgentLib 0.2.7-early is ready. Run BMA3 tests separately with .\mvnw.cmd test.'
 } finally {
     [Environment]::SetEnvironmentVariable('MAVEN_OPTS', $oldMavenOpts, 'Process')
 }
