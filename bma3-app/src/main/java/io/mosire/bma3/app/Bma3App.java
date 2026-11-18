@@ -471,7 +471,14 @@ public final class Bma3App implements AutoCloseable {
                     () -> current.get().memory().toOptions(), board::hasLocalSeq,
                     contextStore, () -> current.get().memory().toContextOptions(),
                     inboxService::pluginSessionId,
-                    config.dataDir().resolve("exports")));
+                    config.dataDir().resolve("exports"),
+                    // File imports read only what QQ delivered. The media directory is reloadable,
+                    // so resolve it per call instead of freezing it at registration time.
+                    () -> {
+                        var media = runtime.get().media();
+                        return media.dir().isBlank()
+                                ? config.dataDir().resolve("downloads") : Path.of(media.dir());
+                    }));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
             tools.addAll(WatchdogTools.all(watchdog, watchdogDiagnostics));
@@ -529,6 +536,15 @@ public final class Bma3App implements AutoCloseable {
                         }
                         return Probes.dshPlugin(inboxService,
                                 Duration.ofSeconds(settings.pluginHeartbeatTimeoutSeconds())).check();
+                    }))
+                    // D-079: the copy the Agent reads has its own liveness. Sharing the
+                    // `pluginHeartbeatEnabled` switch keeps one story for "watch the plugin".
+                    .addProbe(Probes.named("pluginContext", () -> {
+                        if (!current.get().watchdog().pluginHeartbeatEnabled()) {
+                            return ProbeResult.up("pluginContext", "disabled");
+                        }
+                        return Probes.pluginContext(contextStore, inboxService::pluginSessionId,
+                                () -> current.get().memory().toContextOptions()).check();
                     }))
                     .addProbe(Probes.webconnect(config.webconnect().enabled(),
                             config.webconnect().binary()))

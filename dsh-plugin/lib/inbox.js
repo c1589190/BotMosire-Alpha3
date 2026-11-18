@@ -5,6 +5,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, hostname } from 'node:os'
 import { dirname } from 'node:path'
+import { createContextPusher, loadEventTextExtractor } from './context.js'
 
 const WAKE_REVISION_HEADER = '[INBOX_PANEL]'
 const ACTIVE_MARKER = '（消息更新活跃）'
@@ -781,6 +782,26 @@ export function createInboxClient(ctx, config = {}) {
     return `${target.baseUrl}/v1/inboxes/${encodeURIComponent(inboxId ?? config.inboxId ?? 'bma3')}${suffix}`
   }
 
+  // The rolling context copy (D-079): the host already wrote every event to its session log; this
+  // side only reads it and forwards a bounded slice. No model is called and nothing is generated —
+  // `extractSessionEventText` is the host's own renderer, so the copy says exactly what the model
+  // was told, in the host's own words. Without `sessionQuery` (older host, minimal profile) the
+  // pusher stays silent and the jar's copy simply stops ageing.
+  const sessionQuery = typeof ctx?.get === 'function' ? ctx.get('sessionQuery') : undefined
+  const contextPusher = createContextPusher({
+    sessionQuery,
+    resolveExtractText: () => loadEventTextExtractor(),
+    fetchImpl,
+    url: (suffix) => requestUrl(config.inboxId, suffix),
+    headers: () => authHeaders(config),
+    sessionId: () => state.targetSessionId ?? '',
+    limits: {
+      maxBatch: config.contextMaxBatch,
+      maxEntries: config.contextMaxEntries,
+      maxEntryChars: config.contextMaxEntryChars,
+    },
+  })
+
   const buildSnapshot = () => ({
     version: STATE_VERSION,
     targetSessionId: state.targetSessionId,
@@ -1160,6 +1181,9 @@ export function createInboxClient(ctx, config = {}) {
               ? state.pendingPush.itemIds.length : 0,
           }
         : null,
+      // Rolling context copy (D-079): counters only — the jar stores the bodies, the heartbeat
+      // never carries one (`PluginHeartbeat`: "Only ids/status/counters are carried").
+      context: contextPusher.snapshot(),
       recentAcked: Array.isArray(state.recentAcked) ? state.recentAcked.length : 0,
     }
   }
@@ -1220,6 +1244,10 @@ export function createInboxClient(ctx, config = {}) {
       if (body?.control) {
         await applyControl(body.control)
       }
+      // Roll the context copy forward on the heartbeat cadence: the beat that proves this plugin is
+      // alive is also the one that says what it can see. Fire-and-forget — a slow session log must
+      // not delay the heartbeat, and the pusher keeps its own watermark when a push fails.
+      void contextPusher.tick()
       return body
     } catch (error) {
       if (!disposed && generation === operation) state.lastError = 'heartbeat_failed'

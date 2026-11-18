@@ -276,9 +276,13 @@ public final class SqliteMemoryStore implements MemoryStore {
         }
     }
 
-    /** Tag leg: exact {@code |term|} containment, ordered by matched-term count. */
+    /**
+     * Tag leg: exact {@code |term|} containment, ordered by matched-term count. Tags are matched
+     * with the same expansion as the body, so "记忆的标签权重" reaches the tag {@code 标签} instead of
+     * only entries that quote the whole sentence.
+     */
     private Map<Long, Integer> tagRanks(String query, int pool) {
-        List<String> terms = TagTerms.parse(query);
+        List<String> terms = QueryTerms.of(query);
         if (terms.isEmpty()) {
             return Map.of();
         }
@@ -326,17 +330,46 @@ public final class SqliteMemoryStore implements MemoryStore {
         }
     }
 
-    /** Text leg: BM25 over the trigram index. Queries shorter than one trigram skip this leg. */
     /**
-     * Body leg. Trigram FTS needs at least {@link #MIN_TRIGRAM_CHARS} code points, which rules out
-     * the two-character Chinese terms this notebook is mostly searched with ("例会", "站会"), so
-     * anything shorter falls back to a literal substring scan. Both legs rank by relevance first
-     * and feed the same RRF merge, so callers never see which one answered.
+     * Body leg. One indexed lookup per query term: terms of at least {@link #MIN_TRIGRAM_CHARS}
+     * code points go through the trigram index, shorter ones (two-character Chinese words, which is
+     * most of what this notebook is searched with) fall back to a literal substring scan. Entries
+     * covering more distinct terms rank higher, so a query that names several ideas prefers the
+     * entry that says all of them.
      */
     private Map<Long, Integer> textRanks(String query, int pool) {
-        String phrase = query.replace("\"", " ").trim();
-        if (phrase.codePointCount(0, phrase.length()) < MIN_TRIGRAM_CHARS) {
-            return likeRanks(phrase, pool);
+        List<String> terms = QueryTerms.of(query);
+        if (terms.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Integer> matched = new LinkedHashMap<>();
+        Map<Long, Integer> best = new LinkedHashMap<>();
+        for (String term : terms) {
+            Map<Long, Integer> ranks = termRanks(term, pool);
+            for (Map.Entry<Long, Integer> hit : ranks.entrySet()) {
+                matched.merge(hit.getKey(), 1, Integer::sum);
+                best.merge(hit.getKey(), hit.getValue(), Math::min);
+            }
+        }
+        if (matched.isEmpty()) {
+            return Map.of();
+        }
+        List<Map.Entry<Long, Integer>> ranked = new ArrayList<>(matched.entrySet());
+        ranked.sort(Comparator
+                .<Map.Entry<Long, Integer>>comparingInt(Map.Entry::getValue).reversed()
+                .thenComparing(entry -> best.get(entry.getKey()))
+                .thenComparing(Map.Entry::getKey, Comparator.reverseOrder()));
+        Map<Long, Integer> ranks = new LinkedHashMap<>();
+        int rank = 1;
+        for (Map.Entry<Long, Integer> entry : ranked) {
+            ranks.put(entry.getKey(), rank++);
+        }
+        return ranks;
+    }
+
+    private Map<Long, Integer> termRanks(String term, int pool) {
+        if (term.codePointCount(0, term.length()) < MIN_TRIGRAM_CHARS) {
+            return likeRanks(term, pool);
         }
         try (PreparedStatement select = connection.prepareStatement("""
                 SELECT m.id AS id
@@ -345,7 +378,7 @@ public final class SqliteMemoryStore implements MemoryStore {
                 WHERE memory_fts MATCH ? AND m.weight <> ?
                 ORDER BY bm25(memory_fts) LIMIT ?
                 """)) {
-            select.setString(1, "\"" + phrase + "\"");
+            select.setString(1, "\"" + term.replace("\"", " ") + "\"");
             select.setDouble(2, MemoryOptions.MUTED);
             select.setInt(3, pool);
             Map<Long, Integer> ranks = new LinkedHashMap<>();

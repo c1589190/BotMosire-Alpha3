@@ -159,7 +159,7 @@ class MemoryToolsTest {
 
     @Test
     void write_rejects_text_over_the_configured_limit() {
-        Supplier<MemoryOptions> tiny = () -> new MemoryOptions(20, 10.0, 1.0, -1.0, -0.9, 5);
+        Supplier<MemoryOptions> tiny = () -> new MemoryOptions(20, 10.0, 1.0, -1.0, -0.9, 5, 1_048_576);
         List<AgentTool> small = MemoryTools.all(store, tiny, seq -> true);
         ToolResult result = small.get(0).execute(call(Map.of("text", "123456")));
         assertThat(result.success()).isFalse();

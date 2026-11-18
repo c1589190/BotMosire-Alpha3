@@ -53,7 +53,7 @@ class MemoryContextToolTest {
         digest = new SqliteContextDigestStore(root.resolve("memory.db"), CONTEXT,
                 UnaryOperator.identity());
         tools = MemoryTools.all(store, MEMORY, seq -> seq == 42L, digest, CONTEXT,
-                () -> SESSION, root.resolve("exports"));
+                () -> SESSION, root.resolve("exports"), () -> root.resolve("downloads"));
     }
 
     @AfterEach

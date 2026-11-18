@@ -106,7 +106,7 @@ class SqliteMemoryStoreTest {
 
     @Test
     void a5_useless_clamps_at_configured_floor_and_never_reaches_mute() {
-        Supplier<MemoryOptions> floored = () -> new MemoryOptions(20, 10.0, 1.0, -1.0, -0.5, 8000);
+        Supplier<MemoryOptions> floored = () -> new MemoryOptions(20, 10.0, 1.0, -1.0, -0.5, 8000, 1_048_576);
         try (SqliteMemoryStore store = new SqliteMemoryStore(
                 root.resolve("memory.db"), floored, UnaryOperator.identity())) {
             long id = store.write("站会固定在周二", "", "agent", "", "", NOW);

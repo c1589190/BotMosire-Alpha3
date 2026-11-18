@@ -89,7 +89,7 @@ CREATE TABLE context_gap (
 
 | 工具 | 入参 | 出参 |
 |---|---|---|
-| `memory_write` | `text`（必填，≤8000 字）、`tags?`、`source_kind?`、`source_ref?`、`context_ref?` | `{id, chars, tags}` |
+| `memory_write` | `text`（≤`memory.write.maxTextChars` 字）**或** `file`（`downloads/` 内的文件名，二选一）、`tags?`、`source_kind?`、`source_ref?`、`context_ref?` | 一段文本 `{id, chars, tags}`；整文件 `{ids, count, chars, file, tags}` |
 | `memory_search` | `query`、`limit?`（默认 20，1..50）、`cursor?` | `{items:[{id, digest, tags, weight, at}], next_cursor?}`；**永不返回 `weight=-1`** |
 | `memory_view` | `id` | `{id, text, tags, weight, source_*, context_ref, stale?}`；`weight=-1` 的行照样返回 |
 | `memory_rate` | `id`、`value` ∈ `useful`/`useless`/`mute` | `{id, weight}` |
@@ -98,6 +98,7 @@ CREATE TABLE context_gap (
 要点：
 
 - `memory_search` 的缩略形如 `#12 · [例会|排期] · 22:15 · 站会固定在周二…（缩略 60 字）`，正文必须 `memory_view` 才给（D-078 "只回极简缩略、要求 Agent 主动查看"）。
+- `memory_write(file=…)` 是"导入的记忆是一个完整文件，而不是 Agent 手写的工具参数"（m00433）：文件必须位于有效媒体目录（`<dataDir>/downloads`，或 `memory` 之外配置的 `media.dir`）**之内**——`normalize()` 后必须仍在根下（拒 `../`）、拒绝符号链接本体与符号链接父目录逃逸（`toRealPath()` 再比对）、拒绝超过 `memory.import.maxBytes`（默认 1MB）的文件；读入后去 BOM、`\r\n` → `\n`，按 `memory.write.maxTextChars` **切成多条**写入（`source_kind` 固定为 `import`，`source_ref` 为文件名，`tags` 缺省取文件名主部），因此"完整文件"不会因为单条上限而被截断。空文件、非普通文件、目录一律拒绝。
 - `memory_rate` 三态是 D-079 的口径：`mute` 硬设 `weight=-1`；`useful`/`useless` 是配置化增量，**递减在 −0.9 处 clamp**，因此 `weight` 精确等于 `-1` 只可能来自显式 mute，不会被"点几次无用"误触发。
 - `memory_context(export='txt')` 由 jar 自己写文件到 `<dataDir>/exports/context-<session>-<UTC 时间戳>.txt`（文件名服务端生成、`CREATE_NEW` 不跟随符号链接、目录为符号链接直接拒写）。原因：BMA3 预设的 `tool-fs` 是 `{read:false,write:false,edit:false}`（`dsh-plugin/lib/preset.js:50-58`），Agent 现在没有写文件的能力。
 - `memory_context` 的**会话不是入参**：取当前绑定会话（`InboxService.pluginSessionId()`），没有绑定时回退到副本里最近推送的会话，两者都没有则返回空目录并说明原因。目录每行是一行 60 字缩略（`#seq · 时间 · 说话人 · 前 60 字`），响应带 `chars`（目录总字符数）、`max_entries`、`gaps`，`limit` 默认取 `memory.search.limit`、上限 50。
@@ -106,8 +107,9 @@ CREATE TABLE context_gap (
 
 ## 6. 检索与排序
 
-1. 标签：把 query 按空白切词，逐个在 `tags_norm` 上做 `LIKE '%|term|%'`，命中行按命中词数取 rank_tag。
-2. 正文：`memory_fts MATCH` 走 BM25，取 rank_text；**查询不足 3 个码点时改走 `text LIKE '%q%' ESCAPE '\\'` 子串扫**（`created_at` 降序取池）。原因：FTS5 `trigram` 不索引 <3 码点子串，而本项目最常用的中文查询恰是二字词（`例会`、`站会`），没有这条回退就是"文本检索对中文二字词永久失效"（D-080 ①）。
+0. 取词：query 先过 `bma3-memory/src/main/java/io/mosire/bma3/memory/QueryTerms.java`。按标点/空白切块，每块整体保留（逐字引用的短句因此仍能命中），块内每个 CJK 连续段再展开成**全部二字 gram**（＋段本身），去重后截到 `MAX_TERMS = 16`。原因见 §12 P4：A18 首跑 `recall@8 = 0.30`，根因是"查询是句子、索引只能按字面匹配"——整句在正文里从不出现，只有恰好是正文子串的短词能中（D-081）。
+1. 标签：对**同一组取词**逐个在 `tags_norm` 上做 `LIKE '%|term|%'`，命中行按命中词数取 rank_tag（因此"记忆的标签权重"能命中标签 `标签`）。
+2. 正文：对每个取词单独检索——不足 3 个码点走 `text LIKE '%term%' ESCAPE '\\'`（`created_at` 降序取池；FTS5 `trigram` 不索引 <3 码点子串，中文最常用的二字词否则永久失效，D-080 ①），否则走 `memory_fts MATCH '"term"'` + `ORDER BY bm25(memory_fts)`；然后按**命中的不同词数降序 → 词内最小排名升序 → id 降序**编号成 rank_text，所以"负责部署"排在只有"负责"的行前面。
 3. 合分：RRF `score = tagBoost/(60+rank_tag) + 1/(60+rank_text)`，`tagBoost` 可配置、默认 `10.0`（D-078 ⑥）。
 4. 过滤：`weight = -1` 永不入列表；其余按 `score` 降序、`created_at` 降序稳定排序。
 5. 分页：`cursor` 是**上一页返回的整数偏移**（`next_cursor` = `offset + count`），默认 20 条（"返回有限可翻页列表"）。不用 `(score,id)` 不透明游标：RRF 分数每次调用重算，相邻页之间若有新写入，偏移翻页可能重复或跳过一条——对"Agent 自己翻自己的记事本"可接受，记为已知取舍（D-080 ②）。
@@ -182,7 +184,8 @@ A1–A16 为 P0/P1 的合并门禁；A17 依赖宿主重启；A18 只在 P4 前�
 | `memory.rate.usefulDelta` | `+1.0` | 有用增量 |
 | `memory.rate.uselessDelta` | `-1.0` | 无用增量；运算后在 `memory.rate.floor` 处 clamp |
 | `memory.rate.floor` | `-0.9` | 非静音行的权重下限；必须 > `-1.0`，保证 `-1` 只由 mute 产生 |
-| `memory.write.maxTextChars` | `8000` | 单条记忆上限 |
+| `memory.write.maxTextChars` | `8000` | 单条记忆上限（导入文件按此切分） |
+| `memory.import.maxBytes` | `1048576` | 单次文件导入上限，1..67108864 |
 | `memory.context.maxEntries` | `200` | 滚动条目上限，**允许 Agent `set_config` 热改** |
 | `memory.context.maxEntryChars` | `10240` | 单条正文上限，超出截断（要能装下完整 dsh 响应，m00645 定 10KB 量级） |
 | `memory.context.staleAfterSeconds` | `600` | 水位探针停更阈值 |
@@ -198,6 +201,8 @@ A1–A16 为 P0/P1 的合并门禁；A17 依赖宿主重启；A18 只在 P4 前�
 | P2 | watchdog `plugin-context` 水位探针 + 断层/换绑 | A10–A12 |
 | P3 | 导出/导入闭环（`.txt` 导出、`downloads/` 限定导入） | 新增用例 |
 | P4 | 50 条 eval fixture + 判分脚本，决定要不要上向量 | A18 |
+
+P0–P4 均已实现并过门禁（P0 `b2e19ed`、P1 `818f9ff`，P2–P4 见 `docs/agents/STATUS.md`）。A18 的实测结果是 `recall@8 = 1.00`（20/20，50 条语料），因此**第一版不引入向量库**；fixture 由本项目自撰，不等同于 LongMemEval 这类外部基准，跌破 0.7 时的正确动作仍是"上一个被测量过的向量库"而不是下调阈值。
 
 ## 13. 待确认
 

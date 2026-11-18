@@ -1,5 +1,15 @@
 # STATUS —— 更新时间：2026-11-18 (UTC+8)
 
+## 2026-11-18：记忆层 P2–P4（推送器 + 水位探针 + 导入闭环 + 检索评估）已落地并过门禁
+
+- 按[设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 一次做完 P2/P3/P4。三块内容：插件侧上下文推送器、watchdog `plugin-context` 水位探针、`memory_write(file=…)` 导入闭环，最后用 A18 的 50 条语料给检索打分。
+- **P2a 推送器**（`dsh-plugin/lib/context.js` 新建 + `lib/inbox.js` 接线）：每轮心跳成功后 `tick()` 一次；只搬 `user/message`/`assistant/message`/`tool/result` 且 `surface === 'current'`（被压缩掉的 `shadowed` 事件连读都不读——它们正是 bili 压缩层省下来的东西）；正文由宿主 `extractSessionEventText` 提取，提取器解析不到就整批不发并记 `extraction_unavailable`（否则会出现"行数正确、正文全空"的假完整）；水位只在上游 2xx 后才推进，失败保留重试；重启后用 `GET .../plugin/context?after=0&limit=1` 拿 `maxEventSeq` 恢复断点。`snapshot()` 只回 6 个计数，进 `heartbeatDiagnostics().context`——心跳仍然只带 id/状态/计数。
+- **P2b 探针**（`bma3-watchdog/.../probe/Probes.java` 的 `pluginContext`）：未绑定时不重复报（inbox 自己有 UNBOUND）；`NO_CONTEXT_PUSH`/`SESSION_MISMATCH`/`CONTEXT_GAP`/`CONTEXT_STALE` 四类 DEGRADED，断层的 detail 直说"Agent 会无声地读跨过去"，facts 里只有 seq 与计数，永不含正文。
+- **P3 导入闭环**：`memory_write` 增加 `file` 参数（与 `text` 二选一）。文件必须在有效媒体目录内（`normalize()` 后仍在根下、`toRealPath()` 再比对、拒符号链接本体）、不得超过 `memory.import.maxBytes`；读入后去 BOM、统一换行，按 `memory.write.maxTextChars` **切成多条**写入（`source_kind` 固定 `import`、`source_ref` 为文件名、`tags` 缺省取文件名主部），所以"完整文件"不会因单条上限被截断。
+- **P4 评估**：`MemoryRetrievalEvalTest` 50 条语料 / 20 条真实提问 / `recall@8 ≥ 0.7`。首跑只有 **0.30**，根因是整句被当作一个短语查、正文里从不逐字出现；改成 `QueryTerms` 的 CJK 二字扩展（每块整体保留 + 块内每个 CJK 连续段展开全部二字 gram，去重后截到 16 项）并把正文腿改为逐词检索、按"命中不同词数降序 → 词内最小排名升序"编号后，`recall@8 = 1.00`（20/20），`RECALL_FLOOR` 未下调。这一步记为新裁定 [D-081](../superpowers/DESIGN_RULINGS.md)，spec §6 同步改写。
+- 门禁：`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，**952 tests / 0 failures / 0 errors / 1 skipped**（P1 基线 913，+39：`QueryTermsTest` 10、`MemoryImportTest` 11、`TextChunksTest` 8、`ProbesContextTest` 8、`MemoryRetrievalEvalTest` 2）；`cd dsh-plugin && node --test` **182 / 0 fail**（+14 `context.test.mjs`）。
+- `NOT_RUN`：真实宿主里插件把上下文推进 jar（要重启宿主并把 `sessionQuery` 装配上）、A17 `/压缩` 复验、A16 逐字快照、以及真实会话里 Agent 自己导入 QQ 收到的文件。评估 fixture 由本项目自撰，不等于 LongMemEval 这类外部基准——它的用途是"改动掉下 0.7 就停手"，不是宣称优于谁。
+
 ## 2026-11-18：记忆层 P1（上下文副本 + `/plugin/context` + `memory_context`）已落地并过门禁
 
 - 按[设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 的 P1 推进，门禁判据是 A7–A9、A14、A15、A17（A17 依赖宿主重启，本轮 `NOT_RUN`）。

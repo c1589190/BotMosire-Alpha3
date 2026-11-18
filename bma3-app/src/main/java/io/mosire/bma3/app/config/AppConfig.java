@@ -1043,7 +1043,7 @@ public record AppConfig(
      */
     public record Memory(double tagBoost, int searchLimit, double usefulDelta,
             double uselessDelta, double floor, int maxTextChars, int contextMaxEntries,
-            int contextMaxEntryChars, int contextStaleAfterSeconds) {
+            int contextMaxEntryChars, int contextStaleAfterSeconds, int importMaxBytes) {
 
         public Memory {
             if (!(tagBoost > 0)) {
@@ -1069,16 +1069,19 @@ public record AppConfig(
                 throw new IllegalArgumentException(
                         "memory.context.staleAfterSeconds 必须在 1..86400");
             }
+            if (importMaxBytes < 1 || importMaxBytes > 67_108_864) {
+                throw new IllegalArgumentException("memory.import.maxBytes 必须在 1..67108864");
+            }
         }
 
         public static Memory defaults() {
-            return new Memory(10.0, 20, 1.0, -1.0, -0.9, 8000, 200, 10240, 600);
+            return new Memory(10.0, 20, 1.0, -1.0, -0.9, 8000, 200, 10240, 600, 1_048_576);
         }
 
         /** Plain carrier so the memory module never depends on this config class. */
         public io.mosire.bma3.memory.MemoryOptions toOptions() {
             return new io.mosire.bma3.memory.MemoryOptions(searchLimit, tagBoost, usefulDelta,
-                    uselessDelta, floor, maxTextChars);
+                    uselessDelta, floor, maxTextChars, importMaxBytes);
         }
 
         /** Bounds of the rolling context copy. */

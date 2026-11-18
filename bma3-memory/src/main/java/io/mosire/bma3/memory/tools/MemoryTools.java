@@ -29,8 +29,18 @@ public final class MemoryTools {
      */
     public static List<AgentTool> all(MemoryStore store, Supplier<MemoryOptions> options,
             LongPredicate boardSeqExists) {
+        return all(store, options, boardSeqExists, null);
+    }
+
+    /**
+     * Notebook tools with file imports enabled.
+     *
+     * @param importDir directory {@code memory_write(file=…)} may read from
+     */
+    public static List<AgentTool> all(MemoryStore store, Supplier<MemoryOptions> options,
+            LongPredicate boardSeqExists, Supplier<Path> importDir) {
         return List.of(
-                new MemoryWriteTool(store, options, boardSeqExists),
+                new MemoryWriteTool(store, options, boardSeqExists, importDir),
                 new MemorySearchTool(store, options),
                 new MemoryViewTool(store),
                 new MemoryRateTool(store));
@@ -44,12 +54,13 @@ public final class MemoryTools {
      * @param boundSessionId session the panel is bound to; {@code memory_context} never takes one
      *                       from the model
      * @param exportDir      directory the jar writes {@code export=txt} files into
+     * @param importDir      directory {@code memory_write(file=…)} may read from
      */
     public static List<AgentTool> all(MemoryStore store, Supplier<MemoryOptions> options,
             LongPredicate boardSeqExists, ContextDigestStore digest,
             Supplier<ContextOptions> contextOptions, Supplier<String> boundSessionId,
-            Path exportDir) {
-        List<AgentTool> tools = new ArrayList<>(all(store, options, boardSeqExists));
+            Path exportDir, Supplier<Path> importDir) {
+        List<AgentTool> tools = new ArrayList<>(all(store, options, boardSeqExists, importDir));
         tools.set(2, new MemoryViewTool(store, digest::exists));
         tools.add(new MemoryContextTool(digest, contextOptions, options, boundSessionId,
                 exportDir));

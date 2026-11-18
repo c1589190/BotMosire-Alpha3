@@ -602,6 +602,7 @@ public final class ConfigLoader {
         JsonNode rate = memory.path("rate");
         JsonNode write = memory.path("write");
         JsonNode context = memory.path("context");
+        JsonNode importRules = memory.path("import");
         return new AppConfig.Memory(
                 search.path("tagBoost").asDouble(defaults.tagBoost()),
                 integer(search, "limit", defaults.searchLimit()),
@@ -611,7 +612,8 @@ public final class ConfigLoader {
                 integer(write, "maxTextChars", defaults.maxTextChars()),
                 integer(context, "maxEntries", defaults.contextMaxEntries()),
                 integer(context, "maxEntryChars", defaults.contextMaxEntryChars()),
-                integer(context, "staleAfterSeconds", defaults.contextStaleAfterSeconds()));
+                integer(context, "staleAfterSeconds", defaults.contextStaleAfterSeconds()),
+                integer(importRules, "maxBytes", defaults.importMaxBytes()));
     }
 
     private static int integer(JsonNode node, String field, int fallback) {

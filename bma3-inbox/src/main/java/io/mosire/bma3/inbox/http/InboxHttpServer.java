@@ -574,7 +574,8 @@ public final class InboxHttpServer implements AutoCloseable {
                 sessionId = context.lastSession().orElse("");
             }
             if (sessionId.isBlank()) {
-                send(exchange, 200, "{\"sessionId\":\"\",\"entries\":[],\"count\":0}");
+                send(exchange, 200, "{\"sessionId\":\"\",\"entries\":[],\"count\":0,"
+                        + "\"maxEventSeq\":0}");
                 return;
             }
             long after = parseLong(query.get("after"), 0L);
@@ -595,6 +596,9 @@ public final class InboxHttpServer implements AutoCloseable {
             body.put("sessionId", sessionId);
             body.put("entries", entries);
             body.put("count", entries.size());
+            // The newest seq the store holds, not the newest one in this page: a restarted plugin
+            // resumes from here instead of replaying the whole session.
+            body.put("maxEventSeq", context.maxEventSeq(sessionId).orElse(0L));
             send(exchange, 200, mapper.writeValueAsString(body));
         } catch (IllegalArgumentException failure) {
             send(exchange, 400, mapper.writeValueAsString(

@@ -6,6 +6,9 @@ import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.InboxStatus;
 import io.mosire.bma3.inbox.core.PluginHeartbeat;
 import io.mosire.bma3.inbox.http.InboxHttpServer;
+import io.mosire.bma3.memory.ContextDigestStore;
+import io.mosire.bma3.memory.ContextGap;
+import io.mosire.bma3.memory.ContextOptions;
 import io.mosire.bma3.qqconnect.account.AccountConfig;
 import io.mosire.bma3.qqconnect.account.AccountRegistry;
 import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
@@ -29,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -278,6 +282,61 @@ public final class Probes {
                         "控制命令尚未被插件应用", facts);
             }
             return ProbeResult.up("dshPlugin", "heartbeat fresh and bound", facts);
+        });
+    }
+
+    /**
+     * The rolling context copy (D-079). A heartbeat proves the plugin process is alive; this proves
+     * it is still feeding the copy the Agent reads. Three ways that goes wrong, none of which a
+     * process check can see: the copy stopped ageing, the sequence has a hole the Agent will read
+     * across without knowing, or the plugin moved to another session and left this one frozen.
+     */
+    public static Probe pluginContext(ContextDigestStore digest,
+                                      java.util.function.Supplier<String> boundSessionId,
+                                      java.util.function.Supplier<ContextOptions> options) {
+        return probe("pluginContext", () -> {
+            if (digest == null) {
+                return ProbeResult.up("pluginContext", "disabled");
+            }
+            ContextOptions settings = options == null ? null : options.get();
+            long staleAfterSeconds = settings == null ? 600L : settings.staleAfterSeconds();
+            String bound = boundSessionId == null
+                    ? "" : String.valueOf(boundSessionId.get()).trim();
+            if (bound.isEmpty()) {
+                // Nothing is expected of the copy while no session is bound: the inbox itself is
+                // what reports UNBOUND, and reporting it twice would drown the real signal.
+                return ProbeResult.up("pluginContext", "no bound session");
+            }
+            Map<String, String> facts = new LinkedHashMap<>();
+            facts.put("bound", bound);
+            Optional<Instant> pushedAt = digest.lastPushedAt();
+            String pushedSession = digest.lastSession().orElse("");
+            facts.put("pushedSession", pushedSession.isEmpty() ? "-" : pushedSession);
+            facts.put("lastSeq", Long.toString(digest.maxEventSeq(bound).orElse(0L)));
+            if (pushedAt.isEmpty() || pushedSession.isEmpty()) {
+                return ProbeResult.degraded("pluginContext", "NO_CONTEXT_PUSH",
+                        "插件已绑定会话，但还没有推送任何上下文", facts);
+            }
+            long ageSeconds = Math.max(0,
+                    Duration.between(pushedAt.get(), Instant.now()).toSeconds());
+            facts.put("ageSeconds", Long.toString(ageSeconds));
+            if (!pushedSession.equals(bound)) {
+                return ProbeResult.degraded("pluginContext", "SESSION_MISMATCH",
+                        "上下文停在旧会话 " + pushedSession, facts);
+            }
+            List<ContextGap> gaps = digest.gaps(bound);
+            if (!gaps.isEmpty()) {
+                ContextGap last = gaps.get(gaps.size() - 1);
+                facts.put("gaps", Integer.toString(gaps.size()));
+                facts.put("gap", last.fromSeq() + "-" + last.toSeq());
+                return ProbeResult.degraded("pluginContext", "CONTEXT_GAP",
+                        "上下文有 " + gaps.size() + " 处断层，Agent 会无声地读跨过去", facts);
+            }
+            if (ageSeconds > staleAfterSeconds) {
+                return ProbeResult.degraded("pluginContext", "CONTEXT_STALE",
+                        "上下文超过 " + staleAfterSeconds + "s 未更新", facts);
+            }
+            return ProbeResult.up("pluginContext", "context fresh", facts);
         });
     }
 
