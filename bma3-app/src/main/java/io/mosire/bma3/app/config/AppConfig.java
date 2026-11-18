@@ -1042,7 +1042,8 @@ public record AppConfig(
      * {@code -1} mute sentinel, which is protocol rather than tuning.
      */
     public record Memory(double tagBoost, int searchLimit, double usefulDelta,
-            double uselessDelta, double floor, int maxTextChars) {
+            double uselessDelta, double floor, int maxTextChars, int contextMaxEntries,
+            int contextMaxEntryChars, int contextStaleAfterSeconds) {
 
         public Memory {
             if (!(tagBoost > 0)) {
@@ -1057,16 +1058,33 @@ public record AppConfig(
             if (maxTextChars < 1 || maxTextChars > 1_048_576) {
                 throw new IllegalArgumentException("memory.write.maxTextChars 必须在 1..1048576");
             }
+            if (contextMaxEntries < 1 || contextMaxEntries > 100_000) {
+                throw new IllegalArgumentException("memory.context.maxEntries 必须在 1..100000");
+            }
+            if (contextMaxEntryChars < 1 || contextMaxEntryChars > 1_048_576) {
+                throw new IllegalArgumentException(
+                        "memory.context.maxEntryChars 必须在 1..1048576");
+            }
+            if (contextStaleAfterSeconds < 1 || contextStaleAfterSeconds > 86_400) {
+                throw new IllegalArgumentException(
+                        "memory.context.staleAfterSeconds 必须在 1..86400");
+            }
         }
 
         public static Memory defaults() {
-            return new Memory(10.0, 20, 1.0, -1.0, -0.9, 8000);
+            return new Memory(10.0, 20, 1.0, -1.0, -0.9, 8000, 200, 10240, 600);
         }
 
         /** Plain carrier so the memory module never depends on this config class. */
         public io.mosire.bma3.memory.MemoryOptions toOptions() {
             return new io.mosire.bma3.memory.MemoryOptions(searchLimit, tagBoost, usefulDelta,
                     uselessDelta, floor, maxTextChars);
+        }
+
+        /** Bounds of the rolling context copy. */
+        public io.mosire.bma3.memory.ContextOptions toContextOptions() {
+            return new io.mosire.bma3.memory.ContextOptions(contextMaxEntries,
+                    contextMaxEntryChars, contextStaleAfterSeconds);
         }
     }
 }

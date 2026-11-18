@@ -23,6 +23,11 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
+      <groupId>io.mosire.bma3</groupId>
+      <artifactId>bma3-memory</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>

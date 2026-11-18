@@ -4,6 +4,7 @@ import io.mosire.bma3.agentlib.Bma3McpServer;
 import io.mosire.bma3.app.config.AppConfig;
 import io.mosire.bma3.app.config.ConfigWatcher;
 import io.mosire.bma3.app.logging.Redactor;
+import io.mosire.bma3.memory.SqliteContextDigestStore;
 import io.mosire.bma3.memory.SqliteMemoryStore;
 import io.mosire.bma3.memory.tools.MemoryTools;
 import io.mosire.bma3.app.config.RuntimePolicy;
@@ -109,6 +110,7 @@ public final class Bma3App implements AutoCloseable {
     private final AppConfig config;
     private final SqliteMessageBoardStore board;
     private final SqliteMemoryStore memoryStore;
+    private final SqliteContextDigestStore contextStore;
     private final SqliteInboxStore inboxStore;
     private final InboxService inboxService;
     private final HealthServer health;
@@ -127,7 +129,8 @@ public final class Bma3App implements AutoCloseable {
     private final SingleInstanceLock instanceLock;
 
     private Bma3App(AppConfig config, SqliteMessageBoardStore board,
-                    SqliteMemoryStore memoryStore, SqliteInboxStore inboxStore, InboxService inboxService,
+                    SqliteMemoryStore memoryStore, SqliteContextDigestStore contextStore,
+                    SqliteInboxStore inboxStore, InboxService inboxService,
                     HealthServer health, InboxHttpServer inboxHttp,
                     AccountRegistry accounts, Bma3McpServer mcp,
                     BrowserService browser, XvfbService xvfb, QqExtrasStore qqExtras,
@@ -138,6 +141,7 @@ public final class Bma3App implements AutoCloseable {
         this.config = config;
         this.board = board;
         this.memoryStore = memoryStore;
+        this.contextStore = contextStore;
         this.inboxStore = inboxStore;
         this.inboxService = inboxService;
         this.health = health;
@@ -243,6 +247,13 @@ public final class Bma3App implements AutoCloseable {
         SqliteMemoryStore memoryStore = new SqliteMemoryStore(
                 config.dataDir().resolve("memory.db"),
                 () -> current.get().memory().toOptions(),
+                Redactor::redact);
+        // Same file, different semantics: the rolling context copy is a discardable cache of what
+        // the plugin saw. Only its watermark must survive, because that is what lets the watchdog
+        // tell "quiet" from "dead" instead of just reading the process table.
+        SqliteContextDigestStore contextStore = new SqliteContextDigestStore(
+                config.dataDir().resolve("memory.db"),
+                () -> current.get().memory().toContextOptions(),
                 Redactor::redact);
         AtomicReference<RuntimePolicy> runtime =
                 new AtomicReference<>(RuntimePolicy.from(config));
@@ -394,7 +405,7 @@ public final class Bma3App implements AutoCloseable {
                 }, debugApi, watchdogDiagnostics);
         InboxHttpServer inboxHttp = new InboxHttpServer(
                 config.server().host(), config.inbox().httpPort(),
-                config.inbox().inboxId(), inboxToken, inboxService);
+                config.inbox().inboxId(), inboxToken, inboxService, contextStore);
         ConfigWatcher watcher = null;
         Bma3McpServer mcp = null;
         BrowserService browser = null;
@@ -457,7 +468,10 @@ public final class Bma3App implements AutoCloseable {
             tools.addAll(channels.tools());
             tools.addAll(InboxTools.all(inboxService, Main.VERSION));
             tools.addAll(MemoryTools.all(memoryStore,
-                    () -> current.get().memory().toOptions(), board::hasLocalSeq));
+                    () -> current.get().memory().toOptions(), board::hasLocalSeq,
+                    contextStore, () -> current.get().memory().toContextOptions(),
+                    inboxService::pluginSessionId,
+                    config.dataDir().resolve("exports")));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
             tools.addAll(WatchdogTools.all(watchdog, watchdogDiagnostics));
@@ -570,7 +584,8 @@ public final class Bma3App implements AutoCloseable {
             watchdog.start();
             watchdogRef.set(watchdog);
 
-            return new Bma3App(config, board, memoryStore, inboxStore, inboxService, health,
+            return new Bma3App(config, board, memoryStore, contextStore, inboxStore,
+                    inboxService, health,
                     inboxHttp, accounts, mcp, browser, xvfb, qqExtras, watcher, watchdog,
                     directory, scheduleRef.get(), officialService, channels, instanceLock);
         } catch (RuntimeException failure) {
@@ -974,6 +989,7 @@ public final class Bma3App implements AutoCloseable {
         inboxHttp.close();
         health.close();
         inboxStore.close();
+        contextStore.close();
         memoryStore.close();
         board.close();
         if (instanceLock != null) {

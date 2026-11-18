@@ -1,5 +1,19 @@
 # STATUS —— 更新时间：2026-11-18 (UTC+8)
 
+## 2026-11-18：记忆层 P1（上下文副本 + `/plugin/context` + `memory_context`）已落地并过门禁
+
+- 按[设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 的 P1 推进，门禁判据是 A7–A9、A14、A15、A17（A17 依赖宿主重启，本轮 `NOT_RUN`）。
+- `bma3-memory` 新增：`ContextOptions`（`maxEntries`/`maxEntryChars`/`staleAfterSeconds`，全部带校验与 `defaults()`）、`ContextEntry`、`ContextDigest`（含 `digest(60)` 目录行）、`ContextGap`、`ContextDigestStore`（`append/crawl/recent/view/exists/gaps/maxEventSeq/lastSession/lastPushedAt/ping`；`KINDS = user/assistant/tool` 白名单）、`SqliteContextDigestStore`（`context_digest` + `UNIQUE(session_id, event_seq)` + `context_gap` + `UNIQUE(session_id, from_seq, to_seq)`；落库前先脱敏再按码点截断并置 `truncated=1`；超出 `maxEntries` 按 `event_seq` 淘汰最旧；空推送只推水位不造行）。
+- 断层语义：相邻推送之间缺失的区间记为 `context_gap(from=上一已知 seq, to=本次最小 seq)`（A10 断言 `from=2,to=5`），重放缺口**不**清除记录——副本可审计，不自愈。
+- 新工具 `memory_context`：默认给当前绑定会话的 `#seq` 缩略目录（含 `gaps`、`chars`、`max_entries`）；`view=seq` 取单条正文；`export='txt'` 由 jar 写到 `<dataDir>/exports/context-<session>-<UTC 时间戳>.txt`（`CREATE_NEW` 防跟随符号链接、目录为符号链接直接拒写、会话名做字符白名单）；会话 id **永不**来自模型入参，取 `inboxService::pluginSessionId`，回退到副本里最近的会话。
+- `memory_view` 增加 `stale`：`context_ref` 形如 `session=<id>#seq=<n>`，指向不存在/不可解析/无法校验的事件时 `stale=true`（A15）——"不可验证"不等于"已验证"。
+- HTTP 通道：`bma3-inbox` 新增依赖 `bma3-memory`；`InboxHttpServer` 增加 `POST /v1/inboxes/{id}/plugin/context`（幂等推送，返回 `stored/truncated/evicted/maxEventSeq`）与 `GET .../plugin/context?after=&limit=`（补洞，会话缺省取最近推送）；沿用除 `/healthz` 外全 Bearer；无副本存储时该路由回 `503`（旧 5 参构造器保留给现有测试与 `tools/e2e-local/InboxAckLoopbackHarness.java`）。正文仍**只走**该路由，心跳保持 "Only ids/status/counters are carried"。
+- 配置键补齐：`memory.context.maxEntries=200`、`memory.context.maxEntryChars=10240`、`memory.context.staleAfterSeconds=600`，全部落在 `AppConfig.Memory`（现 9 个组件，校验 + `toContextOptions()`）与 `ConfigLoader.memory(JsonNode)`，`set_config` 热改即时生效。
+- 迁移：`context_digest`/`context_gap` 用 `CREATE TABLE IF NOT EXISTS` 附着到既有 `memory.db`，P0 老库打开后只多两张表（有用例断言 `memory_item` 行与水位均保留）。
+- 门禁：`flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，**909 tests / 0 failures / 0 errors / 1 skipped**（P0 基线 890）；新增 `SqliteContextDigestStoreTest` 10 例、`MemoryContextToolTest` 10 例。
+- `NOT_RUN`：真实宿主里插件向 `/plugin/context` 推送（插件侧推送器尚未实现，属 P2 的前置）；A16 逐字快照；A17 宿主重启后的 `/压缩` 复验；A10–A12 的 watchdog 探针（P2）。
+- 提交：`feat(memory): P1 context digest, /plugin/context route and memory_context`（本地）。
+
 ## 2026-11-18：记忆层 P0（记忆内核 + 四个工具）已落地并过门禁
 
 - 用户「开始开发？」后按 [设计](../superpowers/specs/2026-11-18-memory-and-context-monitor-design.md) §12 的分期进 P0，门禁判据是 A1–A6、A13、A16。

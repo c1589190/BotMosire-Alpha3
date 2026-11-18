@@ -601,13 +601,17 @@ public final class ConfigLoader {
         JsonNode search = memory.path("search");
         JsonNode rate = memory.path("rate");
         JsonNode write = memory.path("write");
+        JsonNode context = memory.path("context");
         return new AppConfig.Memory(
                 search.path("tagBoost").asDouble(defaults.tagBoost()),
                 integer(search, "limit", defaults.searchLimit()),
                 rate.path("usefulDelta").asDouble(defaults.usefulDelta()),
                 rate.path("uselessDelta").asDouble(defaults.uselessDelta()),
                 rate.path("floor").asDouble(defaults.floor()),
-                integer(write, "maxTextChars", defaults.maxTextChars()));
+                integer(write, "maxTextChars", defaults.maxTextChars()),
+                integer(context, "maxEntries", defaults.contextMaxEntries()),
+                integer(context, "maxEntryChars", defaults.contextMaxEntryChars()),
+                integer(context, "staleAfterSeconds", defaults.contextStaleAfterSeconds()));
     }
 
     private static int integer(JsonNode node, String field, int fallback) {

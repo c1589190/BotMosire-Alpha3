@@ -14,6 +14,9 @@ import io.mosire.bma3.inbox.core.InboxAckRejectedException;
 import io.mosire.bma3.inbox.core.InboxPanel;
 import io.mosire.bma3.inbox.core.InboxService;
 import io.mosire.bma3.inbox.core.PluginHeartbeat;
+import io.mosire.bma3.memory.ContextDigest;
+import io.mosire.bma3.memory.ContextDigestStore;
+import io.mosire.bma3.memory.ContextEntry;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -21,6 +24,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -37,6 +41,7 @@ public final class InboxHttpServer implements AutoCloseable {
     private final String inboxId;
     private final String token;
     private final InboxService service;
+    private final ContextDigestStore context;
     private final ObjectMapper mapper = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -44,12 +49,19 @@ public final class InboxHttpServer implements AutoCloseable {
     private int boundPort = -1;
 
     public InboxHttpServer(String host, int port, String inboxId, String token,
-                           InboxService service) {
+                           InboxService service, ContextDigestStore context) {
         this.host = host;
         this.requestedPort = port;
         this.inboxId = inboxId;
         this.token = token == null ? "" : token.trim();
         this.service = service;
+        this.context = context;
+    }
+
+    /** Without a context store the {@code /plugin/context} route answers 503. */
+    public InboxHttpServer(String host, int port, String inboxId, String token,
+                           InboxService service) {
+        this(host, port, inboxId, token, service, null);
     }
 
     public synchronized void start() {
@@ -134,6 +146,17 @@ public final class InboxHttpServer implements AutoCloseable {
                     && "heartbeat".equals(parts[5]) && "POST".equals(method)) {
                 send(exchange, 200, mapper.writeValueAsString(handleHeartbeat(exchange)));
                 return;
+            }
+            if ("plugin".equals(parts[4]) && parts.length == 6
+                    && "context".equals(parts[5]) && !contextMissing(exchange)) {
+                if ("POST".equals(method)) {
+                    handleContextPush(exchange);
+                    return;
+                }
+                if ("GET".equals(method)) {
+                    handleContextCrawl(exchange);
+                    return;
+                }
             }
             if ("items".equals(parts[4]) && parts.length == 6 && "GET".equals(method)) {
                 try {
@@ -499,6 +522,135 @@ public final class InboxHttpServer implements AutoCloseable {
         response.put("mcpStartId", service.runtimeInfo().mcpStartId());
         response.put("pushRevision", service.pushRevision());
         return response;
+    }
+
+    /**
+     * The rolling context channel. Bodies never travel in the heartbeat
+     * ({@code PluginHeartbeat}: "Only ids/status/counters are carried"), so they arrive here.
+     */
+    private void handleContextPush(HttpExchange exchange) throws IOException {
+        byte[] raw = exchange.getRequestBody().readAllBytes();
+        try {
+            JsonNode node = raw.length == 0 ? mapper.createObjectNode() : mapper.readTree(raw);
+            String sessionId = node.path("sessionId").asText("");
+            long capturedThroughSeq = node.path("capturedThroughSeq").asLong(0L);
+            List<ContextEntry> entries = new ArrayList<>();
+            JsonNode list = node.path("entries");
+            if (list.isArray()) {
+                for (JsonNode entry : list) {
+                    entries.add(new ContextEntry(
+                            entry.path("eventSeq").asLong(0L),
+                            entry.path("kind").asText(""),
+                            entry.path("speaker").asText(""),
+                            instant(entry.path("at").asText("")),
+                            entry.path("text").asText("")));
+                }
+            }
+            ContextDigestStore.AppendResult result =
+                    context.append(sessionId, capturedThroughSeq, entries, Instant.now());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("stored", result.stored());
+            body.put("truncated", result.truncated());
+            body.put("evicted", result.evicted());
+            body.put("maxEventSeq", result.maxEventSeq());
+            send(exchange, 200, mapper.writeValueAsString(body));
+        } catch (IllegalArgumentException failure) {
+            send(exchange, 400, mapper.writeValueAsString(
+                    Map.of("error", "invalid_request", "message", String.valueOf(
+                            failure.getMessage()))));
+        } catch (IOException failure) {
+            send(exchange, 400, "{\"error\":\"invalid_body\"}");
+        } catch (RuntimeException failure) {
+            send(exchange, 500, "{\"error\":\"context_store_failed\"}");
+        }
+    }
+
+    /** Catch-up after a plugin restart: everything the jar holds past the plugin's last seq. */
+    private void handleContextCrawl(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, String> query = queryOf(exchange);
+            String sessionId = query.getOrDefault("sessionId", "");
+            if (sessionId.isBlank()) {
+                sessionId = context.lastSession().orElse("");
+            }
+            if (sessionId.isBlank()) {
+                send(exchange, 200, "{\"sessionId\":\"\",\"entries\":[],\"count\":0}");
+                return;
+            }
+            long after = parseLong(query.get("after"), 0L);
+            int limit = (int) Math.min(parseLong(query.get("limit"), 200L), 1000L);
+            List<ContextDigest> rows = context.crawl(sessionId, after, limit);
+            List<Map<String, Object>> entries = new ArrayList<>();
+            for (ContextDigest row : rows) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("eventSeq", row.eventSeq());
+                entry.put("kind", row.kind());
+                entry.put("speaker", row.speaker());
+                entry.put("at", row.at() == null ? "" : row.at().toString());
+                entry.put("text", row.body());
+                entry.put("truncated", row.truncated());
+                entries.add(entry);
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("sessionId", sessionId);
+            body.put("entries", entries);
+            body.put("count", entries.size());
+            send(exchange, 200, mapper.writeValueAsString(body));
+        } catch (IllegalArgumentException failure) {
+            send(exchange, 400, mapper.writeValueAsString(
+                    Map.of("error", "invalid_request", "message", String.valueOf(
+                            failure.getMessage()))));
+        } catch (RuntimeException failure) {
+            send(exchange, 500, "{\"error\":\"context_store_failed\"}");
+        }
+    }
+
+    private boolean contextMissing(HttpExchange exchange) throws IOException {
+        if (context != null) {
+            return false;
+        }
+        send(exchange, 503, "{\"error\":\"context_store_unavailable\"}");
+        return true;
+    }
+
+    private Map<String, String> queryOf(HttpExchange exchange) {
+        Map<String, String> query = new LinkedHashMap<>();
+        String raw = exchange.getRequestURI().getQuery();
+        if (raw == null || raw.isBlank()) {
+            return query;
+        }
+        for (String pair : raw.split("&")) {
+            int at = pair.indexOf('=');
+            if (at <= 0) {
+                continue;
+            }
+            query.put(java.net.URLDecoder.decode(pair.substring(0, at),
+                    StandardCharsets.UTF_8),
+                    java.net.URLDecoder.decode(pair.substring(at + 1), StandardCharsets.UTF_8));
+        }
+        return query;
+    }
+
+    private static long parseLong(String value, long fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("分页参数必须是整数: " + value);
+        }
+    }
+
+    private static Instant instant(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException failure) {
+            return null;
+        }
     }
 
     private Map<String, Object> pluginState() {

@@ -99,7 +99,9 @@ CREATE TABLE context_gap (
 
 - `memory_search` 的缩略形如 `#12 · [例会|排期] · 22:15 · 站会固定在周二…（缩略 60 字）`，正文必须 `memory_view` 才给（D-078 "只回极简缩略、要求 Agent 主动查看"）。
 - `memory_rate` 三态是 D-079 的口径：`mute` 硬设 `weight=-1`；`useful`/`useless` 是配置化增量，**递减在 −0.9 处 clamp**，因此 `weight` 精确等于 `-1` 只可能来自显式 mute，不会被"点几次无用"误触发。
-- `memory_context(export='txt')` 由 jar 自己写文件到 `<dataDir>/exports/`（文件名服务端生成、不跟随符号链接）。原因：BMA3 预设的 `tool-fs` 是 `{read:false,write:false,edit:false}`（`dsh-plugin/lib/preset.js:50-58`），Agent 现在没有写文件的能力。
+- `memory_context(export='txt')` 由 jar 自己写文件到 `<dataDir>/exports/context-<session>-<UTC 时间戳>.txt`（文件名服务端生成、`CREATE_NEW` 不跟随符号链接、目录为符号链接直接拒写）。原因：BMA3 预设的 `tool-fs` 是 `{read:false,write:false,edit:false}`（`dsh-plugin/lib/preset.js:50-58`），Agent 现在没有写文件的能力。
+- `memory_context` 的**会话不是入参**：取当前绑定会话（`InboxService.pluginSessionId()`），没有绑定时回退到副本里最近推送的会话，两者都没有则返回空目录并说明原因。目录每行是一行 60 字缩略（`#seq · 时间 · 说话人 · 前 60 字`），响应带 `chars`（目录总字符数）、`max_entries`、`gaps`，`limit` 默认取 `memory.search.limit`、上限 50。
+- `context_ref` 的协议形式固定为 `session=<sessionId>#seq=<eventSeq>`：`memory_view` 用它回指 DSH 会话日志，取不到就报 `stale=true`（"不可验证"不等于"已验证"）。
 - 读取面另一半在插件侧：给 BMA3 预设挂 DSH 原生 5 个只读工具（D-079 ②），Agent 需要"真实现场"时用它们，需要"我自己的副本/导出"时用 `memory_context`。
 
 ## 6. 检索与排序
