@@ -8,6 +8,8 @@
  *    (`defaultTools` + `resolveToolGroups`) was deleted because it depended on other plugins
  *    having registered names, and because its allow list was computed from the global view and
  *    therefore masked the preset's own rows.
+ *  - `sessionRows` mounts the compaction backend and `/compact` itself, because the web host
+ *    leaves both to presets (see the comment on `sessionRows`).
  *
  * The Agent extends its own face at runtime:
  *  - MCP servers (the bma3 jar among them) → `mcp_connector_configure`, tools arrive as
@@ -76,6 +78,32 @@ function toolRows(ctx) {
 }
 
 /**
+ * Session-plane rows a preset must own because the host deliberately does not.
+ *
+ * `@deepseek-ai/dsh-web-app/cordis.patch.yml:566-581` disables `compaction-basic` and
+ * `command-compact` at the *host* plane with the note "Presets own the human command and
+ * model-facing tool". A preset that mounts neither therefore loses two things at once: the
+ * `/compact` (and `/压缩`) command, and — worse — the compaction backend itself, so pressure
+ * never produces a summary and the session can only overflow.
+ *
+ * The ids match the host rows they replace (same shape as `tool-subagent` below): preset children
+ * live in their own loader scope, so reusing the id does not collide with the host-plane row.
+ */
+function sessionRows() {
+  return [
+    {
+      // The backend: reads the host-plane token meter, writes `compaction/summary` + surface replace.
+      id: 'compaction-basic',
+      name: hostToolRowName('@deepseek-ai/dsh-compaction-basic'),
+    },
+    {
+      id: 'command-compact',
+      name: hostToolRowName('@deepseek-ai/dsh-command-compact'),
+    },
+  ]
+}
+
+/**
  * Build the preset definition.
  * @param {any} ctx declaring context; used for the `profileContext` seam only.
  * @param {{promptFile?: string, complete?: boolean}} [config] loader row config.
@@ -99,6 +127,7 @@ export function presetDefinition(ctx, config = {}) {
         },
       },
       ...toolRows(ctx),
+      ...sessionRows(),
     ],
   }
 }

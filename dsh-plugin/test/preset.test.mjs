@@ -17,6 +17,8 @@ test('preset mounts the thin face: persona + terminal + image + subagents + plug
     'tool-subagent',
     'media',
     'tool-plugin-manager',
+    'compaction-basic',
+    'command-compact',
   ])
   assert.match(definition.plugins[0].name, /persona\.js$/, '行名必须是独立入口文件而不是包名')
 
@@ -30,6 +32,23 @@ test('preset mounts the thin face: persona + terminal + image + subagents + plug
   // 0.0.5 的组别白名单已删除：预设不再生成任何 allow/deny 规则
   assert.equal(definition.toolFace, undefined)
   assert.equal(definition.defaultTools, undefined)
+})
+
+test('preset owns the compaction backend and /compact, which the web host leaves to presets', () => {
+  const definition = presetDefinition({ get: () => undefined })
+  const rows = new Map(definition.plugins.map((row) => [row.id, row]))
+
+  // dsh-web-app/cordis.patch.yml 在 host 平面把这两行置 disabled:true（"Presets own the human
+  // command and model-facing tool"）。预设不挂 = 既没有 /compact，也没有自动压缩后端。
+  const backend = rows.get('compaction-basic')
+  const command = rows.get('command-compact')
+  assert.ok(backend, '缺少 compaction-basic：压力下永不产生摘要，会话只能溢出')
+  assert.ok(command, '缺少 command-compact：/compact（/压缩）不可用')
+  // 名字要能落到宿主安装树里的绝对入口（测试进程下可能解析失败退回裸 specifier，两者都接受）。
+  assert.match(backend.name, /dsh-compaction-basic/)
+  assert.match(command.name, /dsh-command-compact/)
+  assert.equal(backend.disabled, undefined, '后端行不能是 disabled，否则等于没挂')
+  assert.equal(command.disabled, undefined, '命令行不能是 disabled，否则等于没挂')
 })
 
 test('plugin-manager is only mounted when the host publishes profileContext', () => {

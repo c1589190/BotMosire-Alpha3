@@ -1,4 +1,14 @@
-# STATUS —— 更新时间：2026-11-17 (UTC+8)
+# STATUS —— 更新时间：2026-11-18 (UTC+8)
+
+## 2026-11-18：BMA3 预设缺失压缩后端与 `/compact`（已修，待重启宿主验证）
+
+- 用户报告「bma3 会话疑似无法使用 `/compact` 命令等 dsh 自带命令」，要求先排查再修。
+- **根因（只读排查）**：`@deepseek-ai/dsh-web-app/cordis.patch.yml:579-580` 在 **host 平面**把 `compaction-basic` 与 `command-compact` 置 `disabled: true`，同处注释写明 "Presets own the human command and model-facing tool"；而 `dsh-plugin/lib/preset.js` 的 BMA3 预设此前只挂 `persona` + 7 个工具行，压缩后端和命令都没挂。命中该组合的正是 `dsh web` 宿主下的 BMA3 会话（`dsh-bma3test` 由 web profile 派生）。后果不止是没有 `/compact`：**压力下没有任何压缩后端**，`CompactionEngine` 无处产生摘要，会话只能溢出。
+- 同一机制下同样缺失的还有 `/goal`（`command-goal` + `tool-goal`）、`/plan`（`plan-mode`）、`tool-result-pruner`、`tool-skill` + `skill-filesystem`、`workflow-ptc`；`/export`、`/permission`、`/feedback` 仍由 host 平面提供，不受影响。本轮只补压缩链路，其余是否进 BMA3 薄面待用户裁定。
+- **修复**：`dsh-plugin/lib/preset.js` 新增 `sessionRows()`，按既有 `tool-subagent` 先例以同名 id 挂 `compaction-basic` 与 `command-compact`（行名经 `hostToolRowName()` 解析成宿主安装树里的绝对入口，解析失败退回裸 specifier 且只影响该行）；`dsh-plugin/test/preset.test.mjs` 增加回归断言（两行必须存在且非 disabled）。
+- 门禁：`cd dsh-plugin && npm test` rc=0，**168 tests / 0 fail**（原 167，+1）。
+- `NOT_RUN`：真实 BMA3 会话里 `/压缩` 生效、以及压力下自动摘要产出。改动落在已 link 进 `~/.dsh/profiles/web/node_modules/@mosire/bma3-dsh` 的源码上，但宿主（pid 948，`dsh web`）启动时已注册预设，**必须重启宿主**才生效；`dsh plugin` 只把参数转发给 pnpm，没有热重载命令。
+- 未提交、未推送；本轮没有改 BMA3 的其他行。
 
 ## 2026-11-17：QQ 官方机器人与双渠道开发检查点（未完工）
 
