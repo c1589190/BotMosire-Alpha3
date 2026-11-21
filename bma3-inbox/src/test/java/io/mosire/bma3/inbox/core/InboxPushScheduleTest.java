@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -73,6 +74,54 @@ class InboxPushScheduleTest {
         assertThat(pushed).isNotNull();
         assertThat(pushed.items()).hasSize(1);
         assertThat(pushed.revision()).isPositive();
+    }
+
+    @Test
+    void longNormalDelaySurvivesQuietOverridesAndRestart() {
+        var delivery = new AtomicReference<>(new DeliveryPolicy(
+                IMMEDIATE_THRESHOLD, Duration.ZERO, Duration.ofMinutes(30)));
+        var wait = new InboxWaitPolicy(true, 1, 20, List.of());
+        var runtime = new InboxRuntime(6, 6, true, -1000, 30, 5000,
+                1200, 60, Integer.MIN_VALUE, 1800, 200, "auto", 200, 8, wait);
+        SqliteInboxStore database = newStore("long-normal.db");
+        var service = new InboxService(database, delivery::get, "bma3", () -> runtime);
+        append(service, "qq_group/1", 200, "first");
+        Instant created = service.items().getFirst().createdAt();
+        assertThat(Instant.parse(service.status().nextPushAt()))
+                .isEqualTo(created.plus(Duration.ofMinutes(30)));
+
+        append(service, "qq_group/1", 200, "follow-up");
+        delivery.set(new DeliveryPolicy(IMMEDIATE_THRESHOLD, Duration.ZERO, Duration.ofDays(1)));
+        assertThat(Instant.parse(service.status().nextPushAt()))
+                .isEqualTo(created.plus(Duration.ofDays(1)));
+        service.close();
+
+        var restarted = new InboxService(database, delivery::get, "bma3", () -> runtime);
+        assertThat(Instant.parse(restarted.status().nextPushAt()))
+                .isEqualTo(created.plus(Duration.ofDays(1)));
+        restarted.close();
+    }
+
+    @Test
+    void aDueOrdinaryItemAndAnImportantItemCanStillFlush() {
+        SqliteInboxStore database = newStore("long-normal-flush.db");
+        var delivery = new DeliveryPolicy(IMMEDIATE_THRESHOLD, Duration.ZERO, Duration.ofMinutes(30));
+        database.savePanelRevision(1);
+        Instant recent = Instant.now();
+        Instant expired = recent.minusSeconds(1801);
+        database.append(new InboxItem("ordinary-past", "qq_group/1", "group", "first",
+                List.of(), 1, 1, 200, ItemStatus.AVAILABLE, expired, expired, recent, 1, 0, false));
+        var service = new InboxService(database, delivery);
+        InboxPanel due = service.awaitPush(0, Duration.ZERO);
+        assertThat(due.items()).extracting(PanelItem::source).containsExactly("qq_group/1");
+        service.ackPanel(due.revision());
+
+        append(service, "qq_group/2", 200, "normal");
+        append(service, "qq_private/1", 350, "important");
+        InboxPanel urgent = service.awaitPush(due.pushRevision(), Duration.ZERO);
+        assertThat(urgent.items()).extracting(PanelItem::source)
+                .containsExactly("qq_private/1", "qq_group/2");
+        service.close();
     }
 
     @Test

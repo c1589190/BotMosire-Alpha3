@@ -9,7 +9,7 @@ bash packaging/build-app-image.sh
 BIN="$ROOT/dist/botmosire-a3/bin/botmosire-a3"
 [[ -x "$BIN" ]] || { echo "launcher missing: $BIN" >&2; exit 1; }
 VERSION="$("$BIN" --version)"
-[[ "$VERSION" == 'botmosire-a3 0.0.8-early' ]]
+[[ "$VERSION" == 'botmosire-a3 0.0.8-hotfix1' ]]
 
 bash packaging/install.sh --version "${VERSION#botmosire-a3 }" \
   --archive "$ROOT/dist/botmosire-a3-linux-x86_64.tar.gz" \

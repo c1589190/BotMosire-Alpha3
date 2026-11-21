@@ -73,6 +73,35 @@ class SetConfigToolTest {
     }
 
     @Test
+    void normalDelayCanBeHotReloadedUpToTwentyFourHours() throws Exception {
+        writeConfig();
+        Map<String, String> env = Map.of("BMA3_TEST_TOKEN", "token");
+        Path file = root.resolve("config/app.yaml");
+        AtomicReference<AppConfig> effective = new AtomicReference<>(ConfigLoader.load(root, env));
+        try (ConfigWatcher watcher = ConfigWatcher.watch(root, env, effective::set)) {
+            SetConfigTool tool = new SetConfigTool(new ConfigToolContext(root, env, effective::get));
+            for (int delay : new int[]{1800, 86_400}) {
+                ToolResult result = tool.execute(call(Map.of(
+                        "patch", Map.of("weighting.normalDelaySeconds", delay))));
+                assertThat(result.success()).as(result.message()).isTrue();
+                assertThat(new ObjectMapper().readTree(result.message()).path("reloaded")
+                        .asBoolean()).isTrue();
+                assertThat(effective.get().weighting().normalDelaySeconds()).isEqualTo(delay);
+                assertThat(ConfigLoader.load(root, env).weighting().normalDelaySeconds())
+                        .isEqualTo(delay);
+            }
+
+            String valid = Files.readString(file);
+            ToolResult rejected = tool.execute(call(Map.of(
+                    "patch", Map.of("weighting.normalDelaySeconds", 86_401))));
+            assertThat(rejected.success()).isFalse();
+            assertThat(rejected.code()).isEqualTo("CONFIG_INVALID");
+            assertThat(Files.readString(file)).isEqualTo(valid);
+            assertThat(effective.get().weighting().normalDelaySeconds()).isEqualTo(86_400);
+        }
+    }
+
+    @Test
     void getConfigExposesOfficialSafeViewWithoutSecretValues() throws Exception {
         Path configDir = root.resolve("config");
         Files.createDirectories(configDir);

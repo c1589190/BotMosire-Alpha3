@@ -59,7 +59,6 @@ public final class InboxService {
      */
     private final Map<String, Instant> pendingSince = new HashMap<>();
     /** itemId -> first time this item owed a push; used by the first-push hard cap. */
-    private final Map<String, Instant> pendingFirstSeen = new HashMap<>();
 
     private final AtomicLong ackConflicts;
     private final AtomicLong pushes;
@@ -947,7 +946,6 @@ public final class InboxService {
         }
         for (InboxItem item : toAck) {
             pendingSince.remove(item.id());
-            pendingFirstSeen.remove(item.id());
         }
         ackedRevision = nextAckedRevision;
         panelRevision = nextPanelRevision;
@@ -1189,11 +1187,6 @@ public final class InboxService {
         return earliest;
     }
 
-    /** The item's first observed pending time; kept only in memory, as before. */
-    private Instant firstSeen(InboxItem item) {
-        return pendingFirstSeen.computeIfAbsent(item.id(), id -> item.updatedAt());
-    }
-
     /** The last append/reset time for this item; same-source appends move this forward. */
     private Instant lastActivity(InboxItem item) {
         return pendingSince.computeIfAbsent(item.id(), id -> item.updatedAt());
@@ -1210,11 +1203,13 @@ public final class InboxService {
      */
     private Instant dueFor(InboxItem item) {
         InboxRuntime current = runtime.get();
-        Instant first = firstSeen(item);
+        Instant first = item.createdAt();
         Instant anchor = lastActivity(item);
-        Duration delay = item.priority() >= policy().importantThreshold()
-                ? policy().importantDelay() : policy().normalDelay();
-        Instant due = anchor.plus(delay);
+        DeliveryPolicy delivery = policy();
+        boolean important = item.priority() >= delivery.importantThreshold();
+        Duration delay = delivery.delayFor(important);
+        Instant baseDue = anchor.plus(delay);
+        Instant due = baseDue;
         InboxWaitPolicy.Resolution wait = waitFor(item);
         if (wait.waiting()) {
             Instant quietDue = anchor.plusSeconds(wait.quietSeconds());
@@ -1223,11 +1218,15 @@ public final class InboxService {
             }
             Instant waitHard = first.plusSeconds(wait.maxWaitSeconds());
             if (waitHard.isBefore(due)) {
-                due = waitHard;
+                due = !important && waitHard.isBefore(baseDue) ? baseDue : waitHard;
             }
         }
         if (current.maxFirstPushDelaySeconds() > 0) {
-            Instant hard = first.plusSeconds(current.maxFirstPushDelaySeconds());
+            Duration firstPushLimit = Duration.ofSeconds(current.maxFirstPushDelaySeconds());
+            if (!important && delay.compareTo(firstPushLimit) > 0) {
+                firstPushLimit = delay;
+            }
+            Instant hard = first.plus(firstPushLimit);
             if (hard.isBefore(due)) {
                 due = hard;
             }
@@ -1245,7 +1244,7 @@ public final class InboxService {
             return false;
         }
         Instant quietDue = lastActivity(item).plusSeconds(wait.quietSeconds());
-        Instant waitHard = firstSeen(item).plusSeconds(wait.maxWaitSeconds());
+        Instant waitHard = item.createdAt().plusSeconds(wait.maxWaitSeconds());
         return quietDue.isAfter(now) && waitHard.isAfter(now);
     }
 
@@ -1284,7 +1283,6 @@ public final class InboxService {
             }
             frozen.add(item.id());
             pendingSince.remove(item.id());
-            pendingFirstSeen.remove(item.id());
             if (item.continued()) {
                 repushCount++;
             }
@@ -1565,13 +1563,11 @@ public final class InboxService {
     }
 
     private void afterAppend(InboxItem item) {
-        // D-044: a same-source append resets this item's deadline; the first-seen anchor is kept
-        // so a continuously active source still gets its first push after the hard cap.
+        // D-044: a same-source append resets the last-activity anchor. The persisted creation
+        // time anchors the first-push limit across later appends and process restarts.
         Instant now = Instant.now();
         pendingSince.put(item.id(), now);
-        pendingFirstSeen.putIfAbsent(item.id(), now);
         pendingSince.keySet().removeIf(id -> store.item(id).isEmpty());
-        pendingFirstSeen.keySet().removeIf(id -> store.item(id).isEmpty());
         appendsSincePurge++;
         if (appendsSincePurge >= PURGE_EVERY_APPENDS) {
             purgeNow();

@@ -698,9 +698,13 @@ public record AppConfig(
                     throw new IllegalArgumentException("weighting.rules[].pattern 不能为空");
                 }
             }
-            if (normalDelaySeconds < 0 || normalDelaySeconds > 600
-                    || importantDelaySeconds < 0 || importantDelaySeconds > 600) {
-                throw new IllegalArgumentException("weighting 延迟必须在 0..600 秒");
+            if (normalDelaySeconds < 0 || normalDelaySeconds > 86_400) {
+                throw new IllegalArgumentException(
+                        "weighting.normalDelaySeconds 必须在 0..86400 秒");
+            }
+            if (importantDelaySeconds < 0 || importantDelaySeconds > 600) {
+                throw new IllegalArgumentException(
+                        "weighting.importantDelaySeconds 必须在 0..600 秒");
             }
             sourcePriority = copyWeights(sourcePriority, "weighting.sourcePriority");
             attributes = copyWeights(attributes, "weighting.attributes");

@@ -1,6 +1,6 @@
 # BotMosire-Alpha3
 
-DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-early` 预发布版**，包含 Windows 原生、纯 MCP 的 QQ 接入和本地 HTTP 调试机。[预发布说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.8-early)
+DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-hotfix1` 预发布版**，包含 Windows 原生、纯 MCP 的 QQ 接入和本地 HTTP 调试机。[预发布说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.8-hotfix1)
 
 > 稳定版 `0.0.7-tolatest` 包含来源等待、面板摘要、watchdog/媒体诊断、xvfb 易用性和 QQ friend/provider 动作。[稳定版说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.7-tolatest)
 
@@ -35,11 +35,14 @@ DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-early` 预发布�
 
 ### 1. 下载或编译
 
-`v0.0.8-early` 提供以下发布资产。
+`v0.0.8-hotfix1` 提供以下发布资产。
 
-- Linux x86-64 app-image。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/botmosire-a3-linux-x86_64.tar.gz)
-- 独立 JAR，需要 JDK 21。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/bma3-app-0.0.8-early.jar)
-- DSH 插件。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-early/mosire-bma3-dsh-0.0.8-early.tgz)
+本次修复普通优先级 Inbox 推送间隔。升级后可用 `set_config` 将
+`weighting.normalDelaySeconds` 设为 `1800`（半小时），最大 `86400`（24 小时）。
+
+- Linux x86-64 app-image。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-hotfix1/botmosire-a3-linux-x86_64.tar.gz)
+- 独立 JAR，需要 JDK 21。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-hotfix1/bma3-app-0.0.8-hotfix1.jar)
+- DSH 插件。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-hotfix1/mosire-bma3-dsh-0.0.8-hotfix1.tgz)
 
 从源码构建 app-image：
 

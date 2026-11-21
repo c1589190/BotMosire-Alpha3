@@ -83,7 +83,7 @@ inbox:
     # minPriority 已废弃/忽略：所有未被 weighting.dropBelow 丢弃的条目都会推送；
     # 低于 immediateThreshold 的走 normalDelaySeconds（默认 60s）批次。
     minPriority: -1000
-    maxFirstPushDelaySeconds: 60  # open 条目首次推送硬上限；0=关闭
+    maxFirstPushDelaySeconds: 60  # 首次推送硬上限；普通档至少为 normalDelaySeconds；0=关闭
   dismiss:
     autoEnabled: false      # watchdog 维护任务自动清理低优先 backlog
     autoBelowPriority: 0
@@ -101,7 +101,7 @@ weighting:
   dropBelow: -300
   maxPriority: 1000
   importantDelaySeconds: 3
-  normalDelaySeconds: 60
+  normalDelaySeconds: 60   # 普通档独立唤醒等待，0..86400 秒（24 小时）
   sourcePriority:
     "*": 0
     qq_private: 300
