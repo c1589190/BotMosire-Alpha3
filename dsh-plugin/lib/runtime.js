@@ -1,10 +1,11 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdir, open, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
+import { promisify } from 'node:util'
 import { apply as applyInbox } from './inbox.js'
 import { hostToolRowName } from './host-tools.js'
 import { installedImage, installImage, readJson, RuntimeError, writeJson } from './runtime-image.js'
@@ -14,6 +15,8 @@ const STOP_TIMEOUT = 5000
 const READY = 'BMA3_MANAGED_READY '
 const OCCUPIED = 'BMA3_MANAGED_ERROR INSTANCE_IN_USE'
 const MCP_CREDENTIAL = 'BMA3_MANAGED_MCP_TOKEN'
+const windows = process.platform === 'win32'
+const run = promisify(execFile)
 
 function requireAbsolute(value) {
   if (typeof value !== 'string' || !isAbsolute(value)) throw new RuntimeError('INVALID_RUNTIME_PATH')
@@ -46,7 +49,7 @@ async function prepareBundledConfig(root) {
   }
 }
 
-function endpoints(info) {
+export function managedEndpoints(info) {
   const port = (value) => Number.isInteger(value) && value >= 1 && value <= 65535
   if (info.protocol !== 1 || typeof info.version !== 'string' || !info.version
       || ![info.mcpPort, info.inboxPort, info.healthPort].every(port)
@@ -54,10 +57,20 @@ function endpoints(info) {
       || typeof info.inboxId !== 'string' || !info.inboxId) {
     throw new RuntimeError('INVALID_MANAGED_HANDSHAKE')
   }
+  const basePath = info.mcpPath.replace(/\/+$/, '')
+  const hasDaily = info.mcpDailyPath !== undefined
+  const hasOps = info.mcpOpsPath !== undefined
+  if ((hasDaily && info.mcpDailyPath !== basePath + '/daily')
+      || (hasOps && (!hasDaily || info.mcpOpsPath !== basePath + '/ops'))) {
+    throw new RuntimeError('INVALID_MANAGED_HANDSHAKE')
+  }
   const loopback = (number) => 'http://127.0.0.1:' + number
+  const mcpOrigin = loopback(info.mcpPort)
   return {
     version: info.version,
-    mcpUrl: loopback(info.mcpPort) + info.mcpPath,
+    mcpUrl: mcpOrigin + (info.mcpDailyPath ?? info.mcpPath),
+    mcpSurface: hasDaily ? 'daily' : 'full',
+    ...(hasOps ? { mcpOpsUrl: mcpOrigin + info.mcpOpsPath } : {}),
     inboxUrl: loopback(info.inboxPort),
     healthUrl: loopback(info.healthPort) + '/healthz',
     inboxId: info.inboxId,
@@ -66,7 +79,7 @@ function endpoints(info) {
 }
 
 function launch(executable, args, cwd) {
-  const child = spawn(executable, args, { cwd, stdio: ['pipe', 'pipe', 'ignore'] })
+  const child = spawn(executable, args, { cwd, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
   child.stdin.on('error', () => {})
   let finished = false
   const exited = new Promise((resolve) => {
@@ -83,7 +96,7 @@ function launch(executable, args, cwd) {
       if (line === OCCUPIED) reject(new RuntimeError('INSTANCE_IN_USE'))
       if (!line.startsWith(READY)) return
       try {
-        resolve(endpoints(JSON.parse(line.slice(READY.length))))
+        resolve(managedEndpoints(JSON.parse(line.slice(READY.length))))
       } catch {
         reject(new RuntimeError('INVALID_MANAGED_HANDSHAKE'))
       }
@@ -109,11 +122,40 @@ function launch(executable, args, cwd) {
   }
 }
 
+async function safeWindowsCredential(path) {
+  const stat = await lstat(path)
+  if (!stat.isFile()) throw new RuntimeError('CREDENTIAL_FILE_UNSAFE')
+  const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const check = `
+    $ErrorActionPreference = 'Stop'
+    $path = $env:BMA3_MANAGED_ENV_PATH
+    if ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
+    $acl = [IO.File]::GetAccessControl($path)
+    $sidType = [Security.Principal.SecurityIdentifier]
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $entries = @($acl.GetAccessRules($true, $true, $sidType))
+    if ($acl.GetOwner($sidType) -ne $user -or $entries.Count -ne 1 -or
+        $entries[0].IdentityReference -ne $user -or $entries[0].AccessControlType -ne 'Allow') { exit 1 }
+  `
+  try {
+    await run(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', check], {
+      env: { ...process.env, BMA3_MANAGED_ENV_PATH: path }, windowsHide: true, timeout: 5000,
+    })
+  } catch {
+    throw new RuntimeError('CREDENTIAL_FILE_UNSAFE')
+  }
+  return stat
+}
+
 async function credentials(envFile) {
-  const file = await open(envFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  const checked = windows ? await safeWindowsCredential(envFile) : null
+  const flags = windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  const file = await open(envFile, flags)
   try {
     const stat = await file.stat()
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid() || stat.size > 16384) {
+    const safe = checked ? stat.dev === checked.dev && stat.ino === checked.ino
+      : (stat.mode & 0o777) === 0o600 && stat.uid === process.getuid()
+    if (!stat.isFile() || !safe || stat.size > 16384) {
       throw new RuntimeError('CREDENTIAL_FILE_UNSAFE')
     }
     const content = await file.readFile('utf8')
@@ -251,7 +293,7 @@ export function applyRuntime(ctx, config) {
     if (disposed || owned?.running && state.connected) return status()
     state = { phase: 'starting', source: config.source, connected: false }
     try {
-      if (process.platform !== 'linux') throw new RuntimeError('MANAGED_PLATFORM_UNSUPPORTED')
+      if (!windows && process.platform !== 'linux') throw new RuntimeError('MANAGED_PLATFORM_UNSUPPORTED')
       const root = runtimeRoot(profile, config)
       await mkdir(root, { recursive: true, mode: 0o700 })
       const configRoot = config.source === 'local-jar' ? requireAbsolute(config.configRoot) : root
@@ -275,31 +317,35 @@ export function applyRuntime(ctx, config) {
           state = { phase: 'failed', source: config.source, connected: false, code: 'CHILD_EXITED' }
           logger.warn('BMA3 runtime: CHILD_EXITED')
         }))
-        return endpoint.version
+        return endpoint
       }
 
-      let version
+      let endpoint
       let rollbackCode
       if (config.source === 'local-jar') {
-        version = await startFrom(requireAbsolute(config.javaPath), ['-jar', requireAbsolute(config.jarPath)])
+        endpoint = await startFrom(requireAbsolute(config.javaPath), ['-jar', requireAbsolute(config.jarPath)])
       } else {
         let candidate
         try {
           candidate = await installImage(root)
-          version = await startFrom(candidate.executable, [], candidate.image.version)
+          endpoint = await startFrom(candidate.executable, [], candidate.image.version)
           await writeJson(activeFile, candidate.image)
         } catch (error) {
           await closeOwned()
           if (!previous || candidate?.image.sha256 === previous.image.sha256
               || error.message === 'INSTANCE_IN_USE') throw error
-          version = await startFrom(previous.executable, [], previous.image.version)
+          endpoint = await startFrom(previous.executable, [], previous.image.version)
           rollbackCode = error instanceof RuntimeError ? error.message : 'CANDIDATE_FAILED'
           logger.warn('BMA3 runtime restored the previous image: ' + rollbackCode)
         }
       }
       if (remember) await writeJson(join(root, 'desired.json'), { running: true })
-      state = { phase: 'running', source: config.source, connected: true, version, ...(rollbackCode ? { rollbackCode } : {}) }
-      logger.info('BMA3 runtime ready: ' + version)
+      state = {
+        phase: 'running', source: config.source, connected: true, version: endpoint.version,
+        mcpSurface: endpoint.mcpSurface, ...(endpoint.mcpOpsUrl ? { mcpOpsUrl: endpoint.mcpOpsUrl } : {}),
+        ...(rollbackCode ? { rollbackCode } : {}),
+      }
+      logger.info('BMA3 runtime ready: ' + endpoint.version)
     } catch (error) {
       await closeOwned()
       const code = error instanceof RuntimeError ? error.message : 'START_FAILED'

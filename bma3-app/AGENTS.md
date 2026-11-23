@@ -10,6 +10,7 @@
 
 - 不把 QQ/平台分支写进 Inbox；平台差异由 adapter 的 `SourceLabeler` / `SourceKeyer` / 属性键提供。
 - 分数只有一处真源：`config/app.yaml`；唯一写入口是 `set_config`（`config/ConfigEditor`：先隔离校验、再原子替换），`get_config` 只读且脱敏。
+- OneBot 凭据由 `onebot/` 下的 `bma3_credentials` 和账号协调逻辑管理。账号配置只保存引用，凭据变更直接协调关联账号。[设计](../docs/superpowers/specs/2026-11-23-bma3-onebot-credentials-design.md)
 - Inbox 是总面板；MCP/HTTP 端口仍不热重载。
 - 完整消息在消息板；SSE 只推受限面板。
 

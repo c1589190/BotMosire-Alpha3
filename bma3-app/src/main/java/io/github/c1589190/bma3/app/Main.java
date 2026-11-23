@@ -5,6 +5,7 @@ import io.github.c1589190.bma3.app.config.AppConfig;
 import io.github.c1589190.bma3.app.config.ConfigLoader;
 import io.github.c1589190.bma3.inbox.core.SqliteInboxStore;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -13,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** CLI entry point used by the jpackage launcher. */
 public final class Main {
 
-    public static final String VERSION = "0.0.9-early";
+    public static final String VERSION = "0.0.9-fix1";
 
     private Main() {
     }
@@ -135,12 +136,15 @@ public final class Main {
                 "protocol", 1,
                 "version", VERSION,
                 "mcpPort", app.mcpPort(),
-                "mcpPath", config.server().mcpPath(),
+                "mcpPath", config.server().mcpPath().trim(),
+                "mcpDailyPath", McpToolSurfaces.dailyPath(config.server().mcpPath()),
+                "mcpOpsPath", McpToolSurfaces.opsPath(config.server().mcpPath()),
                 "inboxPort", app.inboxHttpPort(),
                 "inboxId", config.inbox().inboxId(),
                 "healthPort", app.healthPort(),
                 "envFile", Bma3Env.resolve(config, root).toString()));
-        System.out.println("BMA3_MANAGED_READY " + ready);
+        System.out.writeBytes(("BMA3_MANAGED_READY " + ready + "\n").getBytes(StandardCharsets.UTF_8));
+        System.out.flush();
         stopped.await();
     }
 

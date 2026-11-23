@@ -19,11 +19,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Desired-state account registry.
  *
- * <p>Important: reconcile performs slow network work (connect up to 5s, diagnostic probe up to 2s)
- * and therefore must <b>not</b> hold a lock that inbound ingestion needs. Everything that the
- * ingest path touches — {@link #self(String)}, {@link #client(AccountId)}, {@link #connected} — is
- * a concurrent-map read, so a hot reload that re-probes a broken account cannot stall message
- * ingestion (this exactly happened in the local end-to-end run).</p>
+ * <p>Connection changes are serialized so a watchdog reconnect cannot undo a credential
+ * revocation. The ingest path uses concurrent-map reads and does not acquire this lock.</p>
  */
 public final class AccountRegistry implements AutoCloseable {
 
@@ -55,6 +52,7 @@ public final class AccountRegistry implements AutoCloseable {
     private final Set<String> configured = ConcurrentHashMap.newKeySet();
     /** Last desired config per account; used by the watchdog to reconnect without a config change. */
     private final Map<String, AccountConfig> desiredByAccount = new ConcurrentHashMap<>();
+    private boolean closed;
 
     public AccountRegistry(Consumer<AccountEvent> eventSink) {
         this((config, listener) -> new OneBot11Client(config.endpoint(), config.token(), listener),
@@ -67,8 +65,16 @@ public final class AccountRegistry implements AutoCloseable {
     }
 
     public ReconcileResult reconcile(List<AccountConfig> desired) {
+        return reconcile(desired, Map.of());
+    }
+
+    /** Apply a full configuration, including accounts blocked before a connection can be made. */
+    public synchronized ReconcileResult reconcile(List<AccountConfig> desired, Map<String, Fault> unavailable) {
         LinkedHashMap<String, AccountConfig> target = new LinkedHashMap<>();
         List<String> rejected = new ArrayList<>();
+        if (closed) {
+            return new ReconcileResult(List.of(), List.of(), List.of(), List.of());
+        }
         for (AccountConfig config : desired) {
             if (!valid(config)) {
                 rejected.add(config == null ? "" : config.accountId());
@@ -85,6 +91,7 @@ public final class AccountRegistry implements AutoCloseable {
         }
         configured.clear();
         configured.addAll(target.keySet());
+        configured.addAll(unavailable.keySet());
         desiredByAccount.clear();
         desiredByAccount.putAll(target);
         desired.stream()
@@ -101,52 +108,73 @@ public final class AccountRegistry implements AutoCloseable {
                 removed.add(accountId);
             }
         }
+        faults.keySet().retainAll(configured);
+        faults.putAll(unavailable);
 
         List<String> added = new ArrayList<>();
         List<String> restarted = new ArrayList<>();
         for (Map.Entry<String, AccountConfig> entry : target.entrySet()) {
             String accountId = entry.getKey();
-            AccountConfig config = entry.getValue();
-            Holder current = active.get(accountId);
-            if (current == null) {
-                if (start(config)) {
-                    added.add(accountId);
-                } else {
-                    rejected.add(accountId);
-                }
-                continue;
-            }
-            if (current.config().equals(config)) {
-                // Same config but the socket is gone: this is exactly the "dead until restart"
-                // case the watchdog exists to fix. Reconnect eagerly here as well.
-                if (!current.client().connected()) {
-                    forceReconnect(accountId);
-                }
-                continue;
-            }
-            // Slow path (connect + awaitReady) runs without any registry lock held.
-            OneBot11Client replacement = create(config);
-            if (replacement == null) {
-                rejected.add(accountId);
-                continue;
-            }
-            try {
-                replacement.start();
-                replacement.awaitReady(Duration.ofSeconds(5));
-                Holder previous = active.put(accountId, new Holder(config, replacement));
-                if (previous != null) {
-                    previous.client().close();
-                }
-                faults.remove(accountId);
-                restarted.add(accountId);
-                learnIdentity(accountId, replacement);
-            } catch (RuntimeException failure) {
-                replacement.close();
-                rejected.add(accountId);
-                recordFault(accountId, "restart", failure, replacement);
+            switch (apply(entry.getValue())) {
+                case ADDED -> added.add(accountId);
+                case RESTARTED -> restarted.add(accountId);
+                case REJECTED -> rejected.add(accountId);
+                case UNCHANGED -> { }
             }
         }
         return new ReconcileResult(added, removed, restarted, rejected);
+    }
+
+    public synchronized void reconcileAccount(AccountConfig config) {
+        if (!closed) {
+            configured.add(config.accountId());
+            desiredByAccount.put(config.accountId(), config);
+            apply(config);
+        }
+    }
+
+    public synchronized void markUnavailable(String accountId, Fault fault) {
+        if (!closed) {
+            configured.add(accountId);
+            desiredByAccount.remove(accountId);
+            remove(accountId);
+            faults.put(accountId, fault);
+        }
+    }
+
+    private enum Change { ADDED, RESTARTED, REJECTED, UNCHANGED }
+
+    private Change apply(AccountConfig config) {
+        String accountId = config.accountId();
+        Holder current = active.get(accountId);
+        if (current == null) {
+            return start(config) ? Change.ADDED : Change.REJECTED;
+        }
+        if (current.config().equals(config)) {
+            if (!current.client().connected()) {
+                forceReconnect(accountId);
+            }
+            return Change.UNCHANGED;
+        }
+        OneBot11Client replacement = create(config);
+        if (replacement == null) {
+            return Change.REJECTED;
+        }
+        try {
+            replacement.start();
+            replacement.awaitReady(Duration.ofSeconds(5));
+            Holder previous = active.put(accountId, new Holder(config, replacement));
+            if (previous != null) {
+                previous.client().close();
+            }
+            faults.remove(accountId);
+            learnIdentity(accountId, replacement);
+            return Change.RESTARTED;
+        } catch (RuntimeException failure) {
+            replacement.close();
+            recordFault(accountId, "restart", failure, replacement);
+            return Change.REJECTED;
+        }
     }
 
     /**
@@ -155,8 +183,8 @@ public final class AccountRegistry implements AutoCloseable {
      * @return true when the replacement connected; false when the account is unknown or the
      *         replacement failed (the fault is recorded and the old holder is left in place)
      */
-    public boolean forceReconnect(String accountId) {
-        if (accountId == null || accountId.isBlank()) {
+    public synchronized boolean forceReconnect(String accountId) {
+        if (closed || accountId == null || accountId.isBlank()) {
             return false;
         }
         AccountConfig config = desiredByAccount.get(accountId);
@@ -239,10 +267,14 @@ public final class AccountRegistry implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        closed = true;
         for (String accountId : new ArrayList<>(active.keySet())) {
             remove(accountId);
         }
+        configured.clear();
+        desiredByAccount.clear();
+        faults.clear();
     }
 
     private boolean start(AccountConfig config) {

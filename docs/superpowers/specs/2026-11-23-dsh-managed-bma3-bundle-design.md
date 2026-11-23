@@ -45,7 +45,25 @@
 4. 重装、升级、候选启动失败与回退保留原有数据。配置导出与失败诊断通过凭据检查。
 5. Maven 和 DSH 插件测试、两种托管来源的回环验收、发行包校验全部通过后，从同一提交打 `v0.0.9-early` 并发布 GitHub 预发布。资产包含新增整合 tgz、独立 JAR、Linux app-image、原插件包与 SHA-256 校验文件。发布后从 Release URL 复核下载、校验和及远程安装。
 
+## Windows x64 整合包
+
+> 现制作适用于WindowsDSH的整合包，然后给我文件地址，我会让隔壁dsh进行验证
+
+Windows x64 候选包沿用 `@mosire/bma3-dsh-managed`、profile 级托管和已有数据格式。安装文件以 `-windows-x64.tgz` 区分，内含通过 Windows JDK 21 生成的控制台启动器、BMA3 JAR 与 Java 运行时。DSH 直接启动原生可执行文件并持有 stdin 控制管道，窗口隐藏。镜像校验、按摘要安装、启动握手与回退共用原有流程。
+
+运行中的 Desktop 通过当前 profile 的 `plugin_manager install_bundle` 安装本地 tgz，实测可热应用。Windows Web profile 使用 `dsh.cmd plugin --profile web add` 安装。[Windows 验证记录](../../agents/STATUS.md#2026-11-23windows-x64-dsh-整合候选包)
+
+### 不变量
+
+- Windows 继续用选定 profile 的数据根和动态回环端口。凭据仍由 Java 创建。插件在读取前验证文件是当前 Windows 用户独享的普通文件，并检查 Windows ACL。
+- Windows 包与 Linux 包分别按运行平台和架构校验，只能启动适配本平台的镜像。
+
+### 验收判据
+
+- 生成 Windows x64 tgz 和 SHA-256。解包核对清单与镜像摘要，并用内置 Java 完成托管启动、鉴权、同实例拒绝及控制管道停止检查。
+- 下游 Windows DSH 验证目标 profile 中的首次自动启动、MCP/Inbox 接线与 `bma3_runtime` 状态、停止和重启。
+
 ## 未决问题
 
-- Windows 整合发行包由后续工作补齐。
+- Windows Desktop 的预设选择器和托管运行时停止、重启待验证。
 - DSH `0.2.2-rc.3` 中原生 MCP 客户端的动态挂载、凭据作用域和管理工具权限须以真实 Web profile 的验收结果为准。

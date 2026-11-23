@@ -30,7 +30,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +81,7 @@ public final class Bma3McpServer implements AutoCloseable {
     private final String serverName;
     private final String serverVersion;
     private final List<AgentTool> tools;
+    private final Map<String, List<AgentTool>> toolRoutes;
     private final int maxRequestBytes;
     private final ToolAssetResolver assetResolver;
     private final HttpClient upstreamClient;
@@ -88,10 +91,9 @@ public final class Bma3McpServer implements AutoCloseable {
     private volatile byte[] expectedAuthorization;
     private volatile String authHint = "Bearer token";
     private volatile int boundPort = -1;
-    private volatile int internalPort = -1;
     private volatile boolean started;
     private HttpServer frontServer;
-    private AgentToMcpServer internalServer;
+    private List<AgentToMcpServer> internalServers = List.of();
     private ExecutorService frontExecutor;
 
     public Bma3McpServer(String host, int port, String path, String token,
@@ -117,6 +119,21 @@ public final class Bma3McpServer implements AutoCloseable {
     public Bma3McpServer(String host, int port, String path, String token,
                         String serverName, String serverVersion, List<AgentTool> tools,
                         int maxRequestBytes, ToolAssetResolver assetResolver) {
+        this(host, port, path, token, serverName, serverVersion, tools,
+                maxRequestBytes, assetResolver, Map.of());
+    }
+
+    public Bma3McpServer(String host, int port, String path, String token,
+                        String serverName, String serverVersion, List<AgentTool> tools,
+                        Map<String, List<AgentTool>> additionalRoutes) {
+        this(host, port, path, token, serverName, serverVersion, tools,
+                DEFAULT_MAX_REQUEST_BYTES, ToolAssetResolver.none(), additionalRoutes);
+    }
+
+    private Bma3McpServer(String host, int port, String path, String token,
+                         String serverName, String serverVersion, List<AgentTool> tools,
+                         int maxRequestBytes, ToolAssetResolver assetResolver,
+                         Map<String, List<AgentTool>> additionalRoutes) {
         this.host = requireText(host, "host");
         if (port < 0 || port > 65535) {
             throw new IllegalArgumentException("port 必须在 0..65535");
@@ -134,6 +151,18 @@ public final class Bma3McpServer implements AutoCloseable {
         this.serverName = requireText(serverName, "serverName");
         this.serverVersion = requireText(serverVersion, "serverVersion");
         this.tools = List.copyOf(Objects.requireNonNull(tools, "tools"));
+        Map<String, List<AgentTool>> routes = new LinkedHashMap<>();
+        routes.put(this.path, this.tools);
+        additionalRoutes.forEach((route, exposedTools) -> {
+            if (!route.startsWith("/") || routes.containsKey(route)) {
+                throw new IllegalArgumentException("无效或重复的 MCP 路径: " + route);
+            }
+            if (!this.tools.containsAll(exposedTools)) {
+                throw new IllegalArgumentException("MCP 子入口只能使用全量入口中的工具: " + route);
+            }
+            routes.put(route, List.copyOf(exposedTools));
+        });
+        this.toolRoutes = Map.copyOf(routes);
         if (maxRequestBytes <= 0) {
             throw new IllegalArgumentException("maxRequestBytes 必须为正");
         }
@@ -158,57 +187,56 @@ public final class Bma3McpServer implements AutoCloseable {
                 throw new IllegalStateException("Bot MCP 拒绝非回环 host: " + host);
             }
 
-            AgentToMcpServer internal = null;
+            List<AgentToMcpServer> internals = new ArrayList<>();
             HttpServer front = null;
             ExecutorService executor = null;
-            boolean frontStarted = false;
             try {
-                ToolRegistry registry = new ToolRegistry();
-                registry.registerAll("bma3", tools);
-                internal = AgentToMcpServer.startHttp(
-                        INTERNAL_HOST, 0, INTERNAL_PATH, registry, serverName, serverVersion,
-                        supervisorContext(tools), ToolCallAuthorizer.standard(), assetResolver);
-                if (internal.boundPort() <= 0) {
-                    throw new IllegalStateException("内部 Bot MCP 未返回有效端口");
+                Map<String, Integer> ports = new LinkedHashMap<>();
+                for (var route : toolRoutes.entrySet()) {
+                    List<AgentTool> exposedTools = route.getValue();
+                    ToolRegistry registry = new ToolRegistry();
+                    registry.registerAll("bma3", exposedTools);
+                    AgentToMcpServer internal = AgentToMcpServer.startHttp(
+                            INTERNAL_HOST, 0, INTERNAL_PATH, registry, serverName, serverVersion,
+                            supervisorContext(exposedTools), ToolCallAuthorizer.standard(), assetResolver);
+                    internals.add(internal);
+                    if (internal.boundPort() <= 0) {
+                        throw new IllegalStateException("内部 Bot MCP 未返回有效端口");
+                    }
+                    ports.put(route.getKey(), internal.boundPort());
                 }
+                Map<String, Integer> upstreamPorts = Map.copyOf(ports);
                 executor = Executors.newVirtualThreadPerTaskExecutor();
                 front = HttpServer.create(new InetSocketAddress(host, requestedPort), 0);
                 front.setExecutor(executor);
-                front.createContext("/", this::handleProxy);
-                front.start();
-                frontStarted = true;
-
-                this.internalServer = internal;
-                this.frontServer = front;
-                this.frontExecutor = executor;
-                this.internalPort = internal.boundPort();
-                this.boundPort = front.getAddress().getPort();
+                front.createContext("/", exchange -> handleProxy(exchange, upstreamPorts));
                 this.expectedAuthorization = authRequired
                         ? ("Bearer " + token).getBytes(StandardCharsets.UTF_8)
                         : null;
+                front.start();
+
+                this.internalServers = List.copyOf(internals);
+                this.frontServer = front;
+                this.frontExecutor = executor;
+                this.boundPort = front.getAddress().getPort();
                 this.started = true;
                 LOG.info("Bot MCP 已启动 host={} port={} path={} tools={}",
                         host, boundPort, path, tools.size());
                 LOG.info("event=mcp_started host={} port={} path={} tools={}",
                         host, boundPort, path, tools.size());
             } catch (IOException | RuntimeException failure) {
-                if (front != null && frontStarted) {
+                if (front != null) {
                     try {
                         front.stop(0);
                     } catch (RuntimeException ignored) {
                         // 保留原始启动异常。
                     }
                 }
-                if (internal != null) {
-                    try {
-                        internal.close();
-                    } catch (RuntimeException ignored) {
-                        // 同上。
-                    }
-                }
+                closeInternals(internals);
                 if (executor != null) {
                     executor.shutdownNow();
                 }
+                clearAuthorization();
                 throw new IllegalStateException("Bot MCP 启动失败", failure);
             }
         }
@@ -283,30 +311,36 @@ public final class Bma3McpServer implements AutoCloseable {
                 // 幂等关闭。
             }
         }
-        AgentToMcpServer internal = internalServer;
-        internalServer = null;
-        if (internal != null) {
-            try {
-                internal.close();
-            } catch (RuntimeException ignored) {
-                // 同上。
-            }
-        }
+        closeInternals(internalServers);
+        internalServers = List.of();
         ExecutorService executor = frontExecutor;
         frontExecutor = null;
         if (executor != null) {
             executor.shutdownNow();
         }
-        byte[] expected = expectedAuthorization;
-        if (expected != null) {
-            Arrays.fill(expected, (byte) 0);
-            expectedAuthorization = null;
-        }
+        clearAuthorization();
         started = false;
         boundPort = -1;
-        internalPort = -1;
         if (wasStarted) {
             LOG.info("event=mcp_stopped");
+        }
+    }
+
+    private static void closeInternals(List<AgentToMcpServer> internals) {
+        for (AgentToMcpServer internal : internals.reversed()) {
+            try {
+                internal.close();
+            } catch (RuntimeException ignored) {
+                // 继续关闭剩余入口。
+            }
+        }
+    }
+
+    private void clearAuthorization() {
+        byte[] expected = expectedAuthorization;
+        expectedAuthorization = null;
+        if (expected != null) {
+            Arrays.fill(expected, (byte) 0);
         }
     }
 
@@ -323,9 +357,11 @@ public final class Bma3McpServer implements AutoCloseable {
         return ToolContext.of(AccessToken.DEFAULT, permissions, AgentIdentity.external());
     }
 
-    private void handleProxy(HttpExchange exchange) throws IOException {
+    private void handleProxy(HttpExchange exchange, Map<String, Integer> upstreamPorts) throws IOException {
         try {
-            if (!path.equals(exchange.getRequestURI().getPath())) {
+            String requestPath = exchange.getRequestURI().getPath();
+            Integer port = requestPath == null ? null : upstreamPorts.get(requestPath);
+            if (port == null) {
                 LOG.warn("event=mcp_request_rejected reason=unknown_path method={}",
                         exchange.getRequestMethod());
                 sendText(exchange, 404, "未知路径");
@@ -348,7 +384,7 @@ public final class Bma3McpServer implements AutoCloseable {
                 exchange.sendResponseHeaders(405, -1);
                 return;
             }
-            proxy(exchange, method);
+            proxy(exchange, method, port);
         } finally {
             exchange.close();
         }
@@ -383,7 +419,7 @@ public final class Bma3McpServer implements AutoCloseable {
                 + "，变量名不是 token 本身\"}";
     }
 
-    private void proxy(HttpExchange exchange, String method) throws IOException {
+    private void proxy(HttpExchange exchange, String method, int internalPort) throws IOException {
         byte[] requestBody = null;
         if ("POST".equals(method)) {
             requestBody = readBoundedBody(exchange);
@@ -391,7 +427,7 @@ public final class Bma3McpServer implements AutoCloseable {
                 return;
             }
         }
-        URI upstreamUri = internalUri(exchange.getRequestURI().getRawQuery());
+        URI upstreamUri = internalUri(internalPort, exchange.getRequestURI().getRawQuery());
         HttpRequest.Builder request = HttpRequest.newBuilder(upstreamUri);
         copyRequestHeaders(exchange.getRequestHeaders(), request);
         request.method(method, "POST".equals(method)
@@ -444,7 +480,7 @@ public final class Bma3McpServer implements AutoCloseable {
         }
     }
 
-    private URI internalUri(String rawQuery) {
+    private static URI internalUri(int internalPort, String rawQuery) {
         String query = rawQuery == null || rawQuery.isEmpty() ? "" : "?" + rawQuery;
         return URI.create("http://" + INTERNAL_HOST + ":" + internalPort + INTERNAL_PATH + query);
     }

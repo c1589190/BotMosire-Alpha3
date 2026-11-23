@@ -19,6 +19,8 @@ import io.github.c1589190.bma3.app.debug.DebugService;
 import io.github.c1589190.bma3.app.debug.DebugStore;
 import io.github.c1589190.bma3.app.debug.DebugTools;
 import io.github.c1589190.bma3.app.official.OfficialQqService;
+import io.github.c1589190.bma3.app.onebot.CredentialsTool;
+import io.github.c1589190.bma3.app.onebot.OneBotSettings;
 import io.github.c1589190.bma3.app.priority.PriorityDecision;
 import io.github.c1589190.bma3.app.priority.PriorityResolver;
 import io.github.c1589190.bma3.app.priority.PriorityTools;
@@ -44,7 +46,6 @@ import io.github.c1589190.bma3.inbox.core.InboxService;
 import io.github.c1589190.bma3.inbox.core.SqliteInboxStore;
 import io.github.c1589190.bma3.inbox.http.InboxHttpServer;
 import io.github.c1589190.bma3.inbox.tools.InboxTools;
-import io.github.c1589190.bma3.qqconnect.account.AccountConfig;
 import io.github.c1589190.bma3.scheduler.ScheduleFired;
 import io.github.c1589190.bma3.scheduler.ScheduleOptions;
 import io.github.c1589190.bma3.scheduler.ScheduleService;
@@ -440,22 +441,20 @@ public final class Bma3App implements AutoCloseable {
                     channels.router()::ingest);
             officialServiceRef.set(officialService);
 
-            List<AccountConfig> resolved = resolveAccounts(config, env);
-            accounts.reconcile(resolved);
+            OneBotSettings oneBot = new OneBotSettings(accounts, env, config.dataDir());
+            oneBot.reconcile(config, null);
             applySelfOverrides(accounts, config);
             officialService.start();
             watcher = ConfigWatcher.watch(configRoot, env, next -> {
-                // Validate every dependent runtime before mutating either one. In particular a
-                // bad OneBot tokenEnv must leave the previous global policy and official snapshot
-                // untouched, matching the pre-official hot-reload contract.
-                List<AccountConfig> nextOneBot = resolveAccounts(next, env);
-                List<io.github.c1589190.bma3.qqofficial.account.OfficialQqAccountConfig> nextOfficial =
-                        OfficialQqService.desiredAccounts(next);
-                accounts.reconcile(nextOneBot);
-                applySelfOverrides(accounts, next);
-                officialService.reconcile(next, nextOfficial);
-                current.set(next);
-                runtime.set(RuntimePolicy.from(next));
+                synchronized (oneBot) {
+                    // Validate both snapshots before mutating either account registry.
+                    var nextOfficial = OfficialQqService.desiredAccounts(next);
+                    oneBot.reconcile(next, current.get());
+                    applySelfOverrides(accounts, next);
+                    officialService.reconcile(next, nextOfficial);
+                    current.set(next);
+                    runtime.set(RuntimePolicy.from(next));
+                }
             });
             ConfigWatcher activeWatcher = watcher;
 
@@ -481,6 +480,7 @@ public final class Bma3App implements AutoCloseable {
                     }));
             tools.add(new GetConfigTool(configTools));
             tools.add(new SetConfigTool(configTools));
+            tools.add(new CredentialsTool(oneBot, current::get));
             tools.addAll(WatchdogTools.all(watchdog, watchdogDiagnostics));
             tools.addAll(PriorityTools.all(priorities));
             if (scheduleRef.get() != null) {
@@ -504,8 +504,10 @@ public final class Bma3App implements AutoCloseable {
                         config.dataDir().resolve("downloads"), config.webconnect().binary());
                 tools.addAll(XvfbTools.all(xvfb));
             }
+            String mcpPath = config.server().mcpPath();
             mcp = new Bma3McpServer(config.server().host(), config.server().port(),
-                    config.server().mcpPath(), mcpToken, "bma3", Main.VERSION, tools)
+                    mcpPath, mcpToken, "bma3", Main.VERSION, tools,
+                    McpToolSurfaces.additionalRoutes(mcpPath, tools))
                     .authHint(authRequired ? tokenFile.file().toString() : "security.auth=none");
             mcp.start();
 
@@ -914,30 +916,6 @@ public final class Bma3App implements AutoCloseable {
             }
         }
         return new InboxEntry(localSeq, event.at(), sender, body.toString(), markers);
-    }
-
-    private static List<AccountConfig> resolveAccounts(AppConfig config,
-                                                       Map<String, String> env) {
-        List<AccountConfig> resolved = new ArrayList<>();
-        for (AppConfig.Account account : config.qqconnect().accounts()) {
-            if (!account.enabled()) {
-                continue;
-            }
-            String token = account.tokenEnv() == null || account.tokenEnv().isBlank()
-                    ? ""
-                    : secret(env, account.tokenEnv(), "qqconnect.accounts.tokenEnv");
-            resolved.add(new AccountConfig(account.accountId(),
-                    URI.create(account.endpoint()), token, true));
-        }
-        return resolved;
-    }
-
-    private static String secret(Map<String, String> env, String name, String field) {
-        String value = name == null ? null : env.get(name);
-        if (value == null || value.isBlank()) {
-            throw new ConfigException(field, "环境变量未设置: " + name);
-        }
-        return value;
     }
 
     public int mcpPort() {

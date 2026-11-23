@@ -55,10 +55,12 @@ ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 
 DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
 
-### 0.0.9-early 源码分支的 DSH 整合包
+### 0.0.9-fix1 DSH 整合包
 
 在 Linux x86_64 上运行 `bash packaging/build-dsh-bundle.sh`，生成
-`dist/mosire-bma3-dsh-managed-0.0.9-early.tgz`。在目标 DSH profile 安装该文件后，
+`dist/mosire-bma3-dsh-managed-0.0.9-fix1.tgz`。在 Windows x64 上运行
+`pwsh -File packaging/build-dsh-bundle-windows.ps1`，生成
+`dist/mosire-bma3-dsh-managed-0.0.9-fix1-windows-x64.tgz`。在目标 DSH profile 安装对应安装包后，
 启动 profile 即可运行内置 Java、MCP 与 Inbox。普通插件包也可以托管由管理员指定的本机 JAR。
 两种方式的配置与启停示例见 [DSH 托管指南](dsh-plugin/README.md#托管-bma3)。
 

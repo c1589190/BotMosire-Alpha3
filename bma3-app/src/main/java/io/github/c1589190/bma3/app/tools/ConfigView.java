@@ -8,8 +8,7 @@ import io.github.c1589190.bma3.app.config.AppConfig;
 /**
  * Redacted JSON view of the effective configuration.
  *
- * <p>Only names and non-secret values appear: secrets live in environment variables and the config
- * stores their <b>variable names</b> ({@code tokenEnv}), never the values.</p>
+ * <p>Only names and non-secret values appear, including credential references.</p>
  */
 final class ConfigView {
 
@@ -44,6 +43,7 @@ final class ConfigView {
             item.put("accountId", account.accountId());
             item.put("endpoint", account.endpoint());
             item.put("tokenEnv", account.tokenEnv());
+            item.put("tokenRef", account.tokenRef());
             item.put("enabled", account.enabled());
             item.put("selfQq", account.selfQq());
             item.put("selfName", account.selfName());

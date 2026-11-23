@@ -10,6 +10,7 @@ const run = promisify(execFile)
 const payload = new URL('../runtime/', import.meta.url)
 const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/
 const digestPattern = /^[a-f0-9]{64}$/
+const windows = process.platform === 'win32'
 
 export class RuntimeError extends Error {}
 
@@ -42,12 +43,16 @@ function releasePath(root, image) {
   return join(root, 'releases', image.version + '-' + image.sha256)
 }
 
+function launcher(directory) {
+  return windows ? join(directory, 'botmosire-a3.exe') : join(directory, 'bin', 'botmosire-a3')
+}
+
 export async function installedImage(root, image) {
   if (!validImage(image)) return null
   const directory = releasePath(root, image)
   const marker = await readJson(join(directory, 'image.json'))
   if (!validImage(marker) || marker.sha256 !== image.sha256 || marker.version !== image.version) return null
-  const executable = join(directory, 'bin', 'botmosire-a3')
+  const executable = launcher(directory)
   await access(executable)
   return { executable, image }
 }
@@ -68,9 +73,11 @@ export async function installImage(root) {
   const temporary = await mkdtemp(join(releases, '.install-'))
   try {
     // The bundled archive is immutable package content and matches the image manifest.
-    await run('tar', ['-xzf', archive, '--no-same-owner', '-C', temporary], { timeout: 30000 })
+    const tar = windows ? join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar'
+    const options = windows ? [] : ['--no-same-owner']
+    await run(tar, ['-xzf', archive, ...options, '-C', temporary], { timeout: 30000, windowsHide: true })
     const extracted = join(temporary, 'botmosire-a3')
-    await access(join(extracted, 'bin', 'botmosire-a3'))
+    await access(launcher(extracted))
     await writeJson(join(extracted, 'image.json'), manifest)
     try {
       await rename(extracted, releasePath(root, manifest))

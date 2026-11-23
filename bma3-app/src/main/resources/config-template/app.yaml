@@ -20,6 +20,7 @@ qqconnect:
     - accountId: qq-main
       endpoint: ws://127.0.0.1:3001
       tokenEnv: LLBOT_ACCESS_TOKEN
+      # tokenRef: snowluma   # 用 bma3_credentials 保存的凭据名，与 tokenEnv 二选一
       enabled: false
       # selfQq / selfName 可省：启动时用 get_login_info 自动学习
       # selfName: BotMosire

@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
@@ -77,9 +78,11 @@ class Bma3AppFakeQqTest {
             }
             assertThat(app.inboxService().status().available()).isEqualTo(1);
 
+            List<String> fullTools = toolNames(app.mcpPort(), "/mcp", mcpToken);
+            List<String> opsTools = toolNames(app.mcpPort(), "/mcp/ops", mcpToken);
             HttpClientStreamableHttpTransport transport = HttpClientStreamableHttpTransport
                     .builder("http://127.0.0.1:" + app.mcpPort())
-                    .endpoint("/mcp")
+                    .endpoint("/mcp/daily")
                     .resumableStreams(false)
                     .connectTimeout(Duration.ofSeconds(5))
                     .httpRequestCustomizer((request, method, uri, body, context) ->
@@ -87,6 +90,12 @@ class Bma3AppFakeQqTest {
                     .build();
             mcp = McpClient.sync(transport).build();
             mcp.initialize();
+            List<String> dailyTools = mcp.listTools().tools().stream().map(McpSchema.Tool::name).toList();
+            assertThat(dailyTools).hasSize(30)
+                    .contains("inbox_items", "qq_conversation_send", "qq_official_reply", "memory_context");
+            assertThat(opsTools).contains("get_config", "inbox_diagnose", "inbox_plugin_control", "qq_remote_history");
+            assertThat(Stream.concat(dailyTools.stream(), opsTools.stream()).toList())
+                    .doesNotHaveDuplicates().containsExactlyInAnyOrderElementsOf(fullTools);
 
             McpSchema.CallToolResult read = mcp.callTool(new McpSchema.CallToolRequest(
                     "qq_conversation_read",
@@ -126,6 +135,21 @@ class Bma3AppFakeQqTest {
                 app.close();
             }
             oneBot.stop();
+        }
+    }
+
+    private static List<String> toolNames(int port, String path, String token) {
+        var transport = HttpClientStreamableHttpTransport.builder("http://127.0.0.1:" + port)
+                .endpoint(path).resumableStreams(false).connectTimeout(Duration.ofSeconds(5))
+                .httpRequestCustomizer((request, method, uri, body, context) ->
+                        request.header("Authorization", "Bearer " + token))
+                .build();
+        McpSyncClient client = McpClient.sync(transport).build();
+        try {
+            client.initialize();
+            return client.listTools().tools().stream().map(McpSchema.Tool::name).toList();
+        } finally {
+            client.closeGracefully();
         }
     }
 

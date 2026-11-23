@@ -99,6 +99,14 @@ public final class ConfigLoader {
             } else if (!accountIds.add(account.accountId())) {
                 errors.add(new ConfigError("qqconnect.accounts.accountId", "重复: " + account.accountId()));
             }
+            if (!account.tokenRef().isEmpty()) {
+                if (!AppConfig.Account.validTokenRef(account.tokenRef())) {
+                    errors.add(new ConfigError("qqconnect.accounts.tokenRef", "凭据引用名称格式无效"));
+                }
+                if (account.tokenEnv() != null && !account.tokenEnv().isBlank()) {
+                    errors.add(new ConfigError("qqconnect.accounts.tokenRef", "tokenRef 与 tokenEnv 只能二选一"));
+                }
+            }
             if (account.enabled()) {
                 String endpoint = account.endpoint();
                 if (endpoint == null || !(endpoint.startsWith("ws://") || endpoint.startsWith("wss://"))) {
@@ -130,13 +138,15 @@ public final class ConfigLoader {
 
         List<AppConfig.Account> accounts = new ArrayList<>();
         for (JsonNode account : node.path("qqconnect").path("accounts")) {
+            rejectInlineSecrets(account, "qqconnect.accounts[" + accounts.size() + "]", "tokenEnv 或 tokenRef");
             accounts.add(new AppConfig.Account(
                     text(account, "accountId", ""),
                     text(account, "endpoint", ""),
                     text(account, "tokenEnv", ""),
                     account.path("enabled").asBoolean(true),
                     text(account, "selfQq", ""),
-                    text(account, "selfName", "")));
+                    text(account, "selfName", ""),
+                    text(account, "tokenRef", "")));
         }
 
         JsonNode inbox = node.path("inbox");
@@ -474,6 +484,10 @@ public final class ConfigLoader {
 
     /** Rejects inline credentials before schema validation can accidentally ignore an unknown key. */
     private static void rejectInlineSecrets(JsonNode node, String path) {
+        rejectInlineSecrets(node, path, "appSecretEnv 或 appSecretFile");
+    }
+
+    private static void rejectInlineSecrets(JsonNode node, String path, String alternatives) {
         if (node == null || node.isMissingNode() || node.isNull()) {
             return;
         }
@@ -488,13 +502,13 @@ public final class ConfigLoader {
                 if (INLINE_SECRET_FIELDS.contains(normalized)
                         || INLINE_SECRET_FIELDS.contains(field.toLowerCase(java.util.Locale.ROOT))) {
                     throw new IllegalArgumentException(
-                            fieldPath + " 禁止 inline secret；请使用 appSecretEnv 或 appSecretFile");
+                            fieldPath + " 禁止 inline secret；请使用 " + alternatives);
                 }
-                rejectInlineSecrets(entry.getValue(), fieldPath);
+                rejectInlineSecrets(entry.getValue(), fieldPath, alternatives);
             }
         } else if (node.isArray()) {
             for (int index = 0; index < node.size(); index++) {
-                rejectInlineSecrets(node.get(index), path + "[" + index + "]");
+                rejectInlineSecrets(node.get(index), path + "[" + index + "]", alternatives);
             }
         }
     }

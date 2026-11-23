@@ -1,11 +1,43 @@
 # STATUS —— 更新时间：2026-11-23 (UTC+8)
 
+## 2026-11-23：0.0.9-fix1 Windows x64 实测包
+
+- `feat/0.0.9-early` 基线 `31abbbb`。统一 Maven、JAR 和 DSH 包版本为 `0.0.9-fix1`，整合 Windows 打包、OneBot 凭据和 MCP 日常/额外入口，交付本地安装包与对应源码。
+- Windows `& .\packaging\build-dsh-bundle-windows.ps1 -MavenArgs @('-o')` rc=0，生成 `dist/mosire-bma3-dsh-managed-0.0.9-fix1-windows-x64.tgz` 和 `.sha256`。外层 SHA-256 `7b218e16ae2ea948069fbdca975b510ae31261a8e9098e72adb3cc24ad9dee5a`，内置镜像摘要与清单一致。证据 `%TEMP%\bma3-0.0.9-fix1-windows-build.log`。
+- Windows `.\mvnw.cmd -B -ntp -o -C -pl bma3-app -am -Dtest=Bma3McpServerTest,Bma3AppFakeQqTest,OneBotCredentialsIntegrationTest,ConfigLoaderTest,SetConfigToolTest,AccountRegistryTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0，47 项通过。WSL 隔离副本 `bash ./mvnw -B -ntp -o -fae -Dmaven.repo.local=/tmp/bma3-onebot-creds.2JICIGiI/maven-repo -Djava.io.tmpdir=/tmp/bma3-fix1-verification.qL5qmmDv/java-tmp test` rc=0，951 项中 949 项通过、2 项按环境跳过。`env -u DEEPSEEK_API_KEY npm --prefix dsh-plugin test -- --experimental-test-isolation=none` rc=0，190 项通过。证据 `%TEMP%\bma3-0.0.9-fix1-windows-maven-test.log`、`/tmp/bma3-fix1-verification.qL5qmmDv/{wsl-maven.log,wsl-plugin.log}`。
+- 隔离 DSH `0.2.2-rc.5` Web profile 使用 `dsh.cmd plugin --profile web add <tgz> --ignore-scripts --store-dir <隔离目录>` 从 `0.0.9-early` 升级至 `0.0.9-fix1` 并托管启动；原生 MCP 探针确认默认只挂 30 个 BMA3 工具。安装包启动器在中文及空格目录下通过内置 Java、双端口鉴权、同实例保护、退出回收检查；全量 98、日常 30、额外 68。证据 `%TEMP%\bma3-fix1-verify-89695168/` 下的 `dsh-upgrade-fix1.log`、`windows-dsh-web.log`、`windows-dsh-native.log`、`windows-packaged-smoke.log`。
+- 实际 Desktop profile 升级、真实 QQ、发布 Release 为 `NOT_RUN`。安装包和运行数据保持本地。
+
+## 2026-11-23：BMA3 MCP 日常工具入口
+
+- 基线 `feat/0.0.9-early` / `31abbbb`，工作区已有 OneBot 凭据和 Windows 整合包改动。增加日常与低频入口，托管 DSH 默认选日常入口。[设计](../superpowers/specs/2026-11-23-mcp-daily-tools-design.md) · [计划](../superpowers/plans/2026-11-23-mcp-daily-tools-implementation.md)
+- 同端口注册全量、日常、额外入口。新版托管 DSH 选日常入口，`bma3_runtime status` 报告入口类型和可选的额外入口地址。旧 JAR 仍用全量握手。
+- Windows `.\mvnw.cmd -B -ntp -o -fae -pl bma3-app -am -Dtest=Bma3McpServerTest,Bma3AppFakeQqTest -Dsurefire.failIfNoSpecifiedTests=false package` rc=0，10 项通过。`node --test dsh-plugin/test/runtime-mcp-surfaces.test.mjs` rc=0，3 项通过。证据 `%TEMP%\bma3-mcp-surfaces-windows-maven.log` 与 `%TEMP%\bma3-mcp-surfaces-windows-node.log`。
+- WSL 隔离副本 `bash ./mvnw -B -ntp -o -fae -Dmaven.repo.local=/tmp/bma3-onebot-creds.2JICIGiI/maven-repo -Djava.io.tmpdir=/tmp/bma3-mcp-surfaces.e4K8uQ6a/javatmp package` rc=0，951 项中 949 项通过、真实浏览器和 Windows DPAPI 各跳过 1 项。`env -u DEEPSEEK_API_KEY npm --prefix dsh-plugin test -- --experimental-test-isolation=none` rc=0，190 项通过。证据 `/tmp/bma3-mcp-surfaces.e4K8uQ6a/{wsl-maven.log,wsl-plugin.log}`。
+- 隔离 WSL JAR 以 `/fixture/` 启动，握手与实际 `tools/list` 得到全量 96、日常 30、额外 66，后两者无交集且并集等于全量。证据 `/tmp/bma3-mcp-surfaces.e4K8uQ6a/wsl-managed-mcp-smoke.log`。Windows 本机 DSH `0.2.2-rc.5` 的隔离托管探针用 `node "$env:TEMP\bma3-mcp-surfaces-dsh-native.cjs" <java.exe> <新版 JAR>` 执行 rc=0，实际注册 30 个 `mcp__bma3__*`、Inbox 工具正常可见，卸载后工具注销。证据 `%TEMP%\bma3-mcp-surfaces-dsh-native.log`。运行中 profile 升级、真实 QQ 为 `NOT_RUN`。
+
 ## 2026-11-23：DSH Inbox 内容审核失败恢复
 
 - 基线 `feat/0.0.9-early` / `4d41002`，工作区已有 OneBot 凭据和 Windows 整合包改动。本责任区只涉及 Inbox 插件与相关文档。[设计](../superpowers/specs/2026-11-23-dsh-inbox-content-risk-recovery-design.md) · [计划](../superpowers/plans/2026-11-23-dsh-inbox-content-risk-recovery-implementation.md)
 - 已实现失败钩子、单条面板替换和同一步内一次重试。替换后再次收到相同拒绝时暂停自动唤醒。重用 Inbox 原批次 ACK 和 `/inbox resume`。
 - WSL `env -u DEEPSEEK_API_KEY npm --prefix dsh-plugin test -- --experimental-test-isolation=none` rc=0，187 项通过，证据 `/tmp/bma3-inbox-risk.CWoh1hbC/plugin-suite.log`。Windows `node --test --test-name-pattern 'Inbox (downgrades|delegates|remains paused)' dsh-plugin/test/inbox-ack-recovery.test.mjs` rc=0，3 项通过，证据 `%TEMP%\bma3-inbox-content-risk-windows-test.log`。`npm --prefix dsh-plugin pack --dry-run --json ./dsh-plugin` rc=0，包清单含恢复模块。`git diff --check` rc=0。
 - Windows 执行 `node "$env:TEMP\bma3-inbox-content-risk-dsh-native.cjs"` rc=0。以本机 DSH `0.2.2-rc.5` 原生 Session 和 Agent Loop 接模拟模型，恢复成功、再次拒绝两种情况均只发两次请求、占同一步，且原预览从第二次输入移除。证据 `%TEMP%\bma3-inbox-content-risk-dsh-native.log`。真实 DeepSeek/QQ、运行中 profile 升级、旧会话修复均为 `NOT_RUN`。
+
+## 2026-11-23：BMA3 本体管理 OneBot 凭据
+
+- 基线 `feat/0.0.9-early` / `4d41002`，包含工作区此前的 Windows 整合包改动。新增 `bma3_credentials` 和 `qqconnect.accounts[].tokenRef`。Windows 使用原生 CurrentUser DPAPI，Linux 使用 `0600` 文件。关联账号可热重连，缺凭据时 MCP 和 Inbox 继续运行。[设计](../superpowers/specs/2026-11-23-bma3-onebot-credentials-design.md)
+- Windows `mvnw.cmd -B -ntp -C -pl bma3-app -am -Dtest=OneBotCredentialsIntegrationTest,ConfigLoaderTest,SetConfigToolTest,Bma3AppFakeQqTest,Bma3OfficialAppIntegrationTest#failedOneBotReloadKeepsOldPolicyAndDoesNotPublishNewOfficialAccounts,AccountRegistryTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0，42 项通过。以 `& .\packaging\build-dsh-bundle-windows.ps1 -MavenArgs @('-o')` 构建 rc=0。新包通过原生启动器的 MCP 持久化、重启、删除、脱敏和模拟旧 PowerShell DPAPI 导入验证。证据在 `%TEMP%\bma3-onebot-creds-check-856101bc\` 下的 `windows-tests-native.log`、`windows-build-native.log` 和 `windows-packaged-mcp-native.log`。
+- WSL Ubuntu 24.04.5 在 `/tmp/bma3-onebot-creds.2JICIGiI` 的源码快照和独立 Maven 缓存验证。初始全量 `./mvnw -B -ntp -o -fae -Dmaven.repo.local=<隔离缓存> -Djava.io.tmpdir=<隔离目录> package` rc=0，950 项中 948 项通过、跳过浏览器和 Windows 专用 DPAPI 测试各 1 项。最终引入 Windows 原生 DPAPI 绑定后复跑 `./mvnw -B -ntp -o -fae -Dmaven.repo.local=<隔离缓存> -Djava.io.tmpdir=<隔离目录> -Dtest=OneBotCredentialsIntegrationTest,ConfigLoaderTest,SetConfigToolTest,Bma3AppFakeQqTest,AccountRegistryTest -Dsurefire.failIfNoSpecifiedTests=false test` rc=0，41 项中 40 项通过，Windows 专用测试跳过。Linux 整合包经 `bash packaging/build-dsh-bundle.sh` 构建、SHA-256 检查及原生启动器 MCP 探针均 rc=0，核对了 `0600`、缺凭据诊断、热重连、进程重启恢复和脱敏。证据 `full-package.log`、`native-dependency-tests.log`、`linux-bundle.log`、`packaged-mcp.log`。
+- 两个平台的新候选包及校验文件在 `dist/onebot-credentials/`。新候选包通过隔离运行时和回环 OneBot 验证，真实 DSH profile 升级、真实 SnowLuma 账号迁移和真实 QQ 为 `NOT_RUN`。源码改动未提交、推送或发布。
+
+## 2026-11-23：Windows x64 DSH 整合候选包
+
+- 基线 `feat/0.0.9-early` / `4d41002`。新增 Windows 打包入口，内置 Java 21，沿用托管控制管道，读取凭据前验证 Windows ACL。候选包位于 `dist/mosire-bma3-dsh-managed-0.0.9-early-windows-x64.tgz`，同目录有 SHA-256。未提交、推送或发布。[设计](../superpowers/specs/2026-11-23-dsh-managed-bma3-bundle-design.md#windows-x64-整合包)
+- `& .\packaging\build-dsh-bundle-windows.ps1 -MavenArgs @('-o')` rc=0，13 个 Maven 项目打包成功。核对 tgz 和内置镜像 SHA-256 通过。用 DSH `0.2.2-rc.5` 执行 `dsh.cmd plugin --profile web add <tgz> --ignore-scripts --store-dir <隔离路径>` 和 `dsh.cmd --profile web --dump-config` 均 rc=0，隔离 Web profile 自动启动 BMA3，完成原生 MCP 和带鉴权 Inbox 接线。证据在 `%TEMP%\bma3-win-bundle-00efcfc8\` 的 `build-windows-final.log`、`dsh-install-final.log`、`dsh-config-final.log` 和 `dsh-web-final.log`。
+- 同一候选包运行隔离探针 `node <证据目录>\probe.mjs <证据目录> java` rc=0。内置 Java 在带空格和中文的路径中完成启动握手、健康与回环鉴权、重复实例拒绝、控制管道 EOF 正常退出。证据 `runtime-smoke-final.log`。
+- 下游 DSH 实测回报：Windows Desktop `0.2.2-rc.5` 在当前 `desktop` profile 中通过 `plugin_manager install_bundle` 安装同一 tgz（SHA-256 `96a5635d…be8a9`），返回 `application: applied`、`warnings: []`，无需重启。两个 bundle 行均已挂载，`bma3_runtime status` 返回 `phase: running`、`connected: true`，`mcp__bma3__inbox_status` 调用成功，Inbox 客户端连接和持久化正常。运行中的 Desktop 拒绝对该 profile 执行 `dsh.cmd plugin`，故 README 的 Desktop 入口改用进程内工具。
+- `node --test --experimental-test-isolation=none` rc=1，184 项中 179 项通过，5 项 Inbox 权限相关失败在原始提交上完全复现。`.\mvnw.cmd -B -ntp -o -fae test` rc=1，官方 QQ 模块报 18 项错误，记忆模块报 1 项，涉及文件身份和符号链接检查。应用模块整套测试未执行。证据 `plugin-tests.log`、`plugin-baseline.log`、`java-tests.log`。
+- Desktop 预设选择器、`bma3_runtime` 停止与重启、真实 QQ、真实会话注入和升级回滚为 `NOT_RUN`。下游实测时 Inbox 尚未绑定会话，默认人设文件缺失。
 
 ## 2026-11-23：0.0.9-early DSH 整合包
 

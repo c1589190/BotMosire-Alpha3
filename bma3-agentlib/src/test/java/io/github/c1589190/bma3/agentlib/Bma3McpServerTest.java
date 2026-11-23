@@ -3,6 +3,7 @@ package io.github.c1589190.bma3.agentlib;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
+import io.modelcontextprotocol.spec.McpError;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.github.c1589190.agentmosire.agentlib.llm.ToolAsset;
 import io.github.c1589190.agentmosire.agentlib.llm.ToolAssetResolver;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Timeout(30)
 class Bma3McpServerTest {
@@ -58,6 +60,50 @@ class Bma3McpServerTest {
                 client.closeGracefully();
             }
             server.close();
+        }
+    }
+
+    @Test
+    void partitionsToolListsAndCallsOnOneAuthenticatedListener() throws Exception {
+        AgentTool dailyTool = new EchoTool();
+        AgentTool opsTool = new AssetTool();
+        String dailyPath = PATH + "/daily";
+        String opsPath = PATH + "/ops";
+        try (Bma3McpServer server = new Bma3McpServer("127.0.0.1", 0, PATH, TOKEN,
+                "bma3-test", "1.0.0", List.of(dailyTool, opsTool),
+                Map.of(dailyPath, List.of(dailyTool), opsPath, List.of(opsTool)))) {
+            server.start();
+            HttpClient unauthenticated = HttpClient.newHttpClient();
+            for (String path : List.of(PATH, dailyPath, opsPath)) {
+                var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.boundPort() + path))
+                        .POST(HttpRequest.BodyPublishers.noBody()).build();
+                assertThat(unauthenticated.send(request, HttpResponse.BodyHandlers.discarding()).statusCode())
+                        .isEqualTo(401);
+            }
+            McpSyncClient full = connect(server, PATH);
+            McpSyncClient daily = connect(server, dailyPath);
+            McpSyncClient ops = connect(server, opsPath);
+            try {
+                assertThat(full.listTools().tools()).extracting(McpSchema.Tool::name)
+                        .containsExactlyInAnyOrder("bma3_echo", "bma3_asset");
+                assertThat(daily.listTools().tools()).extracting(McpSchema.Tool::name).containsExactly("bma3_echo");
+                assertThat(ops.listTools().tools()).extracting(McpSchema.Tool::name).containsExactly("bma3_asset");
+                assertThat(daily.callTool(new McpSchema.CallToolRequest("bma3_echo", Map.of("text", "ping"))).isError())
+                        .isFalse();
+                assertThatThrownBy(() -> daily.callTool(new McpSchema.CallToolRequest("bma3_asset", Map.of())))
+                        .isInstanceOf(McpError.class).hasMessageContaining("Unknown tool");
+            } finally {
+                ops.closeGracefully();
+                daily.closeGracefully();
+                full.closeGracefully();
+            }
+            server.restart();
+            McpSyncClient restarted = connect(server, opsPath);
+            try {
+                assertThat(restarted.listTools().tools()).extracting(McpSchema.Tool::name).containsExactly("bma3_asset");
+            } finally {
+                restarted.closeGracefully();
+            }
         }
     }
 
@@ -177,6 +223,17 @@ class Bma3McpServerTest {
                 .map(McpSchema.TextContent::text)
                 .findFirst()
                 .orElse("");
+    }
+
+    private static McpSyncClient connect(Bma3McpServer server, String path) {
+        var transport = HttpClientStreamableHttpTransport.builder("http://127.0.0.1:" + server.boundPort())
+                .endpoint(path).resumableStreams(false).connectTimeout(Duration.ofSeconds(5))
+                .httpRequestCustomizer((request, method, uri, body, context) ->
+                        request.header("Authorization", "Bearer " + TOKEN))
+                .build();
+        McpSyncClient client = McpClient.sync(transport).build();
+        client.initialize();
+        return client;
     }
 
     private static final class EchoTool implements AgentTool {

@@ -3,7 +3,7 @@ package io.github.c1589190.bma3.app.config;
 import java.nio.file.Path;
 import java.util.List;
 
-/** Typed application configuration. Secrets are referenced by env name, not stored here. */
+/** Typed application configuration. Credential fields contain references. */
 public record AppConfig(
         Path dataDir,
         Server server,
@@ -382,11 +382,24 @@ public record AppConfig(
      * identity; when blank, the identity is learned from {@code get_login_info} on connect.
      */
     public record Account(String accountId, String endpoint, String tokenEnv, boolean enabled,
-                          String selfQq, String selfName) {
+                          String selfQq, String selfName, String tokenRef) {
+
+        private static final java.util.regex.Pattern TOKEN_REF =
+                java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
 
         public Account {
+            tokenRef = tokenRef == null ? "" : tokenRef;
             selfQq = selfQq == null ? "" : selfQq;
             selfName = selfName == null ? "" : selfName;
+        }
+
+        public static boolean validTokenRef(String name) {
+            return name != null && TOKEN_REF.matcher(name).matches();
+        }
+
+        public Account(String accountId, String endpoint, String tokenEnv, boolean enabled,
+                       String selfQq, String selfName) {
+            this(accountId, endpoint, tokenEnv, enabled, selfQq, selfName, "");
         }
 
         /** Compatibility constructor: identity is learned at runtime. */

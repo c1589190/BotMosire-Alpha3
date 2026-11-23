@@ -53,12 +53,15 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 托管模式在 Linux 的 DSH Web profile 中使用宿主原生 MCP 客户端，已验证 DSH `0.2.2-rc.3`。profile 的
 `bma3_runtime` 工具支持 `status`、`start` 和 `stop`。显式 `stop` 会跨宿主重启保留。
 
+新版 JAR 会让托管 DSH 以 `bma3` 自动连接日常入口。旧 JAR 继续连接它原来的全量入口。
+`bma3_runtime status` 中的 `mcpSurface` 显示当前入口，`mcpOpsUrl` 显示可以按需挂载的额外工具入口。
+
 ### Linux x86_64 整合包
 
 构建后从本仓库运行：
 
 ```bash
-dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-managed-0.0.9-early.tgz"
+dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-managed-0.0.9-fix1.tgz"
 dsh --profile web
 ```
 
@@ -66,6 +69,21 @@ dsh --profile web
 每个 profile 默认使用 `$DSH_HOME/bma3/instances/<profile>/`，可用下列同一个
 `bma3-inbox` 行的 `rootDir` 指定绝对目录。整合包的 `source` 为 `bundled`。
 升级会保留配置、数据库和 Inbox 状态。
+
+### Windows x64 整合包
+
+在 DSH Desktop 的会话中，用 `plugin_manager` 的 `install_bundle` 动作安装本地
+`dist/mosire-bma3-dsh-managed-0.0.9-fix1-windows-x64.tgz`，传入安装包的绝对路径。
+DSH Desktop `0.2.2-rc.5` 已验证返回 `application: applied` 并直接生效，无需重启。
+
+Windows DSH Web 用户可以在 PowerShell 使用 CLI 安装到对应的 Web profile：
+
+```powershell
+dsh.cmd plugin --profile web add "$PWD\dist\mosire-bma3-dsh-managed-0.0.9-fix1-windows-x64.tgz"
+```
+
+整合包内置 Java 21，激活后自动接通 MCP 和 Inbox，可用 `bma3_runtime` 的 `status` 动作查看就绪状态。
+Windows 候选包以 `pwsh -File packaging/build-dsh-bundle-windows.ps1` 构建。
 
 ### 用普通插件托管本机 JAR
 
@@ -77,7 +95,7 @@ dsh --profile web
     module: inbox
     source: local-jar
     javaPath: /usr/bin/java
-    jarPath: /opt/bma3/bma3-app-0.0.9-early.jar
+    jarPath: /opt/bma3/bma3-app-0.0.9-fix1.jar
     configRoot: /opt/bma3/run
     autoStart: false
 ```
@@ -85,6 +103,14 @@ dsh --profile web
 `configRoot` 下应已有 `config/app.yaml`，配置使用 `127.0.0.1` 和 token 鉴权。
 启动 profile 后可使用 `bma3_runtime(action="start")`，也可启用 `autoStart`。
 已由外部服务启动的实例继续使用下面的连接方式，其启停由外部服务负责。
+
+## 配置 OneBot 凭据
+
+托管模式和独立 JAR 共用 BMA3 的 `bma3_credentials` 工具。Agent 可用 `set`（`name`、`value`）保存或替换
+OneBot access token。使用过旧版 Windows 启动器的用户可用 `import_windows_onebot`（`name`）导入本机已有凭据。
+例如先保存名为 `snowluma` 的凭据，再用 `set_config` 在 `qqconnect.accounts` 中设置账号的
+`tokenRef: snowluma`，接着调用 `qq_account_list` 确认连接。凭据写入后会重连使用该引用的账号。
+`list` 查看凭据名称和来源，`remove` 撤销指定凭据及对应账号连接。已有账号可继续使用 `tokenEnv`。
 
 ## 连接独立运行的 BMA3
 
@@ -99,6 +125,10 @@ jar 提供标准 MCP Streamable HTTP，连接由 DSH 自带的
 | **MCP token** | **`<config 目录>/.bma3env` 的 `MCP_TOKEN`** —— 不是 `dataDir` 下，也不是环境变量 |
 | Inbox token | 同一文件里的 `INBOX_TOKEN`（两个 token 相互独立） |
 | 鉴权模式 | `security.auth: token`（默认，要 Bearer）/ `none`（`--no-auth`，仅回环，不需要 header） |
+
+默认 `/mcp` 提供全量工具，`/mcp/daily` 提供日常收发、查询、Inbox 和记忆工具，`/mcp/ops` 提供其余工具。
+自定义 `server.mcpPath` 时在该路径下使用 `daily` 或 `ops`。三个入口共用同一个监听端口和鉴权方式。
+日常与额外入口可以一起挂载且工具不重复。全量入口适合单独挂载；不同名称接同一全量入口会产生重复工具。
 
 jar 启动时自动写这个文件（0600、原子写、存在即复用）。**不要**再读 `server.tokenEnv`：
 那个键 0.0.6 仍被解析但已不参与鉴权。
@@ -160,7 +190,7 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 |---|---|---|
 | `unknown tool "mcp__bma3__*"` | 行没挂 / 连接失败 / jar 没起 | 看 MCP 面板状态；确认 `.bma3env` 存在；重启 DSH 重新求值 |
 | MCP 请求 401 | token 取错（用了旧 env token 或 MCP/Inbox 混用） | 只认 `.bma3env` 的 `MCP_TOKEN` |
-| `serverName "bma3" is already in use` | 另有一条 `mcp-client` 行用了同一 `serverName` | 改 `serverName` 或删掉重复行 |
+| `serverName "bma3" is already in use` | 另有一条 `mcp-client` 行用了同一 `serverName` | 同一实例保留一条主连接；只给独立实例或额外工具入口使用另一个名字 |
 | 第二实例起不来 `已有 BMA3 实例运行中` | 单实例锁（同一 `dataDir`） | 先停旧实例，或换 `dataDir` |
 
 ## 媒体：OCR / ASR（DeepSeek 官方接口）
