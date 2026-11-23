@@ -1,5 +1,12 @@
 # STATUS —— 更新时间：2026-11-23 (UTC+8)
 
+## 2026-11-23：DSH Inbox 内容审核失败恢复
+
+- 基线 `feat/0.0.9-early` / `4d41002`，工作区已有 OneBot 凭据和 Windows 整合包改动。本责任区只涉及 Inbox 插件与相关文档。[设计](../superpowers/specs/2026-11-23-dsh-inbox-content-risk-recovery-design.md) · [计划](../superpowers/plans/2026-11-23-dsh-inbox-content-risk-recovery-implementation.md)
+- 已实现失败钩子、单条面板替换和同一步内一次重试。替换后再次收到相同拒绝时暂停自动唤醒。重用 Inbox 原批次 ACK 和 `/inbox resume`。
+- WSL `env -u DEEPSEEK_API_KEY npm --prefix dsh-plugin test -- --experimental-test-isolation=none` rc=0，187 项通过，证据 `/tmp/bma3-inbox-risk.CWoh1hbC/plugin-suite.log`。Windows `node --test --test-name-pattern 'Inbox (downgrades|delegates|remains paused)' dsh-plugin/test/inbox-ack-recovery.test.mjs` rc=0，3 项通过，证据 `%TEMP%\bma3-inbox-content-risk-windows-test.log`。`npm --prefix dsh-plugin pack --dry-run --json ./dsh-plugin` rc=0，包清单含恢复模块。`git diff --check` rc=0。
+- Windows 执行 `node "$env:TEMP\bma3-inbox-content-risk-dsh-native.cjs"` rc=0。以本机 DSH `0.2.2-rc.5` 原生 Session 和 Agent Loop 接模拟模型，恢复成功、再次拒绝两种情况均只发两次请求、占同一步，且原预览从第二次输入移除。证据 `%TEMP%\bma3-inbox-content-risk-dsh-native.log`。真实 DeepSeek/QQ、运行中 profile 升级、旧会话修复均为 `NOT_RUN`。
+
 ## 2026-11-23：0.0.9-early DSH 整合包
 
 - 实现基线 `99ca23a`、分支 `feat/0.0.9-early`。Linux 整合包与普通插件的本地 JAR 模式共用 `bma3_runtime`、原生 MCP 和 Inbox 接线。Java 通过控制管道跟随 DSH 生命周期，profile 锁与数据目录锁保护单实例。参见[设计](../superpowers/specs/2026-11-23-dsh-managed-bma3-bundle-design.md)与[实施计划](../superpowers/plans/2026-11-23-dsh-managed-bma3-implementation.md)。

@@ -163,6 +163,7 @@
 | D-083 | 2026-11-19 | 本会话用户消息 | 「是的，你还要准备一个没有onebot连接时的纯调试状态测试机，包括基于http debug的简单调试推送和调试消息生成等，能做到吗？这次公开发布版本应当是0.0.8-early」 | 复用 `/debug/ask` 生成调试条目，空 QQ 账号列表，独立测试数据，经本机 `dsh web` 验收。见[调试机设计](specs/2026-11-19-debug-machine-design.md)。 |
 | D-084 | 2026-11-21 | 本会话用户消息 | 「第二个问题是bot自己维护的，你不用管，你只需要出0.0.8-hotfix1来修复低权限消息的注入间隔无法设置很大就行，最高允许设置到24h」 | 普通优先级 Inbox 调度允许设置 0..86400 秒，修复首次推送上限与来源等待的交互。见[设计](specs/2026-11-21-inbox-long-normal-delay-design.md)与[发布计划](plans/2026-11-21-0.0.8-hotfix1-plan.md)。 |
 | D-085 | 2026-11-23 | 本会话用户消息 | 「那么开始实现，注意，只提交并推送到远程，不要发布，因为我待会还要补windows上的整合发行包」 | Linux 整合包和普通插件的本地 JAR 共用 profile 级托管，自动接线原生 MCP 与 Inbox。D-066 的手动连接继续用于外部服务模式。见[设计](specs/2026-11-23-dsh-managed-bma3-bundle-design.md)及[实施计划](plans/2026-11-23-dsh-managed-bma3-implementation.md)。 |
+| D-087 | 2026-11-23 | 本会话用户消息 | 「那有没有重试机制，就是dsh插件主动检测是否出现相关问题，如果有，取消本次注入、删除相关上下文元素之类的，是否可行？」<br>「那么开始修改？」 | Inbox 只在可归因于当前自动面板的第一步 `Content Exists Risk` 后替换该条预览，同一步重试一次，再次被拒则暂停自动唤醒。原始事件、消息板和原批次 ACK 保持各自语义。[设计](specs/2026-11-23-dsh-inbox-content-risk-recovery-design.md) · [实施计划](plans/2026-11-23-dsh-inbox-content-risk-recovery-implementation.md) |
 
 ## 待裁定
 

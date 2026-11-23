@@ -200,6 +200,11 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 - token 从 `envFile` 指向的 `.bma3env` 读 `INBOX_TOKEN`；读不到就不带 Authorization 头发请求。
   （0.0.5 的 `tokenFile` / `tokenEnv` 两个键已删除，写了也不会生效。）
 
+绑定会话刚收到一批 Inbox 预览时，如果 `deepseek-official` 在第一步返回 `Content Exists Risk`，
+插件通过宿主钩子把该条预览替换为仅含批次标识的通知，并在同一步重试一次。若再次被拒，
+插件暂停自动唤醒。用 `/inbox status` 查看暂停状态，用 `/inbox resume` 恢复。原始会话事件仍可追溯，
+原批次 ACK 按正常投递流程确认。功能需要宿主支持 `agent/request-error` 和单条上下文替换。
+
 ### 状态文件、锁与升级顺序
 
 | 文件 | 作用 |

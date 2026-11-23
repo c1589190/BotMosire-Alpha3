@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { createInboxClient, inboxStatePaths } from '../lib/inbox.js'
+import { inboxWakeId, registerInboxRiskRecovery } from '../lib/inbox-risk.js'
 
 const IDENTITY = 'inb_test_alpha'
 const encoder = new TextEncoder()
@@ -757,5 +758,185 @@ test('persisted bytes never contain the panel body or the inbox token', async ()
   } finally {
     client.dispose()
   }
+})
+
+function riskSession(id) {
+  const events = []
+  const nodes = []
+  return {
+    id,
+    get seq() { return events.length },
+    surface: { nodes },
+    eventAt: (seq) => events[seq],
+    append(type, data, options = {}) {
+      const seq = events.length
+      const event = { type, data, seq, ...options }
+      const op = options.surfaceOp
+      if (op === 'append') nodes.push(seq)
+      if (op?.op === 'replace') {
+        const index = nodes.indexOf(op.startSeq)
+        assert.notEqual(index, -1)
+        assert.equal(op.startSeq, op.endSeq)
+        nodes.splice(index, 1, seq)
+      }
+      events.push(event)
+      return event
+    },
+  }
+}
+
+function contentRisk(agent, overrides) {
+  return {
+    agent, turn: 2, step: 1, provider: 'deepseek-official',
+    failure: { status: 400, code: 'INVALID_REQUEST', message: 'Content Exists Risk (request_id: mock-id)' },
+    signal: new AbortController().signal, ...overrides,
+  }
+}
+
+test('Inbox downgrades one rejected wake, then pauses on another rejection without retracting ACK', async (t) => {
+  const { stateFile, paths } = tempState()
+  const messages = []
+  const diagnostics = []
+  let onError
+  let finishAck
+  const allowAck = new Promise((resolve) => { finishAck = resolve })
+  const session = riskSession('session-1')
+  const earlier = session.append('user/message', { id: 'user-1', source: { kind: 'user' } }, { surfaceOp: 'append' })
+  const agent = agentRecorder(session.id, messages, (message) => {
+    session.append('turn/start', { turn: 2 })
+    session.append('step/start', { turn: 2, step: 1 })
+    session.append('user/message', message, { surfaceOp: 'append' })
+  })
+  agent.session = session
+  const ctx = {
+    ...ctxFor(agent),
+    on(event, handler) {
+      assert.equal(event, 'agent/request-error')
+      onError = handler
+      return () => { onError = undefined }
+    },
+    logger: () => ({ warn: (message) => diagnostics.push(message) }),
+  }
+  const panel = makePanel({
+    revision: 11, pushRevision: 7,
+    items: [makeItem('itm-1', { body: 'MOCK_PANEL_BODY', frozenRevision: 7 })],
+  })
+  const server = fakeInbox({
+    panel: makePanel({ revision: 12, pushRevision: 7 }),
+    ack: async (body) => { await allowAck; return ackComplete(body, { ackedRevision: 12 }) },
+  })
+  const client = createInboxClient(ctx, config(server, stateFile))
+  t.after(() => { finishAck(); client.dispose() })
+  client.start()
+  server.push(panel)
+  await waitFor(() => messages.length === 1 && server.state.ackCalls === 1, 'initial followup and original ACK')
+
+  const failure = contentRisk(agent)
+  const next = () => assert.fail('the Inbox handler owns this recovery')
+  const original = session.surface.nodes.at(-1)
+  assert.deepEqual(await onError(failure, next), { kind: 'retry' })
+  const replacement = session.eventAt(session.surface.nodes.at(-1))
+  assert.deepEqual(replacement.sourceEventSeqs, [original])
+  assert.deepEqual(replacement.data.source, {
+    kind: 'bma3-inbox', revision: 11, pushRevision: 7, contentRiskFallback: true,
+  })
+  assert.doesNotMatch(replacement.data.content[0].text, /MOCK_PANEL_BODY/)
+  assert.match(session.eventAt(original).data.content[0].text, /MOCK_PANEL_BODY/)
+  assert.deepEqual(session.surface.nodes, [earlier.seq, replacement.seq])
+  assert.equal(client.status().paused, false)
+
+  assert.equal(await onError(failure, next), undefined)
+  assert.equal(session.seq, replacement.seq + 1)
+  assert.equal(client.status().paused, true)
+  assert.deepEqual(diagnostics, ['inbox content_risk_paused rev=11 push=7'])
+  assert.equal(JSON.parse(readFileSync(paths.v2, 'utf8')).paused, true)
+  finishAck()
+  await waitFor(() => client.status().pendingAck === null, 'ACK finishes while paused')
+  assert.deepEqual(server.state.ackBodies, [{ revision: 11, itemIds: ['itm-1'], inboxIdentity: IDENTITY }])
+  assert.equal(client.status().injectedPushRevision, 7)
+  assert.equal(messages.length, 1)
+
+  client.dispose()
+  assert.equal(onError, undefined)
+  const restored = createInboxClient(ctx, config(server, stateFile))
+  t.after(() => restored.dispose())
+  assert.equal(restored.status().paused, true)
+  assert.equal(restored.resume().paused, false)
+})
+
+test('Inbox delegates unowned failures and skips messages that cannot be replaced safely', async () => {
+  const delegates = Symbol('delegate')
+  const next = () => delegates
+  const ctx = { on(_event, handler) { return handler } }
+  const onError = registerInboxRiskRecovery(ctx, (agent) => agent.id === 'bound', () => assert.fail('unexpected pause'))
+  const wake = {
+    id: inboxWakeId(11, 7), role: 'user', content: [{ type: 'text', text: 'fixture' }],
+    source: { kind: 'bma3-inbox', revision: 11, pushRevision: 7 },
+  }
+  const synthetic = (id = 'bound') => {
+    const session = riskSession(id)
+    session.append('step/start', { turn: 2, step: 1 })
+    return { id, session }
+  }
+  const bound = synthetic()
+  bound.session.append('user/message', wake, { surfaceOp: 'append' })
+  for (const overrides of [
+    { provider: 'other' }, { step: 2 }, { turn: 3 },
+    { failure: { status: 413, code: 'INVALID_REQUEST', message: 'Content Exists Risk' } },
+    { failure: { status: 400, code: 'INVALID_REQUEST', message: 'Invalid tool schema' } },
+    { signal: AbortSignal.abort() },
+  ]) assert.equal(await onError(contentRisk(bound, overrides), next), delegates)
+  assert.equal(bound.session.seq, 2)
+
+  const foreign = synthetic('foreign')
+  foreign.session.append('user/message', wake, { surfaceOp: 'append' })
+  assert.equal(await onError(contentRisk(foreign), next), delegates)
+  assert.equal(foreign.session.seq, 2)
+  const current = synthetic()
+  current.session.append('user/message', { ...wake, source: { kind: 'user' } }, { surfaceOp: 'append' })
+  assert.equal(await onError(contentRisk(current), next), delegates)
+  bound.session.append('user/message', { ...wake, id: 'human', source: { kind: 'user' } }, { surfaceOp: 'append' })
+  assert.equal(await onError(contentRisk(bound), next), delegates)
+
+  const detached = synthetic()
+  const removed = detached.session.append('user/message', wake, { surfaceOp: 'append' })
+  detached.session.surface.nodes.splice(0, 1)
+  assert.equal(await onError(contentRisk(detached), next), delegates)
+  assert.equal(detached.session.eventAt(removed.seq), removed)
+  const readOnly = synthetic()
+  readOnly.session.append('user/message', wake, { surfaceOp: 'append' })
+  readOnly.session.append = () => { throw new Error('read-only session') }
+  assert.equal(await onError(contentRisk(readOnly), next), delegates)
+  assert.equal(await onError(contentRisk({ id: 'bound', session: { id: 'bound' } }), next), delegates)
+})
+
+test('Inbox remains paused in memory when the content-risk pause cannot be saved', async (t) => {
+  const { stateFile, paths } = tempState()
+  const warnings = []
+  let onError
+  const session = riskSession('session-1')
+  const agent = { id: session.id, session }
+  const ctx = {
+    ...ctxFor(agent),
+    on(_event, handler) { onError = handler },
+    logger: () => ({ warn: (message) => warnings.push(message) }),
+  }
+  const server = fakeInbox()
+  const client = createInboxClient(ctx, config(server, stateFile))
+  t.after(() => client.dispose())
+  client.bind(agent.id)
+  client.start()
+  session.append('step/start', { turn: 2, step: 1 })
+  session.append('user/message', {
+    id: inboxWakeId(11, 7), role: 'user', content: [{ type: 'text', text: 'fixture' }],
+    source: { kind: 'bma3-inbox', revision: 11, pushRevision: 7 },
+  }, { surfaceOp: 'append' })
+  const next = () => assert.fail('the Inbox handler owns this recovery')
+  assert.deepEqual(await onError(contentRisk(agent), next), { kind: 'retry' })
+  renameSync(paths.v2, `${paths.v2}.fixture`)
+  mkdirSync(paths.v2)
+  assert.equal(await onError(contentRisk(agent), next), undefined)
+  assert.equal(client.status().paused, true)
+  assert.deepEqual(warnings, ['inbox content_risk_pause_not_saved rev=11 push=7'])
 })
 

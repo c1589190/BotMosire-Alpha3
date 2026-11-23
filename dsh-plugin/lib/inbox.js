@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { homedir, hostname } from 'node:os'
 import { dirname } from 'node:path'
 import { createContextPusher, loadEventTextExtractor } from './context.js'
+import { inboxWakeId, registerInboxRiskRecovery } from './inbox-risk.js'
 
 const WAKE_REVISION_HEADER = '[INBOX_PANEL]'
 const ACTIVE_MARKER = '（消息更新活跃）'
@@ -2280,7 +2281,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     }
     try {
       await agent.followup({
-        id: `bma3-inbox-${revision}-${push}`,
+        id: inboxWakeId(revision, push),
         role: 'user',
         content: [{ type: 'text', text }],
         source: { kind: 'bma3-inbox', revision, pushRevision: push },
@@ -2778,16 +2779,20 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
   }
 
   if (config.sessionId) state.targetSessionId = String(config.sessionId)
-  const pause = () => {
+  const pause = ({ keepInMemoryOnFailure = false } = {}) => {
     if (disposed) throw new Error('client disposed')
     const previous = state.paused
     const previousPending = pending
+    const previousSource = pendingSource
     state.paused = true
     pending = null
     pendingSource = null
     if (persistenceEnabled && !persist()) {
-      state.paused = previous
-      pending = previousPending
+      if (!keepInMemoryOnFailure) {
+        state.paused = previous
+        pending = previousPending
+        pendingSource = previousSource
+      }
       throw new Error(`无法持久化 pause：${state.persistenceError ?? 'state_write_failed'}`)
     }
     return status()
@@ -3093,9 +3098,17 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
       + '已重置为 0，并会重新校验当前面板。旧库未确认条目仍需人工核对。'
   }
 
+  const stopRiskRecovery = registerInboxRiskRecovery(ctx,
+    (agent) => Boolean(state.targetSessionId && !disposed && !stopped
+      && agent?.id === state.targetSessionId && agent.session?.id === state.targetSessionId),
+    () => pause({ keepInMemoryOnFailure: true }))
+
   const dispose = () => {
     if (disposed) return
     disposed = true
+    if (typeof stopRiskRecovery === 'function') {
+      try { stopRiskRecovery() } catch { /* scope may already be gone */ }
+    }
     generation += 1
     controlEpoch += 1
     stopEngine()
