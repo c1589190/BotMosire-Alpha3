@@ -37,7 +37,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
     <jackson.version>2.22.4</jackson.version>
-    <agentlib.version>0.2.8</agentlib.version>
+    <agentlib.version>0.0.1-early2</agentlib.version>
     <sqlite.version>3.53.4.0</sqlite.version>
     <junit.version>6.1.3</junit.version>
     <assertj.version>3.27.7</assertj.version>
@@ -56,16 +56,6 @@
       <id>central</id>
       <url>https://repo.maven.apache.org/maven2</url>
     </repository>
-    <repository>
-      <id>projectmosire</id>
-      <url>https://c1589190.github.io/ProjectMosire/</url>
-      <releases>
-        <checksumPolicy>fail</checksumPolicy>
-      </releases>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
-    </repository>
   </repositories>
 
   <dependencyManagement>
@@ -78,7 +68,7 @@
         <scope>import</scope>
       </dependency>
       <dependency>
-        <groupId>io.mosire</groupId>
+        <groupId>io.github.c1589190.agentmosire</groupId>
         <artifactId>agentlib-mosire</artifactId>
         <version>${agentlib.version}</version>
       </dependency>

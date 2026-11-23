@@ -19,13 +19,13 @@
 
 ## 入口与包
 
-- `io.mosire.bma3.qqofficial.credential`：受保护凭据引用解析（Phase 2）。
-- `io.mosire.bma3.qqofficial.auth`：AccessToken 获取、缓存、刷新。
-- `io.mosire.bma3.qqofficial.api`：官方 HTTP OpenAPI。
-- `io.mosire.bma3.qqofficial.gateway`：WebSocket 状态机。
-- `io.mosire.bma3.qqofficial.event`：事件解析与幂等键。
-- `io.mosire.bma3.qqofficial.account`：账号注册/状态。
-- `io.mosire.bma3.qqofficial.tools`：官方 AgentTools。
+- `io.github.c1589190.bma3.qqofficial.credential`：受保护凭据引用解析（Phase 2）。
+- `io.github.c1589190.bma3.qqofficial.auth`：AccessToken 获取、缓存、刷新。
+- `io.github.c1589190.bma3.qqofficial.api`：官方 HTTP OpenAPI。
+- `io.github.c1589190.bma3.qqofficial.gateway`：WebSocket 状态机。
+- `io.github.c1589190.bma3.qqofficial.event`：事件解析与幂等键。
+- `io.github.c1589190.bma3.qqofficial.account`：账号注册/状态。
+- `io.github.c1589190.bma3.qqofficial.tools`：官方 AgentTools。
 
 配置类型位于 `bma3-app` 的 `AppConfig.QqOfficial`；当前实施进度与媒体草稿的安全限制见 [`../docs/agents/STATUS.md`](../docs/agents/STATUS.md)。
 

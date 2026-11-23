@@ -1,0 +1,139 @@
+package io.github.c1589190.bma3.app.priority;
+
+import io.github.c1589190.bma3.app.config.AppConfig;
+import io.github.c1589190.bma3.core.priority.PriorityAttributes;
+import io.github.c1589190.bma3.core.priority.PriorityRules;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+
+/**
+ * Generic priority: one most-specific source rule plus additive attribute deltas.
+ *
+ * <p>The old model mixed three incompatible things into a single {@code max(...)} — a platform
+ * weight, a per-source weight and a user-note "priority" — so a human note of 300 (meant as "this
+ * person matters") silently equalled "always wake me". Here the numbers only ever mean score:
+ * {@code sourcePriority} answers "what is this source worth", {@code attributes} answer "what did
+ * this message do", and the score is compared against two explicit thresholds
+ * ({@code dropBelow}, {@code immediateThreshold}) instead of being overloaded as a boolean.</p>
+ *
+ * <p>Per-person deltas live in the same attribute map as {@code qq_person_id/<qq>} — an exact
+ * match on the stable QQ number. Display names are deliberately not score keys (D-048): a nickname
+ * is mutable and ambiguous, so name resolution belongs to the generic search tool, not the priority
+ * formula.</p>
+ */
+public final class PriorityResolver {
+
+    public static final String PERSON_PREFIX = "qq_person_id/";
+
+    private final Supplier<AppConfig.Weighting> weighting;
+
+    public PriorityResolver(Supplier<AppConfig.Weighting> weighting) {
+        this.weighting = weighting;
+    }
+
+    /** The weighting snapshot this resolver is currently scoring with (same object ingest uses). */
+    public AppConfig.Weighting weighting() {
+        return weighting.get();
+    }
+
+    public PriorityDecision resolve(String sourceKey, String senderId, String senderName,
+                                    PriorityAttributes attributes) {
+        return resolve(sourceKey, senderId, senderName, attributes, "");
+    }
+
+    /**
+     * Same scoring, plus {@code text} for the configured content rules ({@code weighting.rules}).
+     * Every matching rule applies and stacks; the score is still clamped and compared against the
+     * two thresholds exactly once.
+     */
+    public PriorityDecision resolve(String sourceKey, String senderId, String senderName,
+                                    PriorityAttributes attributes, String text) {
+        AppConfig.Weighting current = weighting.get();
+        List<String> reasons = new ArrayList<>();
+
+        int base = PriorityRules.match(current.sourcePriority(), sourceKey)
+                .map(match -> {
+                    reasons.add("source=" + sourceKey + " → " + match.ruleKey()
+                            + " " + match.value());
+                    return match.value();
+                })
+                .orElseGet(() -> {
+                    reasons.add("source=" + sourceKey + " → 无规则，按 0");
+                    return 0;
+                });
+
+        int delta = 0;
+        if (attributes != null) {
+            for (String key : attributes.keys()) {
+                int value = current.attribute(key);
+                if (value != 0) {
+                    delta += value;
+                    reasons.add(key + " " + signed(value));
+                }
+            }
+        }
+        delta += patternDelta(current, senderId, senderName, reasons);
+        delta += contentDelta(current, text, sourceKey, reasons);
+
+        int raw = base + delta;
+        int clipped = Math.min(current.maxPriority(), raw);
+        if (clipped != raw) {
+            reasons.add("clamp " + raw + " → " + clipped + "（maxPriority）");
+        }
+        boolean dropped = clipped < current.dropBelow();
+        if (dropped) {
+            reasons.add("total " + clipped + " < dropBelow " + current.dropBelow() + " ⇒ 丢弃");
+        }
+        boolean immediate = !dropped && clipped >= current.immediateThreshold();
+        if (!dropped) {
+            reasons.add("total " + clipped + (immediate ? " ≥ " : " < ")
+                    + "immediateThreshold " + current.immediateThreshold()
+                    + (immediate ? " ⇒ 立即推送" : " ⇒ 进入批次"));
+        }
+        return new PriorityDecision(clipped, dropped, immediate, reasons);
+    }
+
+    /** Adds every matching {@code weighting.rules} delta; rules stack in declared order. */
+    private static int contentDelta(AppConfig.Weighting current, String text, String sourceKey,
+                                    List<String> reasons) {
+        int delta = 0;
+        String body = text == null ? "" : text;
+        for (AppConfig.ContentRule rule : current.rules()) {
+            if (!rule.matches(body, sourceKey)) {
+                continue;
+            }
+            delta += rule.delta();
+            reasons.add("rule:" + rule.match() + ":"
+                    + (rule.source().isBlank() ? "" : rule.source() + ":")
+                    + rule.pattern() + " " + signed(rule.delta()));
+        }
+        return delta;
+    }
+
+    /** Adds {@code qq_person_id/<qq>} rule values that match this message's sender. */
+    private static int patternDelta(AppConfig.Weighting current, String senderId,
+                                    String senderName, List<String> reasons) {
+        int delta = 0;
+        for (Map.Entry<String, Integer> entry : current.attributes().entrySet()) {
+            String key = entry.getKey();
+            Integer value = entry.getValue();
+            if (key == null || value == null || value == 0) {
+                continue;
+            }
+            if (key.startsWith(PERSON_PREFIX)) {
+                String target = key.substring(PERSON_PREFIX.length());
+                if (!target.isBlank() && target.equals(senderId)) {
+                    delta += value;
+                    reasons.add(key + " " + signed(value));
+                }
+            }
+        }
+        return delta;
+    }
+
+    private static String signed(int value) {
+        return value > 0 ? "+" + value : Integer.toString(value);
+    }
+}

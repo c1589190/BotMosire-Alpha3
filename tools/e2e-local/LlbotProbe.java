@@ -1,5 +1,5 @@
 import com.fasterxml.jackson.databind.JsonNode;
-import io.mosire.bma3.qqconnect.onebot.OneBot11Client;
+import io.github.c1589190.bma3.qqconnect.onebot.OneBot11Client;
 
 import java.net.URI;
 import java.time.Duration;

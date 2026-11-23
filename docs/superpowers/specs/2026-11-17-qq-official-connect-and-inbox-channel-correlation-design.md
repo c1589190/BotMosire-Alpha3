@@ -652,7 +652,7 @@ channel_audit(
 - [计划](../plans/2026-11-17-qq-official-connect-and-channel-correlation-plan.md)
 - [官方 API 上游摘要](../../upstream/2026-11-17-qq-official-bot-api.md)
 - 现有消息板、Inbox、OneBot 代码：
-  - `bma3-core/src/main/java/io/mosire/bma3/core/store/`
-  - `bma3-inbox/src/main/java/io/mosire/bma3/inbox/core/`
-  - `bma3-app/src/main/java/io/mosire/bma3/app/Bma3App.java`
-  - `bma3-qqconnect/src/main/java/io/mosire/bma3/qqconnect/`
+  - `bma3-core/src/main/java/io/github/c1589190/bma3/core/store/`
+  - `bma3-inbox/src/main/java/io/github/c1589190/bma3/inbox/core/`
+  - `bma3-app/src/main/java/io/github/c1589190/bma3/app/Bma3App.java`
+  - `bma3-qqconnect/src/main/java/io/github/c1589190/bma3/qqconnect/`

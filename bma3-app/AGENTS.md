@@ -15,8 +15,8 @@
 
 ## 入口
 
-- 组合根：`src/main/java/io/mosire/bma3/app/Bma3App.java`
+- 组合根：`src/main/java/io/github/c1589190/bma3/app/Bma3App.java`
 - 配置：`config/AppConfig.java`、`config/ConfigLoader.java`、`config/ConfigWatcher.java`
-- 优先级：`src/main/java/io/mosire/bma3/app/priority/*`
+- 优先级：`src/main/java/io/github/c1589190/bma3/app/priority/*`
 - 配置读写：`config/ConfigEditor.java`、`tools/{SetConfigTool,GetConfigTool,ConfigView}.java`
 - 设计：`../docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md`

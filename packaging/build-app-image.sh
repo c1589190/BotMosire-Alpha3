@@ -29,7 +29,7 @@ jpackage \
   --name botmosire-a3 \
   --input "$BUILD/input" \
   --main-jar app.jar \
-  --main-class io.mosire.bma3.app.Main \
+  --main-class io.github.c1589190.bma3.app.Main \
   --runtime-image "$BUILD/runtime" \
   --java-options "-Dfile.encoding=UTF-8" \
   --dest "$DIST"

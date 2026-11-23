@@ -1,0 +1,41 @@
+package io.github.c1589190.bma3.inbox.tools;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.github.c1589190.agentmosire.agentlib.tool.AgentTool;
+import io.github.c1589190.agentmosire.agentlib.tool.ToolResult;
+import io.github.c1589190.bma3.inbox.core.InboxService;
+import java.util.List;
+
+/** Tool catalog for the inbox module. */
+public final class InboxTools {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
+    private InboxTools() {
+    }
+
+    public static List<AgentTool> all(InboxService service) {
+        return all(service, "unknown");
+    }
+
+    public static List<AgentTool> all(InboxService service, String version) {
+        return List.of(new InboxStatusTool(service), new InboxListTool(service),
+                new InboxItemsTool(service), new InboxGetTool(service),
+                new InboxAckTool(service), new InboxDismissTool(service),
+                new InboxWaitTool(service), new InboxWaitQuietTool(service),
+                new InboxDiagnoseTool(service, version),
+                new InboxPluginControlTool(service));
+    }
+
+    static ToolResult json(Object value) {
+        try {
+            return ToolResult.ok(MAPPER.writeValueAsString(value));
+        } catch (Exception failure) {
+            return ToolResult.error("SERIALIZATION_FAILED", "无法序列化结果");
+        }
+    }
+}

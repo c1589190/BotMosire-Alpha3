@@ -18,7 +18,7 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>io.mosire</groupId>
+      <groupId>io.github.c1589190.agentmosire</groupId>
       <artifactId>agentlib-mosire</artifactId>
     </dependency>
     <dependency>

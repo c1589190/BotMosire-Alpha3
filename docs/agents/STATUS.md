@@ -1,5 +1,30 @@
 # STATUS —— 更新时间：2026-11-23 (UTC+8)
 
+## 2026-11-23：升级 AgentLib 到 0.0.1-early2
+
+- 基线 `feat/0.0.8-windows-mcp` / `0fa155a`，远端 `origin`。工作树已有 BMA3 包名迁移与前一轮 AgentLib 接入。
+- Maven 依赖切换到 `io.github.c1589190.agentmosire:agentlib-mosire:0.0.1-early2`，Java 引用迁移至 `io.github.c1589190.agentmosire.agentlib`，同步源码构建文档及依赖引导。已比对本地 Maven 制品的 POM 和 142 个 Java 源文件，与本机 AgentMosire 标签 `0.0.1-early2`（`803ed5c`）一致。
+- Linux 全量 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -fae clean test` rc=0，948 项中 947 项通过，1 项真实浏览器测试跳过。证据 `/tmp/bma3-agentlib-early2.RofJrHTk/maven-test.log`。
+- Linux 隔离副本 `MAVEN_ARGS=-o NO_PROXY=127.0.0.1,localhost bash packaging/smoke.sh` 与 `python3 /tmp/bma3-agentlib-early2.RofJrHTk/packaged-mcp.py` 均 rc=0。镜像启动、`/healthz`、Bearer 鉴权、MCP 初始化、工具枚举和 `inbox_status` 调用通过。包内 211 个 AgentLib 类与本机 Maven JAR 逐字节一致。证据 `/tmp/bma3-agentlib-early2.RofJrHTk/packaging-smoke.log`、`/tmp/bma3-agentlib-early2.RofJrHTk/packaged-mcp.log`。
+- Windows 原生构建与运行、真实 DSH 和 QQ 联调为 `NOT_RUN`。
+
+## 2026-11-23：迁移 BMA3 Java 包名
+
+- 基线 `feat/0.0.8-windows-mcp` / `0fa155a`，远端 `origin`。工作树已有 AgentMosire 依赖迁移、架构审查和会话导出。
+- 各模块的 Java 包、源码目录和打包主类已迁至 `io.github.c1589190.bma3`，源码扫描测试和独立回环工具已同步。
+- Linux 全量 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -fae clean test` rc=0，948 项中 947 项通过，1 项真实浏览器测试跳过。证据 `/tmp/bma3-java-package.YQVXr8TX/maven-final.log`。
+- Linux 隔离副本 `MAVEN_ARGS=-o NO_PROXY=127.0.0.1,localhost bash packaging/smoke.sh`、`java -jar bma3-app/target/bma3-app-0.0.8-hotfix1.jar --version` 和镜像内回环 MCP 检查均 rc=0。镜像启动、`/healthz`、Bearer 鉴权、工具枚举和 `inbox_status` 均通过。证据 `/tmp/bma3-java-package.YQVXr8TX/packaging-smoke.log`、`/tmp/bma3-java-package.YQVXr8TX/jar-launch.log`、`/tmp/bma3-java-package.YQVXr8TX/packaged-mcp.log`。
+- 从旧包名的 `target/` 执行 `./mvnw -B -ntp -o -pl bma3-app -am -DskipTests package` rc=0，结果 JAR 含新主类，旧命名空间的类条目为 0。证据 `/tmp/bma3-java-package.YQVXr8TX/incremental.log`、`/tmp/bma3-java-package.YQVXr8TX/incremental-jar.log`。
+- `BMA3_E2E_SKIP_MAVEN=1 NO_PROXY=127.0.0.1,localhost node tools/e2e-local/e2e_inbox_ack_recovery.mjs` rc=0，33 项通过。证据 `/tmp/bma3-java-package.YQVXr8TX/inbox-ack.log`。Windows 原生构建与运行、真实 DSH 和 QQ 联调为 `NOT_RUN`。
+
+## 2026-11-23：接入 AgentMosire AgentLib
+
+- 基线 `feat/0.0.8-windows-mcp` / `0fa155a`，远端 `origin`。开工时已有状态改动、架构审查和会话导出。
+- BMA3 直接依赖本机 Maven 仓库中的 `io.github.c1589190:agentlib-mosire:0.0.1-early`，Java 引用已迁移至 `io.github.c1589190.agentlib`，父 POM 已移除 ProjectMosire 仓库。源码构建文档及 Windows 引导已同步使用 AgentMosire 源码或本地已安装制品。
+- Linux 全量 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o clean test` rc=0，948 项中 947 项通过，1 项真实浏览器测试跳过。证据 `/tmp/bma3-agentmosire.Ktkztlp7/maven-loopback.log`。
+- Linux 隔离副本 `MAVEN_ARGS=-o NO_PROXY=127.0.0.1,localhost bash packaging/smoke.sh` rc=0，镜像启动且 `/healthz` 返回 200。回环 `python3 /tmp/bma3-agentmosire.Ktkztlp7/packaged-mcp.py` rc=0，核对包内 211 个 AgentLib 类与本机 Maven JAR 字节一致，验证未鉴权请求返回 401，以及鉴权后的 MCP 初始化、`tools/list` 和 `inbox_status` 调用。证据 `/tmp/bma3-agentmosire.Ktkztlp7/packaging-smoke.log`、`/tmp/bma3-agentmosire.Ktkztlp7/packaged-mcp.log`。
+- 本轮验收范围为 Linux。Windows 原生构建与运行、真实 DSH 和 QQ 联调为 `NOT_RUN`。
+
 ## 2026-11-23：AgentLib 升级与 DSH 安装调查
 
 - 基线 `feat/0.0.8-windows-mcp` / `a30ea39`，远端 `origin` 为本仓 GitHub。开工时已有状态改动、架构审查和会话导出。

@@ -19,9 +19,9 @@
 
 ## 入口
 
-- 模型：`src/main/java/io/mosire/bma3/inbox/core/{InboxEntry,InboxItem,PanelItem,InboxPanel,InboxService}.java`
-- HTTP/SSE：`src/main/java/io/mosire/bma3/inbox/http/InboxHttpServer.java`
-- 工具：`src/main/java/io/mosire/bma3/inbox/tools/*.java`
+- 模型：`src/main/java/io/github/c1589190/bma3/inbox/core/{InboxEntry,InboxItem,PanelItem,InboxPanel,InboxService}.java`
+- HTTP/SSE：`src/main/java/io/github/c1589190/bma3/inbox/http/InboxHttpServer.java`
+- 工具：`src/main/java/io/github/c1589190/bma3/inbox/tools/*.java`
 - 设计：`../docs/superpowers/specs/2026-11-10-inbox-panel-sse-design.md`
 
 ## 验证

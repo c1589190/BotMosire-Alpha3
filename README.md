@@ -44,14 +44,16 @@ DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-hotfix1` 预发布
 - 独立 JAR，需要 JDK 21。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-hotfix1/bma3-app-0.0.8-hotfix1.jar)
 - DSH 插件。[下载](https://github.com/c1589190/BotMosire-Alpha3/releases/download/v0.0.8-hotfix1/mosire-bma3-dsh-0.0.8-hotfix1.tgz)
 
-从源码构建 app-image：
+源码构建需要 JDK 21，以及当前 Maven 本地仓库中已安装的 AgentMosire 父 POM 和 `io.github.c1589190.agentmosire:agentlib-mosire:0.0.1-early2`。首次准备依赖时，在对应版本的 AgentMosire 源码根目录运行 `./mvnw -B -ntp -pl AgentLib -am -DskipTests install`。
+
+回到本仓库构建 app-image：
 
 ```bash
 bash packaging/build-app-image.sh
 ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 ```
 
-源码构建需要 JDK 21。Maven 从 ProjectMosire 的公开仓库解析 `io.mosire:agentlib-mosire:0.2.8`。DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
+DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
 
 ### 2. 运行目录与配置
 

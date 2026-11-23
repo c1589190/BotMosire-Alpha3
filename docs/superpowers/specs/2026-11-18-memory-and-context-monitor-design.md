@@ -107,7 +107,7 @@ CREATE TABLE context_gap (
 
 ## 6. 检索与排序
 
-0. 取词：query 先过 `bma3-memory/src/main/java/io/mosire/bma3/memory/QueryTerms.java`。按标点/空白切块，每块整体保留（逐字引用的短句因此仍能命中），块内每个 CJK 连续段再展开成**全部二字 gram**（＋段本身），去重后截到 `MAX_TERMS = 16`。原因见 §12 P4：A18 首跑 `recall@8 = 0.30`，根因是"查询是句子、索引只能按字面匹配"——整句在正文里从不出现，只有恰好是正文子串的短词能中（D-081）。
+0. 取词：query 先过 `bma3-memory/src/main/java/io/github/c1589190/bma3/memory/QueryTerms.java`。按标点/空白切块，每块整体保留（逐字引用的短句因此仍能命中），块内每个 CJK 连续段再展开成**全部二字 gram**（＋段本身），去重后截到 `MAX_TERMS = 16`。原因见 §12 P4：A18 首跑 `recall@8 = 0.30`，根因是"查询是句子、索引只能按字面匹配"——整句在正文里从不出现，只有恰好是正文子串的短词能中（D-081）。
 1. 标签：对**同一组取词**逐个在 `tags_norm` 上做 `LIKE '%|term|%'`，命中行按命中词数取 rank_tag（因此"记忆的标签权重"能命中标签 `标签`）。
 2. 正文：对每个取词单独检索——不足 3 个码点走 `text LIKE '%term%' ESCAPE '\\'`（`created_at` 降序取池；FTS5 `trigram` 不索引 <3 码点子串，中文最常用的二字词否则永久失效，D-080 ①），否则走 `memory_fts MATCH '"term"'` + `ORDER BY bm25(memory_fts)`；然后按**命中的不同词数降序 → 词内最小排名升序 → id 降序**编号成 rank_text，所以"负责部署"排在只有"负责"的行前面。
 3. 合分：RRF `score = tagBoost/(60+rank_tag) + 1/(60+rank_text)`，`tagBoost` 可配置、默认 `10.0`（D-078 ⑥）。
@@ -117,7 +117,7 @@ CREATE TABLE context_gap (
 
 ## 7. 上下文通道（插件 → jar）
 
-- 路由：`POST /v1/inboxes/{inboxId}/plugin/context`（追加）、`GET /v1/inboxes/{inboxId}/plugin/context?after=<event_seq>&limit=`（补洞）。挂在既有路由表 `bma3-inbox/src/main/java/io/mosire/bma3/inbox/http/InboxHttpServer.java:97-140` 内，除 `/healthz` 外全部 Bearer（与现有一致）。
+- 路由：`POST /v1/inboxes/{inboxId}/plugin/context`（追加）、`GET /v1/inboxes/{inboxId}/plugin/context?after=<event_seq>&limit=`（补洞）。挂在既有路由表 `bma3-inbox/src/main/java/io/github/c1589190/bma3/inbox/http/InboxHttpServer.java:97-140` 内，除 `/healthz` 外全部 Bearer（与现有一致）。
 - 请求体：`{sessionId, capturedThroughSeq, entries:[{eventSeq, kind, at, speaker, text}], sentAt}`。
 - 幂等：`(session_id, event_seq)` 唯一索引，重复推送覆盖同一行、不新增。
 - 有界：条目数 ≤ `memory.context.maxEntries`（默认 200，**Agent 可用既有 `set_config` 热改**），超限按 `(session_id, event_seq)` 淘汰最旧；单条 `body` ≤ `maxEntryChars`（默认 10240），超出截断并 `truncated=1`。
@@ -126,7 +126,7 @@ CREATE TABLE context_gap (
 
 ## 8. watchdog 强化
 
-在 `bma3-watchdog/src/main/java/io/mosire/bma3/watchdog/probe/Probes.java` 增加一个 `plugin-context` 探针，判定三件事：
+在 `bma3-watchdog/src/main/java/io/github/c1589190/bma3/watchdog/probe/Probes.java` 增加一个 `plugin-context` 探针，判定三件事：
 
 1. **停更**：插件在线（心跳正常）且已绑定会话，但 `max(event_seq)` 在 `staleAfterSeconds`（默认 600s）内没有推进 → `DEGRADED`。
 2. **断层**：`context_gap` 有未确认记录 → `DEGRADED` 并报 `from_seq..to_seq`。
@@ -190,7 +190,7 @@ A1–A16 为 P0/P1 的合并门禁；A17 依赖宿主重启；A18 只在 P4 前�
 | `memory.context.maxEntryChars` | `10240` | 单条正文上限，超出截断（要能装下完整 dsh 响应，m00645 定 10KB 量级） |
 | `memory.context.staleAfterSeconds` | `600` | 水位探针停更阈值 |
 
-以上每一项都是**配置键**，实现只允许出现在 `AppConfig.Memory` 记录的 `defaults()` 与 compact constructor 的校验区间里（照 `AppConfig.Watchdog` 现有写法：`bma3-app/src/main/java/io/mosire/bma3/app/config/AppConfig.java:77-102`），由 `set_config` 热改；工具实现里不得出现字面量。代码中唯一真正写死的量是语义哨兵 `weight = -1`（D-078「静音」的唯一表达，可配置就失去意义）与表名/列名/工具名/路由路径这些协议面。
+以上每一项都是**配置键**，实现只允许出现在 `AppConfig.Memory` 记录的 `defaults()` 与 compact constructor 的校验区间里（照 `AppConfig.Watchdog` 现有写法：`bma3-app/src/main/java/io/github/c1589190/bma3/app/config/AppConfig.java:77-102`），由 `set_config` 热改；工具实现里不得出现字面量。代码中唯一真正写死的量是语义哨兵 `weight = -1`（D-078「静音」的唯一表达，可配置就失去意义）与表名/列名/工具名/路由路径这些协议面。
 
 ## 12. 分期
 
