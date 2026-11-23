@@ -51,7 +51,7 @@ bash packaging/build-app-image.sh
 ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 ```
 
-源码构建需要 JDK 21。Maven 从 ProjectMosire 的公开仓库解析 `io.mosire:agentlib-mosire:0.2.7-early`。DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
+源码构建需要 JDK 21。Maven 从 ProjectMosire 的公开仓库解析 `io.mosire:agentlib-mosire:0.2.8`。DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
 
 ### 2. 运行目录与配置
 

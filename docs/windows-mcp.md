@@ -1,6 +1,6 @@
 # Windows 原生运行与 Codex MCP
 
-`0.0.8-hotfix1` 使用 JDK 21。在 Windows PowerShell 中运行下列步骤。Maven wrapper 首次使用时会下载 Maven，并从 ProjectMosire 的公开 Maven 仓库解析 AgentLib `0.2.7-early`。
+Windows 源码构建使用 JDK 21。在 Windows PowerShell 中运行下列步骤。Maven wrapper 首次使用时会下载 Maven，并从 ProjectMosire 的公开 Maven 仓库解析 AgentLib `0.2.8`。
 
 在仓库根目录执行：
 

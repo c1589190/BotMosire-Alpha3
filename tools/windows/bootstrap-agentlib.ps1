@@ -7,17 +7,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$revision = '0f494df5c5dc800dffa37ddaabdbdbb31f1fe47e'
-$expectedHash = '73aca85f607c88f27ffe3c5a2c0c760fa1f5cb528b4ed59498d555ef640e3880'
-$sourceRoot = Join-Path $repoRoot 'build\dependencies\projectmosire-0f494df5c5dc'
+$agentlibVersion = '0.2.8'
+$revision = '5435f94d1b3f3a6e5785b66c289ec032f59d8d0a'
+$expectedHash = 'e39985860be4b3cdbacaa0d26b8d4bc9da2774dfc91a838a77ab3c6ec464c6ef'
+$sourceRoot = Join-Path $repoRoot "build\dependencies\projectmosire-$($revision.Substring(0, 12))"
 $artifactRoot = Join-Path $env:USERPROFILE '.m2\repository\io\mosire'
-$jar = Join-Path $artifactRoot 'agentlib-mosire\0.2.7-early\agentlib-mosire-0.2.7-early.jar'
-$pom = Join-Path $artifactRoot 'agentlib-mosire\0.2.7-early\agentlib-mosire-0.2.7-early.pom'
-$parent = Join-Path $artifactRoot 'mosire-parent\0.2.7-early\mosire-parent-0.2.7-early.pom'
+$jar = Join-Path $artifactRoot "agentlib-mosire\$agentlibVersion\agentlib-mosire-$agentlibVersion.jar"
+$pom = Join-Path $artifactRoot "agentlib-mosire\$agentlibVersion\agentlib-mosire-$agentlibVersion.pom"
+$parent = Join-Path $artifactRoot "mosire-parent\$agentlibVersion\mosire-parent-$agentlibVersion.pom"
 
 if (-not $Rebuild -and (Test-Path -LiteralPath $jar) -and
         (Test-Path -LiteralPath $pom) -and (Test-Path -LiteralPath $parent)) {
-    Write-Host 'AgentLib 0.2.7-early is already present in the Windows Maven cache.'
+    Write-Host "AgentLib $agentlibVersion is already present in the Windows Maven cache."
     Write-Host 'Use -Rebuild to reinstall it from the pinned public source.'
     return
 }
@@ -108,7 +109,7 @@ try {
     } finally {
         Pop-Location
     }
-    Write-Host 'AgentLib 0.2.7-early is ready. Run BMA3 tests separately with .\mvnw.cmd test.'
+    Write-Host "AgentLib $agentlibVersion is ready. Run BMA3 tests separately with .\mvnw.cmd test."
 } finally {
     [Environment]::SetEnvironmentVariable('MAVEN_OPTS', $oldMavenOpts, 'Process')
 }

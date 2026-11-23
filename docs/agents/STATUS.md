@@ -1,4 +1,11 @@
-# STATUS —— 更新时间：2026-11-19 (UTC+8)
+# STATUS —— 更新时间：2026-11-23 (UTC+8)
+
+## 2026-11-23：AgentLib 升级与 DSH 安装调查
+
+- 基线 `feat/0.0.8-windows-mcp` / `a30ea39`，远端 `origin` 为本仓 GitHub。开工时已有状态改动、架构审查和会话导出。
+- 父 POM、构建文档和 Windows 依赖引导脚本已更新到 ProjectMosire 公开发布的 AgentLib `0.2.8`。已核对公开 jar/POM 校验值和 Windows 固定源码 ZIP 的 SHA-256，镜像内 233 个 AgentLib 类与公开 jar 一致。发布入口见 [ProjectMosire v0.2.8](https://github.com/c1589190/ProjectMosire/releases/tag/v0.2.8)。
+- 全量 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o test` rc=0，948 项、0 失败、0 错误、1 项真实浏览器跳过。隔离副本 `MAVEN_ARGS=-o NO_PROXY=127.0.0.1,localhost bash packaging/smoke.sh` rc=0，Linux 应用镜像启动和 `/healthz` 通过。Windows PowerShell `Parser.ParseFile` rc=0，原生 Windows 重建与运行 `NOT_RUN`。日志在 `/tmp/bma3-agentlib-dsh-1123.8Y39dHk9/` 的 `maven-test.log`、`packaging-smoke.log`、`windows-powershell-parse.log` 和 `windows-bootstrap-pin.log`。
+- [DSH 单命令安装调查](../superpowers/reports/2026-11-23-dsh-one-command-install-survey.md)已完成。隔离 Web profile 的 `dsh plugin --profile web add <tgz>`、`--dump-config` 和卸载均 rc=0。放进同一 `.tgz` 的 Java 镜像也通过安装与校验。包内自动启动、真实宿主端到端联调与远程包安装 `NOT_RUN`。下一步按用户对后端启停和首发平台的选择制定专题 spec。
 
 ## 2026-11-19：0.0.8-early 预发布与 HTTP 调试机
 
