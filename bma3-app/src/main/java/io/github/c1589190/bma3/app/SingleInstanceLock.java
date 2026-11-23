@@ -18,6 +18,13 @@ import java.nio.file.StandardOpenOption;
  * lets a second process lock a fresh inode and bypass the guard.</p>
  */
 public final class SingleInstanceLock implements AutoCloseable {
+    static final class Held extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        Held(String message) {
+            super(message);
+        }
+    }
 
     /** Lock file name inside the data directory. */
     public static final String LOCK_FILE = ".bma3.lock";
@@ -55,7 +62,7 @@ public final class SingleInstanceLock implements AutoCloseable {
             lock = channel.tryLock(LOCK_OFFSET, 1L, false);
         } catch (OverlappingFileLockException heldByThisJvm) {
             channel.close();
-            throw new IllegalStateException("已有 BMA3 实例持有 " + file + "（同一进程内重复启动）");
+            throw new Held("已有 BMA3 实例持有 " + file + "（同一进程内重复启动）");
         } catch (IOException failure) {
             channel.close();
             throw failure;
@@ -63,7 +70,7 @@ public final class SingleInstanceLock implements AutoCloseable {
         if (lock == null) {
             String owner = readOwner(file);
             channel.close();
-            throw new IllegalStateException("已有 BMA3 实例运行中（" + owner + "），锁文件: " + file);
+            throw new Held("已有 BMA3 实例运行中（" + owner + "），锁文件: " + file);
         }
         try {
             channel.truncate(0);

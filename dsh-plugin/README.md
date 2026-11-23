@@ -1,10 +1,10 @@
 # @mosire/bma3-dsh
 
-BMA3 的 DSH 薄插件。**只做两件事**：
+BMA3 的 DSH 插件有两个加载模块。
 
 | 模块 | 作用 |
 |---|---|
-| `inbox` | 把 BMA3 Inbox 注入 DSH 会话：SSE 唤醒、revision 推送、`/inbox` 斜杠命令 |
+| `inbox` | 把 BMA3 Inbox 注入 DSH 会话，也可以托管 Java 进程并连接原生 MCP |
 | `preset` | 注册 `bma3` 预设：注入你的系统提示词 + 挂一层薄工具面（含 OCR/ASR 两个媒体工具） |
 
 **没有白名单，没有 `restrict`，没有策略层** —— 预设挂什么，会话就看到什么（D-067）。
@@ -48,10 +48,48 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 会话里选 `BMA3` 即生效。
 
-## 连上 bma3 jar（0.0.8-hotfix1）
+## 托管 BMA3
 
-插件**不做桥接**（D-066）。jar 是一个标准 MCP Streamable HTTP 服务，连接由 DSH 自带的
-`@deepseek-ai/dsh-mcp-client` 完成——**写一行 profile 配置即可，不需要 Agent 每次去发现**。
+托管模式在 Linux 的 DSH Web profile 中使用宿主原生 MCP 客户端，已验证 DSH `0.2.2-rc.3`。profile 的
+`bma3_runtime` 工具支持 `status`、`start` 和 `stop`。显式 `stop` 会跨宿主重启保留。
+
+### Linux x86_64 整合包
+
+构建后从本仓库运行：
+
+```bash
+dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-managed-0.0.9-early.tgz"
+dsh --profile web
+```
+
+首次启动 profile 会校验并安装内置镜像，启动 BMA3 并自动接通 MCP 与 Inbox。
+每个 profile 默认使用 `$DSH_HOME/bma3/instances/<profile>/`，可用下列同一个
+`bma3-inbox` 行的 `rootDir` 指定绝对目录。整合包的 `source` 为 `bundled`。
+升级会保留配置、数据库和 Inbox 状态。
+
+### 用普通插件托管本机 JAR
+
+安装普通插件包。在目标 profile 的 `cordis.patch.yml` 中覆盖 `bma3-inbox` 行：
+
+```yaml
+- id: bma3-inbox
+  config:
+    module: inbox
+    source: local-jar
+    javaPath: /usr/bin/java
+    jarPath: /opt/bma3/bma3-app-0.0.9-early.jar
+    configRoot: /opt/bma3/run
+    autoStart: false
+```
+
+`configRoot` 下应已有 `config/app.yaml`，配置使用 `127.0.0.1` 和 token 鉴权。
+启动 profile 后可使用 `bma3_runtime(action="start")`，也可启用 `autoStart`。
+已由外部服务启动的实例继续使用下面的连接方式，其启停由外部服务负责。
+
+## 连接独立运行的 BMA3
+
+jar 提供标准 MCP Streamable HTTP，连接由 DSH 自带的
+`@deepseek-ai/dsh-mcp-client` 完成（D-066）。
 
 ### 端点与凭据从哪来
 

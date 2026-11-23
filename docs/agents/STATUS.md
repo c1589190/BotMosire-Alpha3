@@ -1,5 +1,13 @@
 # STATUS —— 更新时间：2026-11-23 (UTC+8)
 
+## 2026-11-23：0.0.9-early DSH 整合包
+
+- 实现基线 `99ca23a`、分支 `feat/0.0.9-early`。Linux 整合包与普通插件的本地 JAR 模式共用 `bma3_runtime`、原生 MCP 和 Inbox 接线。Java 通过控制管道跟随 DSH 生命周期，profile 锁与数据目录锁保护单实例。参见[设计](../superpowers/specs/2026-11-23-dsh-managed-bma3-bundle-design.md)与[实施计划](../superpowers/plans/2026-11-23-dsh-managed-bma3-implementation.md)。
+- Java 全量 `flock /tmp/bma3-maven.lock ./mvnw -B -ntp -o -fae clean test` rc=0，948 项中 947 项通过，真实浏览器测试跳过 1 项。运行使用独立 `java.io.tmpdir`。插件 `env -u DEEPSEEK_API_KEY npm --prefix dsh-plugin test -- --experimental-test-isolation=none` rc=0，184 项通过。证据 `/tmp/bma3-dsh-managed.ZPwuDVaw/maven-gate.log` 与 `/tmp/bma3-dsh-managed.ZPwuDVaw/plugin-gate.log`。
+- 隔离副本 `MAVEN_ARGS=-o bash packaging/build-dsh-bundle.sh` rc=0，组合 tgz 的 `sha256sum -c` rc=0。真实 DSH `0.2.2-rc.3` Web 的两种安装通过自动或手动启动、工具发现和调用、SSE、停止撤销、重启及正常宿主退出。镜像校验失败回退、合成 Inbox 唤醒和 ACK、宿主强制退出后的进程回收与重启恢复、卸载保留数据、拒绝启停外部进程和手动停止跨宿主重启均已验证。证据 `/tmp/bma3-dsh-managed.ZPwuDVaw/` 下的 `bundle-checksum.log`、`checksum.log`、`gate-bundled.log`、`gate-local.log`、`gate-recovery.log`、`gate-foreign-result.log`、`intent-stop.log` 与 `intent-restart.log`。
+- 本轮交付为源码提交和推送。Windows 整合包、真实 QQ 和 GitHub Release 为 `NOT_RUN`。
+- Linux 可行性探针 `node /tmp/bma3-local-jar-feasibility.Y4Pjgkjb/probe.mjs /tmp/bma3-local-jar-feasibility.Y4Pjgkjb /tmp/bma3-agentlib-early2.RofJrHTk/repo/bma3-app/target/bma3-app-0.0.8-hotfix1.jar` rc=0，验证 Node 启动独立 JAR、同数据目录拒绝重复启动、终止自有子进程后端口关闭且数据目录保留。证据 `/tmp/bma3-local-jar-feasibility.Y4Pjgkjb/probe.log`。
+
 ## 2026-11-23：升级 AgentLib 到 0.0.1-early2
 
 - 基线 `feat/0.0.8-windows-mcp` / `0fa155a`，远端 `origin`。工作树已有 BMA3 包名迁移与前一轮 AgentLib 接入。

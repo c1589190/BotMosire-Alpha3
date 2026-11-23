@@ -300,13 +300,14 @@ function readStateFile(path) {
 
 /**
  * Atomically create the per-state-file lock. `wx` is the actual mutual-exclusion primitive:
- * a second writer loses the race and fails closed; a crash leaves the file behind and it is
- * never stolen automatically (the caller must verify no old instance remains and remove it).
+ * a second writer loses the race and fails closed. Managed clients hold an independent OS lock
+ * through the Java child, so they may recover an abandoned managed marker from a dead local host.
  */
-function acquireStateLock(path) {
+function acquireStateLock(path, managed = false) {
   mkdirSync(dirname(path), { recursive: true })
   let fd
   try {
+    if (managed) removeAbandonedManagedLock(path)
     fd = openSync(path, 'wx', 0o600)
   } catch (error) {
     if (error?.code === 'EEXIST') {
@@ -326,6 +327,7 @@ function acquireStateLock(path) {
       startedAt: new Date().toISOString(),
       token,
       stateFile: path,
+      ...(managed ? { managed: true } : {}),
     })
     writeFileSync(fd, owner)
     fsyncSync(fd)
@@ -336,6 +338,27 @@ function acquireStateLock(path) {
     const ambiguous = new Error('state_lock_ambiguous')
     ambiguous.code = 'state_lock_ambiguous'
     throw ambiguous
+  }
+}
+
+function removeAbandonedManagedLock(path) {
+  try {
+    const before = statSync(path)
+    const owner = JSON.parse(readFileSync(path, 'utf8'))
+    if (owner.managed !== true || owner.host !== hostname() || !owner.token
+      || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return
+    try {
+      process.kill(owner.pid, 0)
+      return
+    } catch (error) {
+      if (error.code !== 'ESRCH') return
+    }
+    const current = statSync(path)
+    if (current.dev === before.dev && current.ino === before.ino && readLockToken(path) === owner.token) {
+      unlinkSync(path)
+    }
+  } catch {
+    // Missing or ambiguous markers are resolved by the normal exclusive create below.
   }
 }
 
@@ -637,7 +660,8 @@ export class SseParser {
  * and only a complete per-item ACK proof removes that record. If any durable step is uncertain
  * the client fails closed instead of repeating a cross-system side effect.</p>
  */
-export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => ctx?.get?.('sessionQuery')) {
+export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => ctx?.get?.('sessionQuery'),
+  managedFingerprint) {
   const fetchImpl = config.fetchImpl ?? fetch
   const paths = inboxStatePaths(config)
   const stateFile = paths.v2
@@ -649,7 +673,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
   let loaded = null
   if (persistenceEnabled) {
     try {
-      lock = acquireStateLock(paths.lock)
+      lock = acquireStateLock(paths.lock, Boolean(managedFingerprint))
     } catch (error) {
       lockError = error?.code === 'state_lock_held'
         ? 'state_lock_held'
@@ -773,7 +797,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
   const targetContext = () => {
     const target = canonicalTarget(config.baseUrl)
     state.targetError = target.error ?? null
-    return target
+    return !target.error && managedFingerprint ? { ...target, fingerprint: managedFingerprint } : target
   }
 
   const requestUrl = (inboxId, suffix = '') => {
@@ -1232,7 +1256,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
       if (body?.mcpStartId && body.mcpStartId !== state.lastMcpStartId) {
         const previous = state.lastMcpStartId
         state.lastMcpStartId = String(body.mcpStartId)
-        if (previous) {
+        if (previous && !managedFingerprint) {
           // BMA3 restarted: the DSH MCP client may still hold the old tool list.
           await remind('BMA3 已重启。如果 qq_*/inbox_* MCP 工具不可用，请先重连 MCP'
             + '（mcp_connector_reconnect），再继续处理 inbox。')
@@ -3793,7 +3817,7 @@ function registerInboxTool(ctx, client) {
   return { registerAgent, dispose, status: () => ({ ...diagnostic, scopes: [...scopes] }) }
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, config = {}, managedFingerprint) {
   // In Web the Inbox can mount before the session reader. Give the reader its own
   // injection scope so the rest of the Inbox can start as soon as the host is ready.
   let sessionQuery
@@ -3810,7 +3834,7 @@ export function apply(ctx, config = {}) {
   } catch {
     ctx?.logger?.('bma3-dsh')?.warn?.('context push: session reader injection failed')
   }
-  const client = createInboxClient(ctx, config, () => sessionQuery ?? ctx?.get?.('sessionQuery'))
+  const client = createInboxClient(ctx, config, () => sessionQuery ?? ctx?.get?.('sessionQuery'), managedFingerprint)
   const toolRegistration = registerInboxTool(ctx, client)
 
   if (typeof client.attachToolRegistrar === 'function') {

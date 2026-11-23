@@ -233,10 +233,44 @@ test('pending ACK fails closed when baseUrl or inboxId changes', async () => {
   }
 })
 
+test('a managed target keeps its pending ACK across a loopback port change', async () => {
+  const { stateFile, paths } = tempState()
+  const fingerprint = sha256('managed-test-instance')
+  const incoming = panel({ items: [item('managed-frozen')] })
+  const first = fakeInbox({ livePanel: incoming, ack: async () => json({}, 503) })
+  const messages = []
+  const ctx = ctxFor(agentRecorder('session-1', messages))
+  const oldClient = createInboxClient(ctx, config(first, stateFile), undefined, fingerprint)
+  try {
+    oldClient.start()
+    first.push(incoming)
+    await waitFor(() => oldClient.status().pendingAck, 'pending managed ACK')
+    assert.equal(JSON.parse(readFileSync(paths.v2, 'utf8')).pendingAck.sourceTargetFingerprint, fingerprint)
+  } finally {
+    oldClient.dispose()
+  }
+
+  const next = fakeInbox({
+    livePanel: incoming,
+    heartbeat: async () => json({ mcpStartId: 'mcp-2' }),
+  })
+  const newClient = createInboxClient(ctx, config(next, stateFile, { baseUrl: 'http://127.0.0.1:19999' }),
+    undefined, fingerprint)
+  try {
+    newClient.start()
+    await waitFor(() => next.state.ackCalls === 1 && newClient.status().pendingAck === null, 'recovered managed ACK')
+    assert.match(next.state.ackUrls[0], /:19999\//)
+    assert.equal(messages.length, 1)
+  } finally {
+    newClient.dispose()
+  }
+})
+
 test('an equivalent baseUrl (trailing slash) still ACKs and persists a fingerprint, never the raw URL', async () => {
   const { stateFile, paths } = tempState()
   const messages = []
-  const server = fakeInbox({ ack: async (body) => ackComplete(body) })
+  let allowAck = false
+  const server = fakeInbox({ ack: async (body) => allowAck ? ackComplete(body) : json({}, 503) })
   const configObject = config(server, stateFile, { baseUrl: 'http://127.0.0.1:18766/' })
   const client = createInboxClient(ctxFor(agentRecorder('session-1', messages)), configObject)
   try {
@@ -247,6 +281,7 @@ test('an equivalent baseUrl (trailing slash) still ACKs and persists a fingerpri
     }))
     await waitFor(() => client.status().pendingAck, 'pending')
     configObject.baseUrl = 'http://127.0.0.1:18766'
+    allowAck = true
     await waitFor(() => client.status().pendingAck === null, 'equivalent target ACKs')
     const saved = JSON.parse(readFileSync(paths.v2, 'utf8'))
     assert.match(String(saved.freshVerification?.sourceTargetFingerprint ?? ''), /^[0-9a-f]{64}$/)

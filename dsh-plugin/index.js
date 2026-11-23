@@ -1,5 +1,6 @@
 import { apply as applyInbox } from './lib/inbox.js'
 import { apply as applyPreset } from './lib/preset.js'
+import { applyRuntime } from './lib/runtime.js'
 
 /** Cordis must provide these services before apply() touches ctx.tools/ctx.agents/ctx.systemPrompt. */
 /**
@@ -27,10 +28,8 @@ export const MODULES = Object.freeze(['inbox', 'preset'])
  * `lib/media.js` (`bma3_ocr` / `bma3_asr`) is mounted as a *preset row*, not as a profile row, so the
  * paid DeepSeek tools only exist inside BMA3 sessions.
  *
- * Everything else was removed on 2026-11-14 (D-066): the tool-face layering, the `bma3_*` self
- * tools, the MCP bridge and the host-tool repair. The jar's MCP server is reachable over plain
- * HTTP with a bearer token, and the Agent configures and connects it through DSH's own
- * `mcp_connector_*` tools — no plugin code in that path.
+ * The Inbox row can source its backend from a managed app-image or local JAR (D-085).
+ * With an external service it uses the existing Inbox configuration and native connector.
  *
  * @param {any} ctx Cordis context.
  * @param {{module?: string}} [config] Loader row config.
@@ -38,7 +37,9 @@ export const MODULES = Object.freeze(['inbox', 'preset'])
 export function apply(ctx, config = {}) {
   const module = config?.module ?? 'inbox'
   if (module === 'inbox') {
-    applyInbox(ctx, config)
+    if (config.source === 'bundled' || config.source === 'local-jar') applyRuntime(ctx, config)
+    else if (config.source === undefined || config.source === 'external') applyInbox(ctx, config)
+    else ctx.logger('bma3-runtime').warn('BMA3 runtime: INVALID_SOURCE')
     return
   }
   if (module === 'preset') {
