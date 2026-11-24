@@ -1,5 +1,19 @@
 # STATUS —— 更新时间：2026-11-24 (UTC+8)
 
+## 2026-11-24：0.0.9-fix3 Linux DSH
+
+- `feat/0.0.9-early` 基线 `4a06bdc`。`0.0.9-fix3` 包含 Inbox 恢复旧会话时补挂原预设的修复。唯一发行资产为 `mosire-bma3-dsh-0.0.9-fix3-linux-x64-full.tgz`，SHA-256 `2fe0148773134d0548d4b36a91a212593f74b03152a1ebf76c4e7dd4b9df22ee`。[发行说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.9-fix3)
+- `MAVEN_ARGS="-o -Dmaven.repo.local=<隔离缓存>" bash packaging/build-dsh-bundle.sh`、`sha256sum -c <fix3.tgz.sha256>` 均 rc=0。包只有一条 DSH 入口，嵌入镜像与清单摘要一致。`env -u JAVA_HOME PATH=/nonexistent ./botmosire-a3/bin/botmosire-a3 --version` 报告 `0.0.9-fix3`。`env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none` 在 Node 22 和 26 各通过 193 项，均 rc=0。证据 `/tmp/bma3-009-fix3.uttc1Ay0/{build,node22,node26}.log`。
+- `bash /tmp/bma3-009-fix3.uttc1Ay0/cold.sh seed` 和 `cold.sh resume` 均 rc=0。正式 `fix2` 写盘后更换最终 `fix3` 包，Linux DSH Web `0.2.2-rc.5` 新进程恢复原会话的人设、历史与工具，并实际运行 Bash 和日常 MCP 调用。证据同目录 `upgrade-{seed,resume}.log`。
+- `bash /tmp/bma3-009-fix3.uttc1Ay0/hot.sh hot-call` rc=0。在隔离 Web profile 中，允许管理插件的原 BMA3 会话可用 `plugin_manager install_bundle` 安装 `fix3`，宿主返回 `restart-required` / `unmanaged-plugin`。Inbox 与托管 JAR 升到 `fix3`，原会话恢复并实际调用日常 MCP，仍绑定旧预设版本，新会话挂载新版本。证据同目录 `hot-call.log`。远端实例和 Windows 为 `NOT_RUN`。
+
+## 2026-11-24：修复重启后 Inbox 恢复的会话缺少预设
+
+- 远端报告 `0.0.9-fix2` 重启后旧 BMA3 会话同时丢失人设、Bash 和日常 MCP，新会话正常。发布包在隔离 Linux DSH Web `0.2.2-rc.5` 的两个进程间复现。旧会话的预设投影仍为 `bma3` 且保留已完成回合，Inbox 先恢复后实际挂载为空，日常 MCP 工具数为 0。根因为 Inbox 调用 `agents.resume()` 时缺少预设挂载的 setup。现于 Agent 发布前按会话投影挂载原预设。没有预设记录的会话沿用原恢复路径。[契约与验收](../superpowers/specs/2026-11-24-dsh-unified-plugin-linux-design.md#升级与回退)
+- `bash /tmp/bma3-cold-resume.rOdkOjYH/run.sh baseline-repro <已发布 Linux 包>` rc=1，复现所述症状。`run-upgrade.sh seed` 用发布包写盘，`run-upgrade.sh resume` 用本地候选包启动独立进程，两步 rc=0。旧会话自动恢复原标识、历史、BMA3 人设、Bash、`read_image` 和 30 个日常 MCP 工具，实际执行了 Bash 和 `mcp__bma3__inbox_status`。Standard 恢复后仍为 Standard，Standard 与全局日常 MCP 工具数均为 0。证据同目录 `baseline-repro-{seed,resume}.log`、`upgrade-{seed,resume}.log`。
+- 在发布包的真实宿主探针向首次 MCP `initialize` 注入 HTTP 503，DSH 原生客户端在同一端点重试并恢复 30 个工具，rc=0，证据 `baseline-retry-seed.log`。Inbox 待推送恢复继续走现有重新校验契约。
+- `env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none` 在 Node 22 和 26 各 193/193，`bash packaging/build-dsh-bundle.sh` 和 `sha256sum -c <候选包.sha256>` 均 rc=0。证据同目录 `{node22,node26,build}.log`。`/tmp/bma3-009-fix2.DGC2XUNr/upgrade.sh reinstall-fault-cold-candidate <旧 Linux 包> <候选包>` rc=0，运行中热替换仍能恢复故障注入后缺失的原生工具，禁用 Bash 的宿主规则仍生效，证据同目录 `reinstall-fault-cold-candidate.log`。本轮候选包和修复保留本地，远端业务实例、Windows 与真实 QQ 复验为 `NOT_RUN`。
+
 ## 2026-11-24：0.0.9-fix2 Linux DSH
 
 - 按 D-092，将版本统一为 `0.0.9-fix2`，发行资产仅为 `mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz`。基线 `feat/0.0.9-early` / `5dfdd38`，范围为 Linux DSH 单入口重构及旧会话工具恢复。

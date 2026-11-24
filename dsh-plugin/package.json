@@ -1,6 +1,6 @@
 {
   "name": "@mosire/bma3-dsh",
-  "version": "0.0.9-fix2",
+  "version": "0.0.9-fix3",
   "private": true,
   "type": "module",
   "description": "BMA3 DSH plugin: Inbox, BMA3 preset and managed JAR runtime.",

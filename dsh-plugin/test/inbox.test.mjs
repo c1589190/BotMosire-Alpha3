@@ -530,21 +530,36 @@ test('unloading the plugin must not persist the user-stop intent', async () => {
   for (const controller of controllers) { try { controller.close() } catch { /* already closed */ } }
 })
 
-test('bind persists the session and resumes it when it is not live', async () => {
+test('bind persists the session and mounts its recorded preset before resuming it', async () => {
   const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-bind-')), 'state.json')
   const paths = inboxStatePaths({ stateFile })
   let resumed = null
-  const agent = { id: 'session-9', status: 'idle', followup() {} }
+  let mounted = null
+  const agentContext = {}
+  const session = { header: { agentPreset: 'standard' } }
+  const agent = { id: 'session-9', status: 'idle', session, followup() {} }
+  const presets = {
+    presetForSession(current) {
+      assert.equal(current, session)
+      return 'bma3'
+    },
+    async mount(context, presetId) {
+      assert.equal(context, agentContext)
+      mounted = presetId
+    },
+  }
   const ctx = {
     agents: {
       get: () => undefined,
       list: () => [],
-      resume: async ({ resumeSessionId }) => {
+      resume: async ({ resumeSessionId, setup }) => {
+        await setup(agentContext, agent)
         resumed = resumeSessionId
         return { agent, dispose() {} }
       },
     },
     effect: (callback) => callback(),
+    get: (key) => key === 'agentPresets' ? presets : undefined,
   }
   const fetchImpl = async (url) => {
     if (url.endsWith('/events')) {
@@ -565,6 +580,7 @@ test('bind persists the session and resumes it when it is not live', async () =>
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.equal(resumed, 'session-9')
+  assert.equal(mounted, 'bma3')
   assert.equal(JSON.parse(readFileSync(paths.v2, 'utf8')).targetSessionId, 'session-9')
   client.dispose()
 })

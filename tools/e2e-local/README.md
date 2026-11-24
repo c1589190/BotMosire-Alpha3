@@ -72,7 +72,7 @@ weighting:
 STATE=$(mktemp -d /tmp/bma3-debug.XXXXXXXX)
 printf '%s\n' "$STATE"
 python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" serve \
-  --jar bma3-app/target/bma3-app-0.0.9-fix2.jar
+  --jar bma3-app/target/bma3-app-0.0.9-fix3.jar
 ```
 
 在另一终端把 `STATE` 设为上面输出的目录。调试机默认绑定回环 MCP `19865`、Inbox `19866` 和 debug/健康检查 `19867`，Inbox ID 为 `bma3-debug`。可在首次 `serve` 时指定 `--mcp-port`、`--inbox-port`、`--debug-port`。相同目录和端口可重启并继续使用原数据。

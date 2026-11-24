@@ -1016,7 +1016,15 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     if (resuming) return resuming
     resuming = (async () => {
       try {
-        const handle = await agents.resume({ resumeSessionId: sessionId })
+        const handle = await agents.resume({
+          resumeSessionId: sessionId,
+          async setup(agentCtx, agent) {
+            // The resume factory restores history before setup, but leaves preset composition to its caller.
+            const presets = ctx?.get?.('agentPresets')
+            const presetId = presets?.presetForSession(agent.session)
+            if (presetId) await presets.mount(agentCtx, presetId)
+          },
+        })
         if (disposed || generation !== operation || controlEpoch !== controlAtStart) {
           Promise.resolve(handle?.dispose?.()).catch(() => {})
           return null

@@ -60,7 +60,7 @@ Linux 目标宿主为 DSH Web `0.2.2-rc.5`。`bma3_runtime` 支持 `status`、`s
 构建后从本仓库运行：
 
 ```bash
-dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz" --ignore-scripts
+dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-0.0.9-fix3-linux-x64-full.tgz" --ignore-scripts
 dsh --profile web
 ```
 
@@ -93,7 +93,7 @@ Windows 候选包以 `pwsh -File packaging/build-dsh-bundle-windows.ps1` 构建�
     runtime:
       source: local-jar
       javaPath: /usr/bin/java
-      jarPath: /opt/bma3/bma3-app-0.0.9-fix2.jar
+      jarPath: /opt/bma3/bma3-app-0.0.9-fix3.jar
       configRoot: /opt/bma3/run
       autoStart: false
 ```
