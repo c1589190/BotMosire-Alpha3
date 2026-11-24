@@ -1,6 +1,6 @@
 # Inbox Source Wait & Summary Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkboxes (`- [ ]`) for tracking.
 
 **Goal:** Add source-scoped hard quiet waiting, an Agent-invoked `inbox_wait_quiet` tool, and hot-reloadable panel summary mode to BMA3 Inbox, with the existing single injection scheduler preserved.
 

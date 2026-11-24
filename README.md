@@ -24,14 +24,8 @@ DevMosire-iiBot 的继承与重构。当前版本为 **`0.0.8-hotfix1` 预发布
 
 ## 给 Agent 的快速加载顺序
 
-看到仓库后按这个顺序做，不要先改代码：
-
-1. 下载 `botmosire-a3-linux-x86_64.tar.gz`，或用 `packaging/build-app-image.sh` 从源码生成 app-image；
-2. 准备运行目录、`config/app.yaml` 和 token 文件；
-3. 启动 app-image，确认 MCP 和 Inbox 端口；
-4. 把 `dsh-plugin` link 进目标 DSH profile；
-5. 启动后 DSH 插件自动连接 Inbox 的单个 SSE；需要指定目标会话时用 `/inbox bind` 或 `bma3_inbox action=bind`；
-6. 需要 MCP 工具时，在 DSH 里添加 Bearer MCP 连接。
+Linux DSH 使用下文的一键包。安装到目标 profile 后启动 DSH，用 `bma3_runtime` 确认 JAR 状态。
+在目标会话运行 `/inbox bind` 接收预览。需要业务 MCP 工具时，选择 BMA3 预设。
 
 ### 1. 下载或编译
 
@@ -55,14 +49,14 @@ ls -lh dist/botmosire-a3-linux-x86_64.tar.gz
 
 DSH 插件需要 Node.js 22。浏览器工具需要 Chromium 和 ChromeDriver，本机 Snap Chromium 的驱动路径见[环境说明](docs/agents/ENVIRONMENT.md)。
 
-### 0.0.9-fix1 DSH 整合包
+### 0.0.9-fix2 DSH 整合包
 
 在 Linux x86_64 上运行 `bash packaging/build-dsh-bundle.sh`，生成
-`dist/mosire-bma3-dsh-managed-0.0.9-fix1.tgz`。在 Windows x64 上运行
+`dist/mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz`。在 Windows x64 上运行
 `pwsh -File packaging/build-dsh-bundle-windows.ps1`，生成
-`dist/mosire-bma3-dsh-managed-0.0.9-fix1-windows-x64.tgz`。在目标 DSH profile 安装对应安装包后，
-启动 profile 即可运行内置 Java、MCP 与 Inbox。普通插件包也可以托管由管理员指定的本机 JAR。
-两种方式的配置与启停示例见 [DSH 托管指南](dsh-plugin/README.md#托管-bma3)。
+`dist/mosire-bma3-dsh-managed-0.0.9-fix2-windows-x64.tgz`。在目标 DSH profile 安装对应安装包后，
+启动 profile 即可运行内置 Java、MCP 与 Inbox。Linux 插件还可托管由管理员指定的本机 JAR 或连接已运行的服务。
+配置与启停示例见 [DSH 托管指南](dsh-plugin/README.md#托管-bma3)。
 
 ### 2. 运行目录与配置
 
@@ -212,111 +206,18 @@ curl -H "Authorization: Bearer $INBOX_TOKEN" \
   http://127.0.0.1:46500/v1/inboxes/bma3/status
 ```
 
-### 3. 安装 DSH 插件
+### 3. 安装与使用 Linux DSH 插件
 
-插件是仓库里的 `dsh-plugin/`，包名 `@mosire/bma3-dsh`。一个包两个模块：`inbox`（面板注入/ACK）与 `preset`（系统提示词 + 薄工具面 + 媒体工具）。
+构建并安装上述一键包，在目标 profile 中只有一条 `bma3-plugin` 入口。首次启动 profile
+会使用内置 Java 21 启动 BMA3。任意会话可以调用 `bma3_runtime` 查看、启动、停止和重启 JAR。
+在要接收通知的会话里运行 `/inbox bind`。JAR 停止时，Inbox 和运行时管理入口仍可访问。
 
-```bash
-git clone https://github.com/c1589190/BotMosire-Alpha3.git
-cd BotMosire-Alpha3
-dsh plugin --profile web add link:$PWD/dsh-plugin
-```
+### 4. 使用 BMA3 预设和业务工具
 
-在目标 profile 的 `cordis.patch.yml` 加/覆盖：
-
-```yaml
-- id: bma3-inbox
-  name: "@mosire/bma3-dsh"
-  config:
-    module: inbox
-    baseUrl: http://127.0.0.1:46500
-    inboxId: bma3
-    envFile: /opt/bma3/run/config/.bma3env
-    sessionId: session-...   # 可选；省略时取第一个 idle 会话
-    autoStart: true
-    # stateFile: /home/you/.dsh/storages/bma3-inbox.json  # 默认即此路径
-    heartbeatMs: 15000
-
-- id: bma3-persona
-  disabled: true   # legacy; 人设现在由 bma3-preset 内的 self loader 提供
-
-- id: bma3-preset
-  name: "@mosire/bma3-dsh"
-  config:
-    module: preset
-```
-
-启用后在 DSH 新建会话时选择 **BMA3** preset。预设只做一件事：注入你自己的系统提示词。
-
-```text
-~/.dsh/bma3/systemprompt.md    # 人设正文（$DSH_HOME 优先）；每次组装重读，缺失即不注入
-```
-
-可从 [`dsh-plugin/examples/systemprompt.md`](dsh-plugin/examples/systemprompt.md) 复制模板。
-工具面沿用宿主默认：插件不再挂 bash/read_image/子 Agent 行，也没有 `agentconfig.json`
-（工具面分层已按 D-066 删除）。
-
-`envFile` 指向 jar 生成的 `.bma3env`（0600），插件只读 `INBOX_TOKEN`，不再接受 `tokenFile`/`tokenEnv`/`token`（D-063）。一个 inbox 只有一条 SSE；source 只是面板里的条目，不存在 per-source 订阅。普通群消息是否进入面板由服务端统一优先级决定（群内 @/命令等信号会提高优先级），不再需要 `minPriority`。
-
-插件连上后自动注入受限面板；需要指定接收会话时调用 `bma3_inbox bind`，绑定会**落盘**，DSH 重启后插件会 `agents.resume` 恢复该会话并自动启动 SSE。`bma3_inbox status` 查看连接/游标/push 水位/心跳；`bma3_inbox ack` 手动推进读游标（正常注入成功后插件会自动按 itemIds ack）。唤醒文本以 `[INBOX_PANEL]` 开头，只带受限窗口和关系摘要；同源推送后又有新消息时另开一条并标「（消息更新活跃）」。
-
-### 4. 接上 BMA3 MCP（业务工具）
-
-没有 MCP 连接时，`bma3-inbox` 插件仍能通过 HTTP/SSE 唤醒并自动 ack，但 `inbox_list`、
-`qq_*` 等工具不会出现。
-
-使用 DSH 原生的 `@deepseek-ai/dsh-mcp-client` 直接连接 jar（D-066）。
-
-jar 启动时会把 token 写到**配置目录**的 `.bma3env`（0600，原子写，幂等）：
-
-| 事实 | 位置 |
-|---|---|
-| MCP 端点 | `<config 目录>/config/app.yaml` → `server.port` + `server.mcpPath`（默认 `8765` + `/mcp`） |
-| MCP token | **`<config 目录>/.bma3env` 的 `MCP_TOKEN`**（不是 `dataDir`，也不是环境变量） |
-| Inbox token | 同一文件的 `INBOX_TOKEN`；两个 token 相互独立，轮换一个不影响另一个 |
-
-在 profile 里加（`~/.dsh/profiles/<name>/cordis.patch.yml`）：
-
-```yaml
-- insert:
-    - id: bma3-mcp
-      name: "@deepseek-ai/dsh-mcp-client"
-      disabled: !!js "!process.getBuiltinModule('node:fs').existsSync('/opt/bma3/run/.bma3env')"
-      config:
-        serverName: bma3
-        transport: streamable-http
-        url: http://127.0.0.1:18765/mcp
-        headers:
-          Authorization: !!js '`Bearer ${/^MCP_TOKEN=(.*)$/m.exec(process.getBuiltinModule("node:fs").readFileSync("/opt/bma3/run/.bma3env","utf8"))[1].trim()}`'
-        failOnStartupError: false
-        reconnect: { initialDelayMs: 1000, maxDelayMs: 30000, maxAttempts: 1000 }
-```
-
-连上后工具以 `mcp__bma3__*` 出现（当前约 68 个：`inbox_*`、`qq_*`、`xvfb_*`、
-`get_config`/`set_config`、`bma3_watchdog_*`），最快的自检是调一次
-`mcp__bma3__inbox_status` 或 `mcp__bma3__bma3_watchdog_diagnose`。
-
-- `inbox_wait_quiet(source/sourcePrefix, quietMs=2000, maxWaitMs=20000)` 是 Agent 主动的只读来源等待；
-  不会 ACK/冻结，也不改变 Inbox 推送节奏。
-- `bma3_media(filePath)` 把 `qq_media_view` 返回的本地 path 按类型路由到 OCR/ASR；无 OCR key 时返回
-  `MEDIA_FAILED`，不会假装识别成功。
-- `qq_friend(operation=info|remark|delete|like|poke|request_decide)` 和 `qq_provider_action` 覆盖尚未 typed
-  的好友/provider 动作；发送类 action 永久禁止绕过消息板。
-- `xvfb_open_browser`/`xvfb_wait` 把“开浏览器 + 等窗口”缩短为两步；B 站仍走 xvfb + 截图/OCR + Computer Use。
-
-要点与坑：
-
-- `!!js` 里**没有 `require`**，要用 `process.getBuiltinModule('node:fs')`。
-- 新行必须包在 `- insert: [...]` 里；顶层平铺的 `id` 是"改已有行"（会报 `entry not found`）。
-- **jar 没起**：DSH 照常启动，该行退避重试，**预算耗尽后永久放弃**（默认 10 次 ≈ 2 分钟），之后
-  jar 起来也不会自愈 —— 要么把 `maxAttempts` 调大，要么让 jar 先起（systemd `After=`）。
-- `--no-auth` 起的 jar 删掉 `headers` 整段即可。
-- 同一 `dataDir` 只能有一个 jar（单实例锁），第二个进程会退出并报已有 pid。
-- 不要把它 `mcp_connector_configure` 那套混着用：那是第三方 `dsh-mcp-connector` 插件的工具，
-  没装就不存在。
-
-> 红线 2（D-060）：token 不得进入提交、配置样例、仓库文件与导出/快照类输出；凭据文件必须 0600。
-> 上面用 `!!js` 在组装期读文件，就是为了让 token **永远不经过对话**。
+在目标会话选择 **BMA3** 预设。提示词来自 `$DSH_HOME/bma3/systemprompt.md`，可参考
+[提示词模板](dsh-plugin/examples/systemprompt.md)。插件会在该预设内接入业务 MCP。
+JAR 就绪后，可调用 `mcp__bma3__inbox_status` 自检。旧插件升级、外部 JAR 和低频工具入口配置见
+[DSH 插件指南](dsh-plugin/README.md)。
 
 ### 4.1 远程问诊（debug API）与定时任务（0.0.8 批次）
 

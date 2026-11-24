@@ -12,13 +12,11 @@
  *    session log (the truth layer) instead of only its own copy. Compaction is deliberately **not**
  *    here: this deploy runs under `dsh web`, where billion-context owns compression (D-082).
  *
- * The Agent extends its own face at runtime:
- *  - MCP servers (the bma3 jar among them) → `mcp_connector_configure`, tools arrive as
- *    `mcp__<server>__*` in the global layer;
- *  - local plugin rows → `tool-plugin-manager`;
- *  - per-session narrowing → `mcp_connector_session_tools`.
+ * The Linux entry also adds the native BMA3 MCP client to this preset scope
+ * when the runtime publishes an endpoint.
  */
 import { hostToolRowName, invalidateHostToolCache } from './host-tools.js'
+import { recoverPresetTools } from './preset-recovery.js'
 
 export const PRESET_ID = 'bma3'
 
@@ -107,7 +105,7 @@ function sessionRows() {
  * @param {{promptFile?: string, complete?: boolean}} [config] loader row config.
  * @returns {{id: string, name: string, description: string, plugins: any[]}} the definition.
  */
-export function presetDefinition(ctx, config = {}) {
+export function presetDefinition(ctx, config = {}, scopedMcp = false) {
   return {
     id: PRESET_ID,
     name: 'BMA3',
@@ -126,6 +124,11 @@ export function presetDefinition(ctx, config = {}) {
       },
       ...toolRows(ctx),
       ...sessionRows(),
+      ...(scopedMcp ? [{
+        id: 'bma3-preset-mcp',
+        name: new URL('./preset-mcp.js', import.meta.url).href,
+        config: { enableOps: config.enableOps === true },
+      }] : []),
     ],
   }
 }
@@ -142,8 +145,8 @@ export function presetDefinition(ctx, config = {}) {
  * @param {{promptFile?: string, complete?: boolean}} [config] loader row config.
  * @returns {any} the definition that was registered, for tests and diagnostics.
  */
-export function apply(ctx, config = {}) {
-  const definition = presetDefinition(ctx, config)
+export function apply(ctx, config = {}, scopedMcp = false) {
+  const definition = presetDefinition(ctx, config, scopedMcp)
   const logger = typeof ctx?.logger === 'function' ? ctx.logger('bma3-dsh') : undefined
 
   const register = (host) => {
@@ -158,6 +161,7 @@ export function apply(ctx, config = {}) {
       return
     }
     const dispose = presets.register(definition)
+    recoverPresetTools(host, presets, definition, dispose, logger)
     logger?.info?.(`bma3 preset registered: id=${definition.id} rows=${definition.plugins.length}`)
     if (typeof dispose === 'function') {
       host.effect?.(() => dispose)

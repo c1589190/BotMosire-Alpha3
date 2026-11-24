@@ -74,6 +74,22 @@ test('invalidateHostToolCache drops a positive lookup', () => {
   rmSync(host.root, { recursive: true, force: true })
 })
 
+test('a lookup never returns a cached tool entry removed during replacement', (t) => {
+  const host = fakeHost()
+  t.after(() => {
+    invalidateHostToolCache(host.entryPoint)
+    rmSync(host.root, { recursive: true, force: true })
+  })
+  const specifier = '@deepseek-ai/dsh-tool-bash'
+  addTool(host.root)
+  const entry = hostToolEntry(specifier, host.entryPoint)
+  assert.ok(entry)
+  rmSync(entry)
+  assert.equal(hostToolEntry(specifier, host.entryPoint), undefined)
+  addTool(host.root)
+  assert.equal(hostToolEntry(specifier, host.entryPoint), entry)
+})
+
 test('subpath specifiers resolve through the package that owns them', () => {
   const ep = process.argv[1]
   const root = hostToolEntry('@deepseek-ai/dsh-plugin-manager', ep)

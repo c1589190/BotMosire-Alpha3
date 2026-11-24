@@ -304,11 +304,11 @@ function readStateFile(path) {
  * a second writer loses the race and fails closed. Managed clients hold an independent OS lock
  * through the Java child, so they may recover an abandoned managed marker from a dead local host.
  */
-function acquireStateLock(path, managed = false) {
+function acquireStateLock(path, managed = false, reclaimAbandoned = managed) {
   mkdirSync(dirname(path), { recursive: true })
   let fd
   try {
-    if (managed) removeAbandonedManagedLock(path)
+    if (reclaimAbandoned) removeAbandonedManagedLock(path)
     fd = openSync(path, 'wx', 0o600)
   } catch (error) {
     if (error?.code === 'EEXIST') {
@@ -573,7 +573,7 @@ function safeAckHttpCode(status, body) {
  * Render one bounded panel as the wake text. Full history stays in the message board;
  * this text carries only source labels, relation markers and a short omitted count.
  */
-export function renderPanel(panel) {
+export function renderPanel(panel, mentionMcp = true) {
   const items = Array.isArray(panel?.items) ? panel.items : []
   const includeOmitted = panel?.includeOmittedCount !== false
   const total = includeOmitted && Number.isInteger(panel?.totalItems)
@@ -604,7 +604,8 @@ export function renderPanel(panel) {
     }
   }
   if (includeOmitted && Number(panel?.omittedItems) > 0) {
-    lines.push(`…（另有 ${panel.omittedItems} 条未显示；需要时用 inbox_list 拉全部）`)
+    const hint = mentionMcp ? '；需要时用 inbox_list 拉全部' : ''
+    lines.push(`…（另有 ${panel.omittedItems} 条未显示${hint}）`)
   }
   return lines.join('\n')
 }
@@ -662,19 +663,24 @@ export class SseParser {
  * the client fails closed instead of repeating a cross-system side effect.</p>
  */
 export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => ctx?.get?.('sessionQuery'),
-  managedFingerprint) {
+  managedFingerprint, managedBackend = false) {
+  if (managedBackend) config = { ...config, baseUrl: undefined, envFile: undefined }
+  const configuredTarget = () => managedBackend && !config.baseUrl
+    ? { error: 'backend_offline' }
+    : canonicalTarget(config.baseUrl)
   const fetchImpl = config.fetchImpl ?? fetch
   const paths = inboxStatePaths(config)
   const stateFile = paths.v2
   const persistenceEnabled = config.persistState !== false
 
   let lock = null
-  let lockError = null
-  let stateError = null
-  let loaded = null
-  if (persistenceEnabled) {
+  const loadState = (reclaimAbandoned) => {
+    let lockError = null
+    let stateError = null
+    let loaded = null
+    if (!persistenceEnabled) return { lockError, stateError, loaded }
     try {
-      lock = acquireStateLock(paths.lock, Boolean(managedFingerprint))
+      lock = acquireStateLock(paths.lock, managedBackend || Boolean(managedFingerprint), reclaimAbandoned)
     } catch (error) {
       lockError = error?.code === 'state_lock_held'
         ? 'state_lock_held'
@@ -701,44 +707,48 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
         loaded = v2.value
       }
     }
+    return { lockError, stateError, loaded }
   }
 
-  const initial = loaded ?? {}
+  const savedFields = ({ lockError, stateError, loaded }) => {
+    const initial = loaded ?? {}
+    return {
+      injectedPushRevision: Number(initial.injectedPushRevision ?? 0),
+      ackedRevision: Number(initial.ackedRevision ?? 0),
+      lastPushRevision: Number(initial.lastPushRevision ?? 0),
+      targetSessionId: initial.targetSessionId ?? (config.sessionId ? String(config.sessionId) : null),
+      paused: Boolean(initial.paused),
+      stopped: Boolean(initial.stopped),
+      lastMcpStartId: String(initial.lastMcpStartId ?? ''),
+      appliedControlId: String(initial.appliedControlId ?? ''),
+      restoredAt: initial.restoredAt ?? null,
+      // Database identity and recovery records carry IDs and revisions.
+      lastSeenIdentity: initial.lastSeenIdentity ?? null,
+      pendingAck: initial.pendingAck ?? null,
+      injectionIntent: initial.injectionIntent ?? null,
+      identityMismatch: initial.identityMismatch ?? null,
+      deferredPush: initial.deferredPush ?? null,
+      freshVerification: initial.freshVerification ?? null,
+      pendingPush: initial.pendingPush ?? null,
+      lockError,
+      stateError,
+      hasSnapshot: Boolean(loaded),
+      persistenceError: null,
+    }
+  }
   const state = {
+    ...savedFields(loadState(!managedBackend && Boolean(managedFingerprint))),
     connection: 'idle',
     lastRevision: 0,
     injectedRevision: 0,
-    injectedPushRevision: Number(initial.injectedPushRevision ?? 0),
-    ackedRevision: Number(initial.ackedRevision ?? 0),
-    lastPushRevision: Number(initial.lastPushRevision ?? 0),
     pendingRevision: 0,
     lastEventAt: null,
     lastError: null,
-    targetSessionId: initial.targetSessionId
-      ?? (config.sessionId ? String(config.sessionId) : null),
-    paused: Boolean(initial.paused),
-    stopped: Boolean(initial.stopped),
-    lastMcpStartId: String(initial.lastMcpStartId ?? ''),
-    appliedControlId: String(initial.appliedControlId ?? ''),
-    restoredAt: initial.restoredAt ?? null,
-    // Durable database identity and recovery records (never message body or credentials).
-    lastSeenIdentity: initial.lastSeenIdentity ?? null,
-    pendingAck: initial.pendingAck ?? null,
-    injectionIntent: initial.injectionIntent ?? null,
-    identityMismatch: initial.identityMismatch ?? null,
-    deferredPush: initial.deferredPush ?? null,
-    freshVerification: initial.freshVerification ?? null,
-    pendingPush: initial.pendingPush ?? null,
-    // Runtime-only diagnostics.
-    lockError,
-    stateError,
     persistenceEnabled,
-    persistenceError: null,
-    hasSnapshot: Boolean(loaded),
     serverMissingIdentity: false,
     ackIdentityVerified: false,
     recentAcked: [],
-    targetError: canonicalTarget(config.baseUrl).error ?? null,
+    targetError: configuredTarget().error ?? null,
   }
 
   let lastPersisted = ''
@@ -796,7 +806,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
   let verifyRetryDelay = 0
 
   const targetContext = () => {
-    const target = canonicalTarget(config.baseUrl)
+    const target = configuredTarget()
     state.targetError = target.error ?? null
     return !target.error && managedFingerprint ? { ...target, fingerprint: managedFingerprint } : target
   }
@@ -812,19 +822,23 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
   // `extractSessionEventText` is the host's own renderer, so the copy says exactly what the model
   // was told, in the host's own words. Without `sessionQuery` (older host, minimal profile) the
   // pusher stays silent and the jar's copy simply stops ageing.
-  const contextPusher = createContextPusher({
-    resolveSessionQuery,
-    resolveExtractText: () => loadEventTextExtractor(),
-    fetchImpl,
-    url: (suffix) => requestUrl(config.inboxId, suffix),
-    headers: () => authHeaders(config),
-    sessionId: () => state.targetSessionId ?? '',
-    limits: {
-      maxBatch: config.contextMaxBatch,
-      maxEntries: config.contextMaxEntries,
-      maxEntryChars: config.contextMaxEntryChars,
-    },
-  })
+  const makeContextPusher = () => {
+    const operation = generation
+    return createContextPusher({
+      resolveSessionQuery,
+      resolveExtractText: () => loadEventTextExtractor(),
+      fetchImpl,
+      url: (suffix) => !disposed && operation === generation ? requestUrl(config.inboxId, suffix) : null,
+      headers: () => authHeaders(config),
+      sessionId: () => state.targetSessionId ?? '',
+      limits: {
+        maxBatch: config.contextMaxBatch,
+        maxEntries: config.contextMaxEntries,
+        maxEntryChars: config.contextMaxEntryChars,
+      },
+    })
+  }
+  let contextPusher = makeContextPusher()
 
   const buildSnapshot = () => ({
     version: STATE_VERSION,
@@ -895,7 +909,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     if (state.serverMissingIdentity) {
       reasons.push('server panel has no inboxIdentity (old server): no followup and no ACK')
     }
-    const currentTarget = canonicalTarget(config.baseUrl)
+    const currentTarget = configuredTarget()
     if (currentTarget.error) reasons.push(currentTarget.error)
     return reasons.length > 0 ? reasons.join('; ') : null
   }
@@ -925,7 +939,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     stateFileV1: paths.configured,
     lockFile: paths.lock,
     blockedReason: blockedReason(),
-    targetError: canonicalTarget(config.baseUrl).error ?? null,
+    targetError: configuredTarget().error ?? null,
     persistence: {
       enabled: persistenceEnabled,
       lockHeld: lockStillOurs(lock),
@@ -933,8 +947,8 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     },
     // 配置只报来源，不回显 token 值或文件路径中的凭据。
     config: {
-      baseUrl: canonicalTarget(config.baseUrl).error ? null : canonicalTarget(config.baseUrl).baseUrl,
-      targetError: canonicalTarget(config.baseUrl).error ?? null,
+      baseUrl: configuredTarget().baseUrl ?? null,
+      targetError: configuredTarget().error ?? null,
       inboxId: config.inboxId ?? 'bma3',
       autoStart: config.autoStart !== false,
       tokenSource: tokenSource(config),
@@ -1257,7 +1271,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
       if (body?.mcpStartId && body.mcpStartId !== state.lastMcpStartId) {
         const previous = state.lastMcpStartId
         state.lastMcpStartId = String(body.mcpStartId)
-        if (previous && !managedFingerprint) {
+        if (previous && !managedBackend && !managedFingerprint) {
           // BMA3 restarted: the DSH MCP client may still hold the old tool list.
           await remind('BMA3 已重启。如果 qq_*/inbox_* MCP 工具不可用，请先重连 MCP'
             + '（mcp_connector_reconnect），再继续处理 inbox。')
@@ -2256,7 +2270,7 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
         return false
       }
     }
-    const text = renderPanel(panel)
+    const text = renderPanel(panel, config.hasMcp?.(agent) ?? true)
 
     const previousIntent = state.injectionIntent
     const previousPendingPush = state.pendingPush
@@ -3120,7 +3134,42 @@ export function createInboxClient(ctx, config = {}, resolveSessionQuery = () => 
     }
   }
 
+  const setBackend = (backend) => {
+    if (!managedBackend || disposed) return
+    generation += 1
+    controlEpoch += 1
+    stopEngine()
+    pending = null
+    pendingSource = null
+    connectionProcessId = null
+    config.baseUrl = backend?.inboxUrl
+    config.envFile = backend?.envFile
+    config.inboxId = backend?.inboxId
+    managedFingerprint = backend?.inboxFingerprint
+    // The context watermark belongs to the actual backend, including after a failed start.
+    contextPusher = makeContextPusher()
+    state.targetError = configuredTarget().error ?? null
+    state.lastError = null
+    // Only a verified managed handshake holds the OS lock that serializes stale-marker recovery.
+    if (backend?.inboxUrl && state.lockError === 'state_lock_held') {
+      const allowReclaim = Boolean(managedFingerprint) && config.reclaimManagedLock === true
+      Object.assign(state, savedFields(loadState(allowReclaim)))
+      if (config.sessionId) state.targetSessionId = String(config.sessionId)
+      if (!state.lockError && !state.stateError) persist()
+    }
+    if (backend?.inboxUrl && !state.stopped && !state.lockError && !state.stateError) {
+      if (state.targetSessionId) {
+        void restore(state.targetSessionId).catch(() => {
+          if (!disposed) ctx?.logger?.('bma3-dsh')?.warn?.('inbox backend restore failed')
+        })
+      } else if (config.autoStart !== false) {
+        start(false)
+      }
+    }
+  }
+
   return {
+    setBackend,
     start,
     stop,
     connect,
@@ -3452,7 +3501,7 @@ export function registerInboxCommand(ctx, client) {
             return {
               kind: 'success',
               text: '已解绑；自动 ACK 重试已暂停（记录仍保留，重新 bind 后恢复）。\n'
-                + '⚠ SSE 仍在运行：未绑定状态下新面板会注入到第一个 idle 会话。\n'
+                + (client.status().running ? '⚠ SSE 仍在运行：未绑定状态下新面板会注入到第一个 idle 会话。\n' : '')
                 + '要彻底脱手用 /inbox detach（解绑+停止）。',
             }
           case 'detach':
@@ -3462,12 +3511,17 @@ export function registerInboxCommand(ctx, client) {
               kind: 'success',
               text: '已解绑并停止 SSE；自动 ACK 重试已停止（记录仍保留）。要重新接入：/inbox bind',
             }
-          case 'restore':
-            await client.restore(argument || client.status().targetSessionId)
+          case 'restore': {
+            const status = await client.restore(argument || client.status().targetSessionId)
+            if (status?.targetError === 'backend_offline') {
+              return { kind: 'error', text: 'BMA3 后端离线。现有绑定仍保留，可用 /inbox status 查看。' }
+            }
             return { kind: 'success', text: `已恢复绑定\n${renderInboxStatus(client.status(), callingSession)}` }
+          }
           case 'pause':
             client.pause()
-            return { kind: 'success', text: '已暂停推送注入（SSE 保持连接，面板继续累积）。' }
+            return { kind: 'success', text: client.status().running
+              ? '已暂停推送注入（SSE 保持连接，面板继续累积）。' : '已保存暂停推送。' }
           case 'resume':
             client.resume()
             return { kind: 'success', text: '已恢复推送注入。' }
@@ -3830,7 +3884,7 @@ function registerInboxTool(ctx, client) {
   return { registerAgent, dispose, status: () => ({ ...diagnostic, scopes: [...scopes] }) }
 }
 
-export function apply(ctx, config = {}, managedFingerprint) {
+export function apply(ctx, config = {}, managedFingerprint, managedBackend = false) {
   // In Web the Inbox can mount before the session reader. Give the reader its own
   // injection scope so the rest of the Inbox can start as soon as the host is ready.
   let sessionQuery
@@ -3847,7 +3901,8 @@ export function apply(ctx, config = {}, managedFingerprint) {
   } catch {
     ctx?.logger?.('bma3-dsh')?.warn?.('context push: session reader injection failed')
   }
-  const client = createInboxClient(ctx, config, () => sessionQuery ?? ctx?.get?.('sessionQuery'), managedFingerprint)
+  const client = createInboxClient(ctx, config, () => sessionQuery ?? ctx?.get?.('sessionQuery'),
+    managedFingerprint, managedBackend)
   const toolRegistration = registerInboxTool(ctx, client)
 
   if (typeof client.attachToolRegistrar === 'function') {
@@ -3861,11 +3916,11 @@ export function apply(ctx, config = {}, managedFingerprint) {
   const initial = client.status()
   if (initial.lockError || initial.stateError || initial.persistence?.enabled === false) {
     ctx?.logger?.('bma3-dsh')?.warn?.(`inbox disabled: ${initial.blockedReason}`)
-  } else if (initial.targetSessionId && !initial.stopped) {
+  } else if (!managedBackend && initial.targetSessionId && !initial.stopped) {
     void client.restore(initial.targetSessionId).catch((error) => {
       ctx?.logger?.('bma3-dsh')?.warn?.(`inbox restore failed: ${error?.message ?? error}`)
     })
-  } else if (config.autoStart !== false && !initial.stopped) {
+  } else if (!managedBackend && config.autoStart !== false && !initial.stopped) {
     try {
       client.start()
     } catch (error) {

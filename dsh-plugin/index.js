@@ -1,6 +1,7 @@
 import { apply as applyInbox } from './lib/inbox.js'
 import { apply as applyPreset } from './lib/preset.js'
 import { applyRuntime } from './lib/runtime.js'
+import { applyPlugin } from './lib/plugin.js'
 
 /** Cordis must provide these services before apply() touches ctx.tools/ctx.agents/ctx.systemPrompt. */
 /**
@@ -16,26 +17,10 @@ export const inject = ['tools', 'agents', 'systemPrompt']
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'bma3-dsh'
 
-/** Components the package can mount. */
-export const MODULES = Object.freeze(['inbox', 'preset'])
-
-/**
- * One package, two modules, two responsibilities.
- *
- * - `inbox` injects the BMA3 inbox into DSH sessions (wake, revision push, `/inbox` command).
- * - `preset` registers the `bma3` agent preset, which injects the user's own system prompt.
- *
- * `lib/media.js` (`bma3_ocr` / `bma3_asr`) is mounted as a *preset row*, not as a profile row, so the
- * paid DeepSeek tools only exist inside BMA3 sessions.
- *
- * The Inbox row can source its backend from a managed app-image or local JAR (D-085).
- * With an external service it uses the existing Inbox configuration and native connector.
- *
- * @param {any} ctx Cordis context.
- * @param {{module?: string}} [config] Loader row config.
- */
+/** Linux uses the single entry. Explicit module rows still serve the legacy bundle layout. */
 export function apply(ctx, config = {}) {
-  const module = config?.module ?? 'inbox'
+  const module = config?.module
+  if (module === undefined) return applyPlugin(ctx, config ?? {})
   if (module === 'inbox') {
     if (config.source === 'bundled' || config.source === 'local-jar') applyRuntime(ctx, config)
     else if (config.source === undefined || config.source === 'external') applyInbox(ctx, config)
@@ -47,5 +32,5 @@ export function apply(ctx, config = {}) {
     return
   }
   const logger = ctx?.logger?.('bma3-dsh')
-  logger?.warn?.(`unknown module ${JSON.stringify(module)}; expected ${MODULES.join(', ')}`)
+  logger?.warn?.('BMA3 DSH: INVALID_MODULE')
 }

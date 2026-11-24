@@ -1,6 +1,6 @@
 # Outbound Delivery Safety Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development or executing-plans. Steps use checkbox (`- [ ]`) syntax. Do not commit without explicit user authorization.
+> Steps use checkboxes (`- [ ]`) for tracking. Do not commit without explicit user authorization.
 
 **Goal:** Persist conservative, inspectable QQ outbound delivery outcomes before and after dispatch, and prevent unsafe automatic retries.
 

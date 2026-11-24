@@ -7,14 +7,13 @@ import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { apply as applyInbox } from './inbox.js'
-import { hostToolRowName } from './host-tools.js'
+import { mountMcp } from './mcp.js'
 import { installedImage, installImage, readJson, RuntimeError, writeJson } from './runtime-image.js'
 
 const START_TIMEOUT = 20000
 const STOP_TIMEOUT = 5000
 const READY = 'BMA3_MANAGED_READY '
 const OCCUPIED = 'BMA3_MANAGED_ERROR INSTANCE_IN_USE'
-const MCP_CREDENTIAL = 'BMA3_MANAGED_MCP_TOKEN'
 const windows = process.platform === 'win32'
 const run = promisify(execFile)
 
@@ -23,7 +22,7 @@ function requireAbsolute(value) {
   return resolve(value)
 }
 
-function runtimeRoot(profile, config) {
+export function runtimeRoot(profile, config) {
   if (config.rootDir !== undefined) return requireAbsolute(config.rootDir)
   if (!profile || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(profile.name ?? '')) {
     throw new RuntimeError('PROFILE_REQUIRED')
@@ -182,11 +181,15 @@ async function within(operation, timeout, code) {
   }
 }
 
-async function connect(ctx, config, root, configRoot, endpoint) {
+async function connect(ctx, config, root, configRoot, endpoint, backend) {
   const secret = await credentials(endpoint.envFile)
   const health = await fetch(endpoint.healthUrl, { redirect: 'error', signal: AbortSignal.timeout(3000) })
   await health.body?.cancel()
   if (!health.ok) throw new RuntimeError('HEALTH_UNAVAILABLE')
+  const fingerprint = createHash('sha256').update(JSON.stringify([configRoot, endpoint.envFile])).digest('hex')
+  if (backend) {
+    return backend.activate({ ...endpoint, inboxFingerprint: fingerprint, mcpToken: secret.mcp })
+  }
   const panel = await fetch(endpoint.inboxUrl + '/v1/inboxes/' + encodeURIComponent(endpoint.inboxId) + '/panel', {
     headers: { Authorization: 'Bearer ' + secret.inbox },
     redirect: 'error',
@@ -194,49 +197,12 @@ async function connect(ctx, config, root, configRoot, endpoint) {
   })
   if (!panel.ok || !(await panel.json()).inboxIdentity) throw new RuntimeError('INBOX_UNAVAILABLE')
 
-  const native = await import(hostToolRowName('@deepseek-ai/dsh-mcp-client'))
-  let resolveMcp
-  let rejectMcp
-  const ready = new Promise((resolve, reject) => { resolveMcp = resolve; rejectMcp = reject })
-  const mcpFiber = ctx.isolate('credentials').plugin({
-    name: 'bma3-managed-mcp',
-    apply(scope) {
-      scope.provide('credentials', {
-        async resolve(ref) {
-          return ref === MCP_CREDENTIAL ? { value: secret.mcp } : undefined
-        },
-      })
-      // The provider must be active before the native client resolves its credentials.
-      scope.plugin({
-        name: 'bma3-native-mcp-client',
-        inject: ['credentials', 'tools'],
-        async apply(clientContext) {
-          try {
-            await native.apply(clientContext, native.Config({
-              transport: 'streamable-http',
-              serverName: 'bma3',
-              url: endpoint.mcpUrl,
-              headers: { Authorization: 'Bearer ${credential:BMA3_MANAGED_MCP_TOKEN}' },
-              expandTemplates: true,
-              startupTimeoutMs: 5000,
-              failOnStartupError: true,
-            }))
-            resolveMcp()
-          } catch {
-            rejectMcp(new RuntimeError('MCP_UNAVAILABLE'))
-            throw new RuntimeError('MCP_UNAVAILABLE')
-          }
-        },
-      })
-    },
-  })
-
+  const mcp = mountMcp(ctx, endpoint.mcpUrl, secret.mcp)
   let inboxFiber
   try {
-    await within(ready, 7000, 'MCP_UNAVAILABLE')
+    await within(mcp.ready, 7000, 'MCP_UNAVAILABLE')
     let inboxMounted = false
     const mounted = new Promise((resolve) => {
-      const identity = createHash('sha256').update(JSON.stringify([configRoot, endpoint.envFile])).digest('hex')
       inboxFiber = ctx.plugin({
         name: 'bma3-managed-inbox',
         apply(scope) {
@@ -246,7 +212,7 @@ async function connect(ctx, config, root, configRoot, endpoint) {
             envFile: endpoint.envFile,
             stateFile: join(root, 'inbox.json'),
             heartbeatMs: config.heartbeatMs,
-          }, identity)
+          }, fingerprint)
           const status = client.status()
           inboxMounted = !status.lockError && !status.stateError && status.persistence?.enabled !== false
           resolve()
@@ -255,22 +221,53 @@ async function connect(ctx, config, root, configRoot, endpoint) {
     })
     await within(mounted, 3000, 'INBOX_UNAVAILABLE')
     if (!inboxMounted) throw new RuntimeError('INBOX_STATE_UNAVAILABLE')
-    return async () => { await Promise.allSettled([inboxFiber.dispose(), mcpFiber.dispose()]) }
+    return async () => { await Promise.allSettled([inboxFiber.dispose(), mcp.dispose()]) }
   } catch (error) {
-    await Promise.allSettled([inboxFiber?.dispose(), mcpFiber.dispose()])
-    throw error
+    await Promise.allSettled([inboxFiber?.dispose(), mcp.dispose()])
+    throw error instanceof RuntimeError ? error : new RuntimeError('MCP_UNAVAILABLE')
   }
 }
 
-export function applyRuntime(ctx, config) {
+function externalUrl(value) {
+  if (value === undefined) return undefined
+  try {
+    const url = new URL(value)
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+        && !url.search && !url.hash) return url.href
+  } catch { /* controlled error below */ }
+  throw new RuntimeError('INVALID_EXTERNAL_ENDPOINT')
+}
+
+async function externalEndpoints(config) {
+  const inboxUrl = externalUrl(config.inboxUrl)
+  const mcpUrl = externalUrl(config.mcpUrl)
+  const mcpOpsUrl = externalUrl(config.mcpOpsUrl)
+  if ((!inboxUrl && !mcpUrl) || (mcpOpsUrl && !mcpUrl)) throw new RuntimeError('EXTERNAL_ENDPOINT_REQUIRED')
+  if (mcpOpsUrl && (!mcpUrl.endsWith('/daily') || mcpOpsUrl !== mcpUrl.slice(0, -6) + '/ops')) {
+    throw new RuntimeError('INVALID_EXTERNAL_MCP_SURFACES')
+  }
+  const envFile = config.envFile === undefined ? undefined : requireAbsolute(config.envFile)
+  const secret = envFile ? await credentials(envFile) : undefined
+  return { inboxUrl, inboxId: config.inboxId, mcpUrl, mcpOpsUrl, envFile, mcpToken: secret?.mcp }
+}
+
+export function applyRuntime(ctx, config, backend) {
   const logger = ctx.logger('bma3-runtime')
   const profile = ctx.get('profileContext')
   let queue = Promise.resolve()
   let owned
   let disconnect
   let disposed = false
+  const autoStart = config.autoStart ?? config.source === 'bundled'
+  const external = Boolean(backend) && config.source === 'external'
+  let desiredRunning = null
   let state = { phase: 'stopped', source: config.source, connected: false }
-  const status = () => ({ ...state })
+  const status = () => {
+    if (!backend) return { ...state }
+    const connections = backend.status()
+    const connected = connections.inbox === 'connected' && connections.mcp === 'connected'
+    return { ...state, ...connections, connected, desiredRunning: external ? null : desiredRunning ?? autoStart }
+  }
   const serial = (run) => {
     const next = queue.then(run, run)
     queue = next.catch(() => {})
@@ -290,9 +287,10 @@ export function applyRuntime(ctx, config) {
   }
 
   async function start(remember) {
-    if (disposed || owned?.running && state.connected) return status()
+    if (disposed || owned?.running && state.phase === 'running') return status()
     state = { phase: 'starting', source: config.source, connected: false }
     try {
+      if (!['bundled', 'local-jar'].includes(config.source)) throw new RuntimeError('INVALID_SOURCE')
       if (!windows && process.platform !== 'linux') throw new RuntimeError('MANAGED_PLATFORM_UNSUPPORTED')
       const root = runtimeRoot(profile, config)
       await mkdir(root, { recursive: true, mode: 0o700 })
@@ -309,7 +307,7 @@ export function applyRuntime(ctx, config) {
         owned = child
         const endpoint = await within(child.ready, START_TIMEOUT, 'MANAGED_START_TIMEOUT')
         if (expectedVersion && endpoint.version !== expectedVersion) throw new RuntimeError('IMAGE_VERSION_MISMATCH')
-        disconnect = await connect(ctx, config, root, configRoot, endpoint)
+        disconnect = await connect(ctx, config, root, configRoot, endpoint, backend)
         if (disposed || !child.running) throw new RuntimeError('CHILD_EXITED')
         void child.exited.then(() => serial(async () => {
           if (owned !== child) return
@@ -339,7 +337,10 @@ export function applyRuntime(ctx, config) {
           logger.warn('BMA3 runtime restored the previous image: ' + rollbackCode)
         }
       }
-      if (remember) await writeJson(join(root, 'desired.json'), { running: true })
+      if (remember) {
+        await writeJson(join(root, 'desired.json'), { running: true })
+        desiredRunning = true
+      }
       state = {
         phase: 'running', source: config.source, connected: true, version: endpoint.version,
         mcpSurface: endpoint.mcpSurface, ...(endpoint.mcpOpsUrl ? { mcpOpsUrl: endpoint.mcpOpsUrl } : {}),
@@ -362,6 +363,7 @@ export function applyRuntime(ctx, config) {
       const root = runtimeRoot(profile, config)
       await mkdir(root, { recursive: true, mode: 0o700 })
       await writeJson(join(root, 'desired.json'), { running: false })
+      desiredRunning = false
     } catch {
       code = 'DESIRED_STATE_UNAVAILABLE'
     }
@@ -374,12 +376,34 @@ export function applyRuntime(ctx, config) {
     return status()
   }
 
+  async function restart() {
+    if (!owned && state.code === 'INSTANCE_IN_USE') return status()
+    try {
+      await closeOwned()
+    } catch {
+      return { ...status(), code: 'STOP_FAILED' }
+    }
+    return start(true)
+  }
+
+  const actions = backend ? ['status', 'start', 'stop', 'restart'] : ['status', 'start', 'stop']
+  async function execute(action) {
+    if (external && action !== 'status') return { ...status(), code: 'EXTERNAL_RUNTIME' }
+    switch (action) {
+      case 'start': return serial(() => start(true))
+      case 'stop': return serial(stop)
+      case 'restart': return backend ? serial(restart) : status()
+      default: return status()
+    }
+  }
+
   ctx.effect(() => ctx.tools.register({
     name: 'bma3_runtime',
-    description: '查看、启动或停止当前 DSH profile 托管的 BMA3 进程。',
+    description: backend ? '查看、启动、停止或重启当前 DSH profile 托管的 BMA3 进程。'
+      : '查看、启动或停止当前 DSH profile 托管的 BMA3 进程。',
     parameters: {
       type: 'object',
-      properties: { action: { type: 'string', enum: ['status', 'start', 'stop'] } },
+      properties: { action: { type: 'string', enum: actions } },
       additionalProperties: false,
     },
     output: {
@@ -387,8 +411,7 @@ export function applyRuntime(ctx, config) {
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     execute: async ({ action = 'status' } = {}) => ({
-      text: JSON.stringify(action === 'start' ? await serial(() => start(true))
-        : action === 'stop' ? await serial(stop) : status()),
+      text: JSON.stringify(await execute(action)),
     }),
   }))
   ctx.effect(() => async () => {
@@ -397,12 +420,22 @@ export function applyRuntime(ctx, config) {
   })
   void serial(async () => {
     try {
+      if (external) {
+        const endpoint = await externalEndpoints(config)
+        if (disposed) return
+        disconnect = await backend.activate(endpoint, true)
+        state = { phase: 'external', source: config.source, connected: false }
+        return
+      }
+      if (!['bundled', 'local-jar'].includes(config.source)) throw new RuntimeError('INVALID_SOURCE')
       const desired = await readJson(join(runtimeRoot(profile, config), 'desired.json'))
       if (desired !== null && typeof desired.running !== 'boolean') throw new RuntimeError('RUNTIME_CONFIG_INVALID')
-      if (desired?.running ?? (config.autoStart ?? config.source === 'bundled')) await start(false)
-    } catch {
-      state = { phase: 'failed', source: config.source, connected: false, code: 'RUNTIME_CONFIG_INVALID' }
-      logger.warn('BMA3 runtime: RUNTIME_CONFIG_INVALID')
+      desiredRunning = desired?.running ?? null
+      if (desiredRunning ?? autoStart) await start(false)
+    } catch (error) {
+      const code = error instanceof RuntimeError ? error.message : 'RUNTIME_CONFIG_INVALID'
+      state = { phase: 'failed', source: config.source, connected: false, code }
+      logger.warn('BMA3 runtime: ' + code)
     }
   })
 }

@@ -18,7 +18,7 @@ if (($ConfigRoot + '\').StartsWith(($repoRoot.TrimEnd('\') + '\'),
         [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Keep runtime data and credentials outside the source repository.'
 }
-if (-not $Jar) { $Jar = Join-Path $repoRoot 'bma3-app\target\bma3-app-0.0.9-fix1.jar' }
+if (-not $Jar) { $Jar = Join-Path $repoRoot 'bma3-app\target\bma3-app-0.0.9-fix2.jar' }
 $Jar = [IO.Path]::GetFullPath($Jar)
 if (-not (Test-Path -LiteralPath $Jar -PathType Leaf)) {
     throw "BMA3 jar not found: $Jar. Build it first with .\mvnw.cmd -B -ntp package."

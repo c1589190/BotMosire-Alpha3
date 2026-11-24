@@ -1,4 +1,38 @@
-# STATUS —— 更新时间：2026-11-23 (UTC+8)
+# STATUS —— 更新时间：2026-11-24 (UTC+8)
+
+## 2026-11-24：0.0.9-fix2 Linux DSH
+
+- 按 D-092，将版本统一为 `0.0.9-fix2`，发行资产仅为 `mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz`。基线 `feat/0.0.9-early` / `5dfdd38`，范围为 Linux DSH 单入口重构及旧会话工具恢复。
+- 在暂存源码快照运行 `env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none`，Node 22 与 26 各 193/193，均 rc=0。`./mvnw -B -ntp -o -fae -Dmaven.repo.local=<隔离缓存> -Djava.io.tmpdir=<隔离目录> test` rc=0，949 项通过，真实浏览器和 Windows DPAPI 各跳过 1 项。证据 `/tmp/bma3-009-fix2.DGC2XUNr/{node22,node26,maven-test}.log`。
+- `MAVEN_ARGS="-o -Dmaven.repo.local=<隔离缓存>" bash packaging/build-dsh-bundle.sh` 和 `sha256sum -c mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz.sha256` 均 rc=0，外层 SHA-256 为 `000a1fdd129e417cc709e761b871bf2c53957eaf5daff7ff6a77d721fbed4c5d`。镜像清单和内置镜像摘要一致，清除 `JAVA_HOME` 并设置 `PATH=/nonexistent` 后启动器仍报告 `botmosire-a3 0.0.9-fix2`。证据同目录 `build.log`。[发行说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.9-fix2)
+- 同目录 `install-final.sh <隔离 DSH_HOME> <安装日志>`、`run-web.sh <隔离 DSH_HOME> bundled <宿主日志>` 和 `upgrade.sh reinstall-fault-fix2 <旧 Linux 包> <fix2 Linux 包>` 均 rc=0。Linux DSH Web `0.2.2-rc.5` 回环验证单入口、启动/停止/重启、会话绑定和 30/0/0 MCP 隔离。旧会话模拟缺失的 `bash` 和 `read_image` 后热替换，原会话实际执行 Bash 成功，历史回合和原有工具限制保留。证据 `install.log`、`web.log` 和 `reinstall-fault-fix2.log`。真实 QQ、Windows、`packaging/smoke.sh` 为 `NOT_RUN`。
+
+## 2026-11-24：恢复升级中旧 BMA3 会话的原生工具
+
+- 用户报告升级插件后，旧 BMA3 会话的 Bash 等工具再次消失。范围为 DSH 工具解析和保留的预设作用域，基线 `feat/0.0.9-early` / `5dfdd38` 上已有 Linux 单入口改动。Node 26.13.1 在原解析器上复现安装间隙的负缓存。本机正常替换安装保留了工具。隔离 Linux DSH Web `0.2.2-rc.5` 中人为释放保留预设的 Bash、FS 两行后，复现了新会话正常、旧会话工具持续缺失的症状。
+- 解析器先核验安装路径和缓存入口，再交给 Node 解析。预设重新注册后，只给仍绑定旧 BMA3 预设的作用域恢复缺失的原生终端和 `read_image` 行。原会话及其预设绑定、已完成回合与宿主工具限制保留。[升级契约](../superpowers/specs/2026-11-24-dsh-unified-plugin-linux-design.md#升级与回退)
+- `cd dsh-plugin && env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none` 在 Node `22.23.3`、`26.13.1` 均 rc=0、193/193。`bash /tmp/bma3-dsh-upgrade.HaKgeyu6/run.sh ...` 的未修复故障注入对照 rc=1，修复后同一类热安装与正常热安装均 rc=0，旧会话实际执行 Bash 成功且 Bash 禁用对照仍生效。证据 `suite-node22.log`、`suite-node26.log`、`reinstall-fault-base2.log`、`reinstall-fault-final.log`、`reinstall-normal-final.log`。
+- 隔离副本 `MAVEN_ARGS="-o -Dmaven.repo.local=<隔离缓存>" bash packaging/build-dsh-bundle.sh`、`sha256sum -c <tgz.sha256>` 和 `git diff --check` rc=0。带内置 Java/JAR 的实际一键包在同一 Linux 宿主进行了正常热替换、旧作用域故障注入后的热替换，均 rc=0。插件管理器报告 `restart-required`，探针仍在原宿主进程确认旧会话的 Bash 和读取图片工具可用。证据 `/tmp/bma3-dsh-upgrade.HaKgeyu6/` 的 `build.log`、`reinstall-normal-full.log` 和 `reinstall-fault-full.log`。候选包保持本地。用户故障现场、Windows、Java 全量测试与发布为 `NOT_RUN`。
+
+## 2026-11-24：Linux DSH 单入口插件已实现
+
+- 基线 `feat/0.0.9-early` / `5dfdd38`。一个 Linux `bma3-plugin` 入口组装 Inbox、BMA3 预设和 JAR 运行时。Inbox 的命令、会话绑定和独占状态已与 JAR 启停解耦。BMA3 的原生 MCP 在预设作用域内随连接更新，`bma3_runtime` 支持查询、启停和串行重启。发行脚本仅输出内置 JAR/Java 21 的 Linux DSH tgz，旧版迁移见[插件指南](../../dsh-plugin/README.md)。
+- `cd dsh-plugin && env -u DEEPSEEK_API_KEY /usr/bin/node --test --experimental-test-isolation=none` rc=0，192/192。隔离源码副本 `MAVEN_ARGS="-o -Dmaven.repo.local=<隔离缓存>" bash packaging/build-dsh-bundle.sh` rc=0，安装包 `sha256sum -c` 和 `git diff --check` 均 rc=0。日志 `/tmp/bma3-dsh-unified.0701GQ0e/` 下的 `plugin-tests-accepted.log`、`build-accepted.log` 和文档更新后的 `build-local-candidate.log`。
+- 在同一证据目录中，`install-final.sh`、`run-web.sh`、`local-jar.sh`、`python3 external.py`、`BMA3_TEST_OUTAGE=1 python3 external.py`、`migration.sh` 的候选包探针均 rc=0。Linux DSH Web `0.2.2-rc.5` 验证单入口、30/0/0 个日常 MCP 工具（BMA3 / Standard / 全局）、启停重启、离线绑定、外部服务异常退出时撤销工具、普通会话的合成 SSE 注入与 guarded ACK。用旧整合包建立的配置、绑定和停止意图也通过替换安装保留。证据 `web-{bundled,local,external,outage}.log` 与 `migration-{before,after}.log`。
+- Java 一次性配置命令及插件的 `configure` 接线待后续，同样待做的还有旧普通包完整迁移、Java 全量门禁、Windows 与真实 QQ 验收。旧插件缺陷等待复现。本轮候选包在临时目录构建验证，未发行。
+
+## 2026-11-24：Linux DSH 单插件工作流草案
+
+- 用户确认 Inbox、BMA3 预设和 JAR 运行时是一个 DSH 插件入口中的三个内部组件，并明确要求支持停机编辑 `app.yaml`。设计基线 `feat/0.0.9-early` / `5dfdd38`。[D-089](../superpowers/DESIGN_RULINGS.md) · [专题设计](../superpowers/specs/2026-11-24-dsh-unified-plugin-linux-design.md) · [实施顺序](../superpowers/plans/2026-11-24-dsh-unified-plugin-linux-plan.md)
+- D-091 将 Linux DSH 发行收口为只提供内置 BMA3 JAR、Java 21 和启动器的一键包。旧纯插件用户走替换升级。早先的双产物探针 rc=0，验证了使用 `@mosire/bma3-dsh` 同名替换后只有一条入口，带镜像产物安装的镜像逐字节一致。证据 `/tmp/bma3-dsh-formats.cUDUJUAO/probe.log`。清除 `JAVA_HOME`、设置 `PATH=/nonexistent` 后，包内启动器的 `--version` rc=0。
+- 现有 Linux 宿主证据已覆盖预设 MCP 隔离、离线 Inbox 命令和普通会话启动 JAR，足够开始 DSH 侧重构。先复用现有 JAR 的握手做单入口和三组件，再接入启停与重启。停机编辑 `app.yaml` 的联调依赖 Java 一次性配置入口。开工第一条命令为 `git status --short --branch`。`git diff --check` 与一次性 Python 核对 13 处专题链接及实施顺序均 rc=0。新版实现、打包、迁移与 Windows 验收为 `NOT_RUN`。
+
+## 2026-11-24：Linux DSH 单包与三模块可行性调查
+
+- 分支 `feat/0.0.9-early` 已从 `4d41002` 快进到 GitHub 上的 `5dfdd38`。`git rev-list --left-right --count HEAD...@{u}` 为 `0 0`。开工前已有的状态改动、架构报告和会话导出均保留。按 M-006 取消仓库的子 Agent 委派规则。
+- 候选架构为同一插件包内独立的 Inbox、BMA3 预设和运行时管理。隔离 Linux DSH Web `0.2.2-rc.5` 实测当前托管连接的 30 个 MCP 工具出现在两个预设。原生 MCP 探针挂至 BMA3 预设后，BMA3 / standard / 全局为 30 / 0 / 0，且只读调用与卸载通过。JAR 停止时单独挂载的 Inbox 可继续在两种会话查询状态。详见[调查报告](../superpowers/reports/2026-11-24-dsh-unified-plugin-linux-survey.md)。
+- Linux 整合包构建、SHA-256 校验和 DSH 安装均 rc=0，真实宿主回环探针 6 个场景通过，日志 `/tmp/bma3-dsh-linux-survey.QjqvcLcr/`。Node 22 插件测试 190/190、rc=0。Node 26 基线有一项宿主工具重新解析断言失败（189/190，rc=1）。全量 Maven、真实模型/QQ、Windows 与新架构的迁移验收为 `NOT_RUN`。
+- 本次改动为维护规则和调查文档。停机修改 `app.yaml` 的范围随后由 D-089 确认。
 
 ## 2026-11-23：0.0.9-fix1 Windows x64 实测包
 

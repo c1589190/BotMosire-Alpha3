@@ -41,10 +41,24 @@ function packageDirOf(file) {
   return undefined
 }
 
-/** Resolve a package entry inside one package's dependency scope. */
-function resolveFrom(packageDir, specifier) {
+function packageName(specifier) {
+  const parts = specifier.split('/')
+  return parts.slice(0, specifier.startsWith('@') ? 2 : 1).join('/')
+}
+
+/** Avoid handing a missing package to Node's resolver during a live package replacement. */
+function resolveFrom(anchor, specifier) {
   try {
-    return createRequire(path.join(packageDir, 'package.json')).resolve(specifier)
+    const require = createRequire(anchor)
+    const name = packageName(specifier)
+    const paths = require.resolve.paths(specifier) ?? []
+    const self = path.join(path.dirname(anchor), 'package.json')
+    if (!paths.some((directory) => existsSync(path.join(directory, name, 'package.json')))) {
+      // A package can export its own subpaths through Node's self-resolution.
+      if (!existsSync(self) || require(self).name !== name) return undefined
+    }
+    const entry = require.resolve(specifier)
+    return existsSync(entry) ? entry : undefined
   } catch {
     return undefined
   }
@@ -70,7 +84,7 @@ function scanStore(entryPoint, specifier) {
           const candidate = path.join(store, hit, 'node_modules', specifier)
           if (existsSync(path.join(candidate, 'package.json'))) {
             try {
-              return createRequire(path.join(candidate, 'package.json')).resolve(specifier)
+              return resolveFrom(path.join(candidate, 'package.json'), specifier)
             } catch {
               // fall through to the next strategy
             }
@@ -96,7 +110,9 @@ const cache = new Map()
 
 export function hostToolEntry(specifier, entryPoint = process.argv[1]) {
   const cacheKey = `${entryPoint}\u0000${specifier}`
-  if (cache.has(cacheKey)) return cache.get(cacheKey)
+  const cached = cache.get(cacheKey)
+  if (cached && existsSync(cached)) return cached
+  cache.delete(cacheKey)
   const resolved = lookupHostTool(specifier, entryPoint)
   // Never cache a miss: a `dsh plugin` reinstall can temporarily make the host tree
   // unresolvable, and a cached `undefined` would keep bash/read_image unmounted for the
@@ -133,7 +149,7 @@ function resolveSubpath(specifier, entryPoint) {
   const rootEntry = lookupHostTool(parts.slice(0, rootLength).join('/'), entryPoint)
   if (rootEntry === undefined) return undefined
   const rootDir = packageDirOf(rootEntry)
-  return rootDir === undefined ? undefined : resolveFrom(rootDir, specifier)
+  return rootDir === undefined ? undefined : resolveFrom(path.join(rootDir, 'package.json'), specifier)
 }
 
 function lookupHostTool(specifier, entryPoint) {
@@ -141,13 +157,9 @@ function lookupHostTool(specifier, entryPoint) {
     const subpath = resolveSubpath(specifier, entryPoint)
     if (subpath !== undefined) return subpath
     for (const anchor of ANCHORS) {
-      let anchorDir
-      try {
-        anchorDir = packageDirOf(createRequire(entryPoint).resolve(anchor))
-      } catch {
-        anchorDir = undefined
-      }
-      const found = anchorDir === undefined ? undefined : resolveFrom(anchorDir, specifier)
+      const anchorEntry = resolveFrom(entryPoint, anchor)
+      const anchorDir = anchorEntry === undefined ? undefined : packageDirOf(anchorEntry)
+      const found = anchorDir === undefined ? undefined : resolveFrom(path.join(anchorDir, 'package.json'), specifier)
       if (found !== undefined) return found
     }
     const scanned = scanStore(entryPoint, specifier)

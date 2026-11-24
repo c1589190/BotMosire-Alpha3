@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 
-import { MODULES, inject, name } from '../index.js'
+import { inject, name } from '../index.js'
 
-test('manifest exposes the bundle modules and required services', async () => {
+test('Linux bundle declares one entry with a bundled runtime', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.name, '@mosire/bma3-dsh')
   assert.equal(pkg.type, 'module')
@@ -15,7 +15,6 @@ test('manifest exposes the bundle modules and required services', async () => {
   assert.ok(pkg.exports['./media'], 'OCR/ASR 工具模块要可单独加载')
   // 回归：耦合层删除后不得再导出 self（工具面/桥接/修复都在那一层，D-066）
   assert.equal(pkg.exports['./self'], undefined)
-  assert.deepEqual([...MODULES], ['inbox', 'preset'])
   assert.equal(name, 'bma3-dsh')
 
   // 回归：`agentPresets` 不能进 inject —— 预设子树是在 registry.register() 内部挂载的，
@@ -27,10 +26,7 @@ test('manifest exposes the bundle modules and required services', async () => {
     'agentPresets 必须用 ctx.get() 取，不能进 inject')
 
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
-  assert.match(patch, /bma3-inbox/)
-  assert.match(patch, /module: inbox/)
-  assert.match(patch, /bma3-preset/)
-  assert.match(patch, /module: preset/)
-  assert.doesNotMatch(patch, /module: self/)
-  assert.doesNotMatch(patch, /bma3-persona'?\s*$/m, 'legacy persona 行必须不再插入')
+  assert.deepEqual([...patch.matchAll(/^\s*- id: (.+)$/gm)].map((match) => match[1]), ['bma3-plugin'])
+  assert.match(patch, /source: bundled/)
+  assert.doesNotMatch(patch, /module:/)
 })

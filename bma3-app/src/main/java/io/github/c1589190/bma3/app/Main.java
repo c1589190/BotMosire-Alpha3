@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** CLI entry point used by the jpackage launcher. */
 public final class Main {
 
-    public static final String VERSION = "0.0.9-fix1";
+    public static final String VERSION = "0.0.9-fix2";
 
     private Main() {
     }

@@ -1,29 +1,30 @@
 # @mosire/bma3-dsh
 
-BMA3 的 DSH 插件有两个加载模块。
+Linux 一键包在目标 DSH profile 加载一条 `bma3-plugin` 入口，组装三个内部组件。
 
-| 模块 | 作用 |
+| 组件 | 作用 |
 |---|---|
-| `inbox` | 把 BMA3 Inbox 注入 DSH 会话，也可以托管 Java 进程并连接原生 MCP |
-| `preset` | 注册 `bma3` 预设：注入你的系统提示词 + 挂一层薄工具面（含 OCR/ASR 两个媒体工具） |
-
-**没有白名单，没有 `restrict`，没有策略层** —— 预设挂什么，会话就看到什么（D-067）。
-0.0.5 的 `defaultTools` 组别白名单已删除：它依赖别的插件先把工具名注册进全局层，而且
-allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagent` 一起裁掉。
+| Inbox | 任意会话都可使用 `/inbox` 和 `bma3_inbox`。JAR 停止期间仍可查状态、保存绑定和暂停。 |
+| BMA3 预设 | 组装自定义系统提示词和预设工具。JAR 就绪后，只有该预设能看到插件接入的 BMA3 MCP 工具。 |
+| 运行时 | 管理本 profile 的 BMA3 JAR，任意会话都可使用 `bma3_runtime`。 |
 
 ## 预设：人设 + 薄面
 
 提示词文件默认 `~/.dsh/bma3/systemprompt.md`（`$DSH_HOME` 优先），示例见
 [`examples/systemprompt.md`](examples/systemprompt.md)。
 
+在 Linux profile 的 `cordis.patch.yml` 可覆盖同一入口的配置。宿主用这一段 `config` 替换默认值，已有的运行时和 Inbox 设置也应写在同一段。
+
 ```yaml
-- id: bma3-preset
-  name: '@mosire/bma3-dsh'
+- id: bma3-plugin
   config:
-    module: preset
-    promptFile: ~/.dsh/bma3/systemprompt.md   # 可省，省略即默认
-    complete: true                            # 可省，默认 true
+    preset:
+      promptFile: ~/.dsh/bma3/systemprompt.md
+      complete: true
+      enableOps: false
 ```
+
+默认接日常 MCP。将 `enableOps` 设为 `true` 后，已配置的额外入口以 `mcp__bma3_ops__*` 出现在 BMA3 会话。
 
 预设为会话挂载以下组件。
 
@@ -50,25 +51,22 @@ allow 从全局视图算，会把预设自己挂的 `bash`/`read_image`/`subagen
 
 ## 托管 BMA3
 
-托管模式在 Linux 的 DSH Web profile 中使用宿主原生 MCP 客户端，已验证 DSH `0.2.2-rc.3`。profile 的
-`bma3_runtime` 工具支持 `status`、`start` 和 `stop`。显式 `stop` 会跨宿主重启保留。
+Linux 目标宿主为 DSH Web `0.2.2-rc.5`。`bma3_runtime` 支持 `status`、`start`、`stop` 和
+`restart`。状态分别报告进程、MCP 与 Inbox，显式停止跨 DSH 重启保留。Java 重新启动后，已有 BMA3
+会话会接到新的工具注册。
 
-新版 JAR 会让托管 DSH 以 `bma3` 自动连接日常入口。旧 JAR 继续连接它原来的全量入口。
-`bma3_runtime status` 中的 `mcpSurface` 显示当前入口，`mcpOpsUrl` 显示可以按需挂载的额外工具入口。
-
-### Linux x86_64 整合包
+### Linux x86_64 一键包
 
 构建后从本仓库运行：
 
 ```bash
-dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-managed-0.0.9-fix1.tgz"
+dsh plugin --profile web add "$PWD/dist/mosire-bma3-dsh-0.0.9-fix2-linux-x64-full.tgz" --ignore-scripts
 dsh --profile web
 ```
 
-首次启动 profile 会校验并安装内置镜像，启动 BMA3 并自动接通 MCP 与 Inbox。
-每个 profile 默认使用 `$DSH_HOME/bma3/instances/<profile>/`，可用下列同一个
-`bma3-inbox` 行的 `rootDir` 指定绝对目录。整合包的 `source` 为 `bundled`。
-升级会保留配置、数据库和 Inbox 状态。
+首次打开 profile，插件校验镜像并使用随包 Java 21 启动 JAR。默认运行根为
+`$DSH_HOME/bma3/instances/<profile>/`，可用 `bma3-plugin` 行的 `runtime.rootDir` 指定绝对路径。
+在要接收预览的会话输入 `/inbox bind`，在需要业务工具的会话选择 BMA3 预设。
 
 ### Windows x64 整合包
 
@@ -85,24 +83,30 @@ dsh.cmd plugin --profile web add "$PWD\dist\mosire-bma3-dsh-managed-0.0.9-fix1-w
 整合包内置 Java 21，激活后自动接通 MCP 和 Inbox，可用 `bma3_runtime` 的 `status` 动作查看就绪状态。
 Windows 候选包以 `pwsh -File packaging/build-dsh-bundle-windows.ps1` 构建。
 
-### 用普通插件托管本机 JAR
+### 托管已有本机 JAR
 
-安装普通插件包。在目标 profile 的 `cordis.patch.yml` 中覆盖 `bma3-inbox` 行：
+安装同一个 Linux 一键包。在目标 profile 的 `cordis.patch.yml` 覆盖运行来源：
 
 ```yaml
-- id: bma3-inbox
+- id: bma3-plugin
   config:
-    module: inbox
-    source: local-jar
-    javaPath: /usr/bin/java
-    jarPath: /opt/bma3/bma3-app-0.0.9-fix1.jar
-    configRoot: /opt/bma3/run
-    autoStart: false
+    runtime:
+      source: local-jar
+      javaPath: /usr/bin/java
+      jarPath: /opt/bma3/bma3-app-0.0.9-fix2.jar
+      configRoot: /opt/bma3/run
+      autoStart: false
 ```
 
 `configRoot` 下应已有 `config/app.yaml`，配置使用 `127.0.0.1` 和 token 鉴权。
-启动 profile 后可使用 `bma3_runtime(action="start")`，也可启用 `autoStart`。
-已由外部服务启动的实例继续使用下面的连接方式，其启停由外部服务负责。
+打开 profile 后可用 `bma3_runtime(action="start")` 启动，或将 `autoStart` 设为 `true`。
+
+### 从旧 Linux 插件升级
+
+1. 停止目标 DSH profile，保存 profile patch 以及原 JAR 配置、数据库和 Inbox 状态的位置。
+2. 旧包名为 `@mosire/bma3-dsh-managed` 时，执行 `dsh plugin --profile web remove @mosire/bma3-dsh-managed`，再安装新一键包。旧 `@mosire/bma3-dsh` 可用新一键包替换安装。
+3. 把旧 `bma3-inbox` 行中的管理来源、路径和启动策略移到 `bma3-plugin.config.runtime`。Inbox 独有设置移到 `inbox`，旧 `bma3-preset` 的提示词设置移到 `preset`。已有外部连接应明确设置 `source: external`，并保留原 `stateFile`。默认托管目录会继续使用原配置和持久化状态。
+4. 移除已迁移的旧行及手工挂载的 BMA3 全局 MCP 行。启动前用 `dsh --profile web --dump-config` 核对只剩一条 BMA3 插件入口。
 
 ## 配置 OneBot 凭据
 
@@ -114,84 +118,24 @@ OneBot access token。使用过旧版 Windows 启动器的用户可用 `import_w
 
 ## 连接独立运行的 BMA3
 
-jar 提供标准 MCP Streamable HTTP，连接由 DSH 自带的
-`@deepseek-ai/dsh-mcp-client` 完成（D-066）。
-
-### 端点与凭据从哪来
-
-| 事实 | 位置 |
-|---|---|
-| MCP 端点 | `<config 目录>/config/app.yaml` 的 `server.port` + `server.mcpPath`（默认 `8765` + `/mcp`） |
-| **MCP token** | **`<config 目录>/.bma3env` 的 `MCP_TOKEN`** —— 不是 `dataDir` 下，也不是环境变量 |
-| Inbox token | 同一文件里的 `INBOX_TOKEN`（两个 token 相互独立） |
-| 鉴权模式 | `security.auth: token`（默认，要 Bearer）/ `none`（`--no-auth`，仅回环，不需要 header） |
-
-默认 `/mcp` 提供全量工具，`/mcp/daily` 提供日常收发、查询、Inbox 和记忆工具，`/mcp/ops` 提供其余工具。
-自定义 `server.mcpPath` 时在该路径下使用 `daily` 或 `ops`。三个入口共用同一个监听端口和鉴权方式。
-日常与额外入口可以一起挂载且工具不重复。全量入口适合单独挂载；不同名称接同一全量入口会产生重复工具。
-
-jar 启动时自动写这个文件（0600、原子写、存在即复用）。**不要**再读 `server.tokenEnv`：
-那个键 0.0.6 仍被解析但已不参与鉴权。
-
-### 一次性配置（推荐）
-
-在 `~/.dsh/profiles/<name>/cordis.patch.yml` 末尾加：
+Linux profile 可用同一个插件接入已经运行的 BMA3。把现有端点和凭据文件路径填入该入口。
 
 ```yaml
-- insert:
-    - id: bma3-mcp
-      name: "@deepseek-ai/dsh-mcp-client"
-      # jar 从没起过（没有 .bma3env）就不挂这一行，免得留一个必然失败的悬空连接
-      disabled: !!js "!process.getBuiltinModule('node:fs').existsSync('/opt/bma3/run/.bma3env')"
-      config:
-        serverName: bma3
-        transport: streamable-http
-        url: http://127.0.0.1:18765/mcp        # 换成你的 port + mcpPath
-        headers:
-          # 组装期从 jar 自己的 .bma3env 读 token：不进对话、不进仓库、不用手抄
-          Authorization: !!js '`Bearer ${/^MCP_TOKEN=(.*)$/m.exec(process.getBuiltinModule("node:fs").readFileSync("/opt/bma3/run/.bma3env","utf8"))[1].trim()}`'
-        failOnStartupError: false
-        reconnect:
-          initialDelayMs: 1000
-          maxDelayMs: 30000
-          # 默认 10 次 ≈ 2 分钟；给足 8 小时，jar 晚起也能接上
-          maxAttempts: 1000
+- id: bma3-plugin
+  config:
+    runtime:
+      source: external
+      mcpUrl: http://127.0.0.1:18765/mcp/daily
+      mcpOpsUrl: http://127.0.0.1:18765/mcp/ops
+    inbox:
+      baseUrl: http://127.0.0.1:18766
+      inboxId: bma3
+      envFile: /opt/bma3/run/.bma3env
 ```
 
-要点：
-
-- `!!js` 里**不能用 `require`**，要用 `process.getBuiltinModule('node:fs')`（宿主的 `!!js` 沙箱里没有 `require`）。
-- 新行必须写在 `- insert: [...]` 里；顶层平铺的 `id` 是"改已有行"，会报 `entry "xxx" not found`。
-- `auth: none` 时删掉 `headers` 整段即可（不要把空 token 塞进去，会变成 `Authorization: Bearer `）。
-- **jar 没起会怎样**：DSH 照常启动，这一行按 `initialDelayMs` 翻倍退避重试，**预算耗尽后永久放弃**
-  （默认 10 次 ≈ 2 分钟），之后 jar 起来了也**不会自愈**，要重启 DSH。所以把 `maxAttempts` 调大，
-  或者让 jar 先起（systemd `After=`/`Requires=`）。
-
-### Agent 侧自查（没有一次性配置时才需要）
-
-```bash
-pgrep -af 'bma3-app.*\.jar'          # → 拿 --config /path/to/root
-sed -n 's/.*port: \([0-9]*\).*/\1/p' /path/to/root/config/app.yaml
-sed -n 's#.*mcpPath: *\([^,}]*\).*#\1#p' /path/to/root/config/app.yaml
-sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
-```
-
-然后让宿主加同一行（或让运维加）。**不要把 token 抄进对话当参数**：它会被重发给模型供应商
-每一轮（D-060 只放行"落进运行期日志"，不等于"每轮出境"）。
-
-### 验证
-
-连上后工具以 `mcp__bma3__*` 出现（完整配置约 68 个：`inbox_*`、`qq_*`、`xvfb_*`、`get_config`/`set_config`、
-`bma3_watchdog_*`）。最快的自检是调一次 `mcp__bma3__inbox_status`，返回 JSON 即通。
-
-### 常见故障
-
-| 症状 | 原因 | 处理 |
-|---|---|---|
-| `unknown tool "mcp__bma3__*"` | 行没挂 / 连接失败 / jar 没起 | 看 MCP 面板状态；确认 `.bma3env` 存在；重启 DSH 重新求值 |
-| MCP 请求 401 | token 取错（用了旧 env token 或 MCP/Inbox 混用） | 只认 `.bma3env` 的 `MCP_TOKEN` |
-| `serverName "bma3" is already in use` | 另有一条 `mcp-client` 行用了同一 `serverName` | 同一实例保留一条主连接；只给独立实例或额外工具入口使用另一个名字 |
-| 第二实例起不来 `已有 BMA3 实例运行中` | 单实例锁（同一 `dataDir`） | 先停旧实例，或换 `dataDir` |
+`.bma3env` 由 Java 生成，Linux 上要求文件属主为当前用户且权限为 `0600`。插件分别读取
+`MCP_TOKEN` 与 `INBOX_TOKEN`。显式以无鉴权模式运行的回环实例可省略 `envFile`。
+老 JAR 只提供 `/mcp` 时，把 `mcpUrl` 设成对应的全量入口。外部实例的启停仍由原启动器负责。
 
 ## 媒体：OCR / ASR（DeepSeek 官方接口）
 
@@ -213,22 +157,9 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 
 ## Inbox
 
-```yaml
-- id: bma3-inbox
-  name: '@mosire/bma3-dsh'
-  config:
-    module: inbox
-    baseUrl: http://127.0.0.1:18766
-    inboxId: bma3
-    envFile: /opt/bma3/run/.bma3env    # jar 生成的同一份文件，读 INBOX_TOKEN
-    autoStart: true
-    heartbeatMs: 15000
-    # stateFile: ~/.dsh/storages/bma3-inbox.json
-```
-
-- 一个 inbox 一条 SSE；`source` 只是条目，不存在 per-source 订阅（红线 11）。
-- token 从 `envFile` 指向的 `.bma3env` 读 `INBOX_TOKEN`；读不到就不带 Authorization 头发请求。
-  （0.0.5 的 `tokenFile` / `tokenEnv` 两个键已删除，写了也不会生效。）
+Linux 下通过 `bma3-plugin.config.inbox` 设置 `stateFile`、`heartbeatMs`、`autoStart` 和可选的
+`sessionId`。托管模式自动获得连接地址。命令 `/inbox bind` 可在会话内绑定当前会话，
+`/inbox status` 查看状态，一个 Inbox 持有一条 SSE。
 
 绑定会话刚收到一批 Inbox 预览时，如果 `deepseek-official` 在第一步返回 `Content Exists Risk`，
 插件通过宿主钩子把该条预览替换为仅含批次标识的通知，并在同一步重试一次。若再次被拒，
@@ -239,7 +170,7 @@ sed -n 's/^MCP_TOKEN=//p' /path/to/root/.bma3env
 
 | 文件 | 作用 |
 |---|---|
-| `stateFile`（配置里的路径，默认 `~/.dsh/storages/bma3-inbox.json`） | **v1 路径**，只用于首次迁移读取，本版不再写 |
+| `stateFile` | **v1 路径**，仅用于迁移。托管模式默认为运行根下的 `inbox.json`，外部连接沿用 `~/.dsh/storages/bma3-inbox.json` |
 | `state.v2.json`（上面路径的确定性兄弟文件） | 真正写入的 v2 快照（0600、临时文件 + fsync + rename） |
 | `state.v2.json.lock`（0600） | 每个状态文件的**独占锁**，在首次读状态前用 `O_EXCL` 取得；含实例 token 与 inode 校验 |
 

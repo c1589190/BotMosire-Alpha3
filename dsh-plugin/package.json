@@ -1,9 +1,9 @@
 {
   "name": "@mosire/bma3-dsh",
-  "version": "0.0.9-fix1",
+  "version": "0.0.9-fix2",
   "private": true,
   "type": "module",
-  "description": "BMA3 thin DSH bundle: Inbox wake injection, the BMA3 persona preset, thin tool face and DeepSeek OCR/ASR tools.",
+  "description": "BMA3 DSH plugin: Inbox, BMA3 preset and managed JAR runtime.",
   "exports": {
     ".": "./index.js",
     "./inbox": "./lib/inbox.js",
@@ -27,7 +27,7 @@
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.2.0-rc.2"
+      "dsh": ">=0.2.2-rc.5"
     }
   },
   "engines": {

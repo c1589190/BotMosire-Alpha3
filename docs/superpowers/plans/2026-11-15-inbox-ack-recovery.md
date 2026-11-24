@@ -1,6 +1,6 @@
 # Inbox ACK Recovery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development or executing-plans. Steps use checkbox (`- [ ]`) syntax. Do not commit without explicit user authorization.
+> Steps use checkboxes (`- [ ]`) for tracking. Do not commit without explicit user authorization.
 
 **Goal:** Recover acknowledgement of already-injected Inbox items without silently repeating an injection or acknowledging the wrong database or items.
 

@@ -166,6 +166,10 @@
 | D-086 | 2026-11-23 | 本会话用户消息 | 「额，如果下移到bma3本体会不会更好？」<br>「开始实现吧。哦对了，你能就在当前环境验证这是否在wsl linux上同样可用吗？」 | OneBot 凭据由 BMA3 MCP 管理。账号支持 `tokenRef`，引用随实例持久化，凭据变更重新协调关联账号。缺失凭据时由对应账号报错，Agent 仍可通过 MCP 修复。见[设计](specs/2026-11-23-bma3-onebot-credentials-design.md)及[实施计划](plans/2026-11-23-bma3-onebot-credentials-implementation.md)。 |
 | D-087 | 2026-11-23 | 本会话用户消息 | 「那有没有重试机制，就是dsh插件主动检测是否出现相关问题，如果有，取消本次注入、删除相关上下文元素之类的，是否可行？」<br>「那么开始修改？」 | Inbox 只在可归因于当前自动面板的第一步 `Content Exists Risk` 后替换该条预览，同一步重试一次，再次被拒则暂停自动唤醒。原始事件、消息板和原批次 ACK 保持各自语义。[设计](specs/2026-11-23-dsh-inbox-content-risk-recovery-design.md) · [实施计划](plans/2026-11-23-dsh-inbox-content-risk-recovery-implementation.md) |
 | D-088 | 2026-11-23 | 本会话用户消息 | 「目前不管是查看还是Agent报告都说，目前bma3暴露的工具有一些太多了，而且还有不少重复，这是否可以改善？调查一下」<br>「那么开始吧」 | 保留现有全量 MCP 路径，新增同端口、同鉴权的日常与额外工具入口，两组互补。托管 DSH 只挂日常入口，旧 JAR 继续使用全量入口，低频能力可按需挂载。[设计](specs/2026-11-23-mcp-daily-tools-design.md) · [实施计划](plans/2026-11-23-mcp-daily-tools-implementation.md) |
+| D-089 | 2026-11-24 | 本会话用户消息 | 「肯定包括啊，以及我说的三个模块是同一个总插件下的三个组件，不是直接加载为三个插件，这可以理解吧？可以开始设计工作流了」 | Linux 使用一个 DSH 插件入口。入口内部组合 Inbox、BMA3 预设与 JAR 运行时。Inbox 和运行时供同 profile 的各预设使用，BMA3 MCP 按后端就绪状态载入 BMA3 预设。运行时改配置包括 JAR 停机时修改 `app.yaml`。发行形态见 D-091。[设计草案](specs/2026-11-24-dsh-unified-plugin-linux-design.md) · [实施顺序草案](plans/2026-11-24-dsh-unified-plugin-linux-plan.md) |
+| D-090 | 2026-11-24 | 本会话用户消息 | 「问题来了，类似一键包一样的安装即有运行时该如何达成？虽然说整合为了插件的正式功能，但是还是要区分带jar和不带jar的，我建议走的是把jar和运行时放在一键包里方便直接安装，这是否可行？」 | 历史发行设想为两种产物。D-091 取代双产物发行，保留一键包内置 BMA3 JAR 和 Java 的布局。 |
+| D-091 | 2026-11-24 | 本会话用户消息 | 「算了，想了一下，纯插件包取缔掉吧，只提供一键包」 | Linux DSH 只发行内置 BMA3 JAR、Java 21 和启动器的一键包。新安装默认使用包内镜像。一条 DSH 插件入口组装三个组件，既有本地 JAR 或外部服务的配置走同一插件的来源选择与迁移流程。[发行与安装](specs/2026-11-24-dsh-unified-plugin-linux-design.md#发行与安装) |
+| D-092 | 2026-11-24 | 本会话用户消息 | 「先提交并推送、发布0.0.9-fix2，其中只包括linux一键包」 | 提交并推送当前 Linux DSH 插件改动和升级修复。GitHub `v0.0.9-fix2` 预发布资产仅包含 Linux x86_64 一键包。 |
 
 ## 待裁定
 

@@ -1,6 +1,8 @@
 # 0.0.9-early DSH 托管 BMA3 整合包
 
 > 状态：已确认，2026-11-23（UTC+8）。实现基线为 `feat/0.0.9-early` 的 `99ca23a`。本轮提交并推送源码，发行和 Windows 整合包另行处理。
+>
+> Linux 单插件和离线配置的后续工作流见 [D-089 设计草案](2026-11-24-dsh-unified-plugin-linux-design.md)。
 
 ## 需求
 

@@ -18,7 +18,9 @@ mkdir "$STAGE/runtime"
 cp "$DIST/botmosire-a3-linux-x86_64.tar.gz" "$STAGE/runtime/image.tar.gz"
 
 node packaging/stage-dsh-bundle.mjs "$STAGE" "$DIST/botmosire-a3/bin/botmosire-a3"
-BUNDLE="$(npm pack --ignore-scripts --pack-destination "$DIST" "$STAGE")"
+PACKED="$(npm pack --ignore-scripts --pack-destination "$STAGE" "$STAGE")"
+BUNDLE="${PACKED%.tgz}-linux-x64-full.tgz"
+mv "$STAGE/$PACKED" "$DIST/$BUNDLE"
 (
   cd "$DIST"
   sha256sum "$BUNDLE" > "$BUNDLE.sha256"

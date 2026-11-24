@@ -72,7 +72,7 @@ weighting:
 STATE=$(mktemp -d /tmp/bma3-debug.XXXXXXXX)
 printf '%s\n' "$STATE"
 python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" serve \
-  --jar bma3-app/target/bma3-app-0.0.9-fix1.jar
+  --jar bma3-app/target/bma3-app-0.0.9-fix2.jar
 ```
 
 在另一终端把 `STATE` 设为上面输出的目录。调试机默认绑定回环 MCP `19865`、Inbox `19866` 和 debug/健康检查 `19867`，Inbox ID 为 `bma3-debug`。可在首次 `serve` 时指定 `--mcp-port`、`--inbox-port`、`--debug-port`。相同目录和端口可重启并继续使用原数据。
@@ -93,22 +93,23 @@ python3 tools/e2e-local/debug_machine.py --state-dir "$STATE" answer <request-id
 
 ```yaml
 - insert:
-    - id: bma3-debug-inbox
+    - id: bma3-plugin
       name: 'file://<repo>/dsh-plugin/index.js'
       config:
-        module: inbox
-        baseUrl: http://127.0.0.1:19866
-        inboxId: bma3-debug
-        envFile: '<state>/.bma3env'
-        stateFile: '<state>/web-inbox.json'
-        autoStart: true
-    - id: bma3-debug-preset
-      name: 'file://<repo>/dsh-plugin/index.js'
-      config:
-        module: preset
+        runtime:
+          source: external
+          mcpUrl: http://127.0.0.1:19865/mcp/daily
+          mcpOpsUrl: http://127.0.0.1:19865/mcp/ops
+        inbox:
+          baseUrl: http://127.0.0.1:19866
+          inboxId: bma3-debug
+          envFile: '<state>/.bma3env'
+          stateFile: '<state>/web-inbox.json'
+        preset:
+          enableOps: true
 ```
 
-Agent 回答需要再配置 [DSH 原生 MCP 客户端](../../dsh-plugin/README.md#一次性配置推荐)，MCP URL 使用 `http://127.0.0.1:19865/mcp`，Authorization 从调试机的 `.bma3env` 读取。独立 profile 中可把 MCP 客户端的 `name` 写成本机已安装 DSH 包入口的 `file:` URL。
+在 BMA3 预设会话中可调用额外入口的调试回复工具。MCP 凭据由插件从调试机的 `.bma3env` 读取。
 
 ```bash
 DSH_HOME="$STATE/dsh" dsh web --patch "$STATE/debug-web.patch.yml" \

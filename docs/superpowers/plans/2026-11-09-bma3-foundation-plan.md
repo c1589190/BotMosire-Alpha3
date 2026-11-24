@@ -1,6 +1,6 @@
 # BMA3 Foundation + QQ + Inbox Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+> Steps use checkboxes (`- [x]`) for tracking.
 
 **Goal:** 建立一个可运行的 Java 21 常驻服务：OneBot 11 正向 WS 入站 → 统一消息板 → 单 Inbox → 回环 Bearer MCP；带 DSH 薄插件、jlink/jpackage app-image 与一站式安装骨架。
 

@@ -1,23 +1,7 @@
-# BMA3 DSH bundle. Two rows, two responsibilities: inbox wake injection and the BMA3 persona preset.
+# The Linux bundle loads one BMA3 plugin per profile.
 - insert:
-    - id: bma3-inbox
+    - id: bma3-plugin
       name: '@mosire/bma3-dsh'
       config:
-        module: inbox
-        baseUrl: http://127.0.0.1:46500
-        inboxId: bma3
-        # token 从 jar 生成的同一份 .bma3env 里读 INBOX_TOKEN（0.0.5 的 tokenEnv/tokenFile 已删除）
-        # envFile: /opt/bma3/run/.bma3env
-        autoStart: true
-        # 默认 ~/.dsh/storages/bma3-inbox.json；写盘内容只有 sessionId/水位/暂停标志
-        # stateFile: /home/you/.dsh/storages/bma3-inbox.json
-        heartbeatMs: 15000
-
-    # 人设注入 + 薄工具面（bash/pwsh、readImage、subagent、plugin-manager）；无白名单、无 restrict。
-    # 提示词文件默认 ~/.dsh/bma3/systemprompt.md（$DSH_HOME 优先），示例见 examples/systemprompt.md。
-    - id: bma3-preset
-      name: '@mosire/bma3-dsh'
-      config:
-        module: preset
-        # promptFile: ~/.dsh/bma3/systemprompt.md
-        # complete: true   # 默认 true：人设就是完整 system prompt；false 则叠加在默认前缀位置
+        runtime:
+          source: bundled

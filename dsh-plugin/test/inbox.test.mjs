@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -95,6 +95,81 @@ test('SseParser handles frames split across chunks', () => {
   assert.equal(events[0].id, '7')
   assert.deepEqual(JSON.parse(events[0].data), { revision: 7 })
   assert.equal(events[1].event, 'heartbeat')
+})
+
+test('managed Inbox changes endpoint without replacing the tool, binding or state lock', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bma3-inbox-backend-'))
+  const stateFile = join(dir, 'state.json')
+  const calls = []
+  const definition = []
+  const ctx = {
+    agents: { get: () => undefined, list: () => [] },
+    tools: { register: (tool) => { definition.push(tool); return () => {} } },
+    effect: (callback) => callback(),
+  }
+  const fetchImpl = (url, init) => {
+    if (!url.endsWith('/events')) return Promise.resolve(
+      { ok: true, status: 200, json: async () => ({ processId: 'probe' }) },
+    )
+    calls.push({ url, signal: init.signal })
+    return new Promise((_, reject) => init.signal.addEventListener(
+      'abort', () => reject(init.signal.reason), { once: true },
+    ))
+  }
+  const client = apply(ctx, { stateFile, fetchImpl }, undefined, true)
+  try {
+    const tool = definition[0]
+    assert.equal(client.status().targetError, 'backend_offline')
+    assert.equal(calls.length, 0)
+    await tool.execute({ action: 'bind', sessionId: 'session-offline' })
+    const first = { inboxUrl: 'http://127.0.0.1:18766', inboxId: 'bma3', inboxFingerprint: 'a'.repeat(64) }
+    const second = { ...first, inboxUrl: 'http://127.0.0.1:18767' }
+    client.setBackend(first)
+    await waitFor(() => calls.length === 1, 'first endpoint')
+    client.setBackend(null)
+    assert.equal(calls[0].signal.aborted, true)
+    assert.equal(client.status().targetError, 'backend_offline')
+    client.setBackend(second)
+    await waitFor(() => calls.length === 2, 'second endpoint')
+    assert.match(calls[1].url, /18767/)
+    assert.equal(JSON.parse((await tool.execute()).text).targetSessionId, 'session-offline')
+    assert.equal(definition.length, 1)
+
+    client.stop()
+    client.setBackend(first)
+    assert.equal(client.status().running, false)
+    assert.equal(client.status().stopped, true)
+    assert.equal(calls.length, 2)
+  } finally {
+    client.dispose()
+  }
+})
+
+test('managed Inbox recovers an abandoned lock only after its owned JAR handshake', { skip: process.platform !== 'linux' }, () => {
+  const stateFile = join(mkdtempSync(join(tmpdir(), 'bma3-inbox-lock-recovery-')), 'state.json')
+  const config = { stateFile, reclaimManagedLock: true }
+  const old = createInboxClient({}, config, undefined, undefined, true)
+  old.bind('session-before-crash')
+  old.stop()
+  old.dispose()
+  writeFileSync(inboxStatePaths(config).lock, JSON.stringify({
+    managed: true, host: hostname(), token: 'abandoned-marker', pid: 2147483647,
+  }), { mode: 0o600 })
+
+  const client = createInboxClient({}, config, undefined, undefined, true)
+  try {
+    assert.equal(client.status().lockError, 'state_lock_held')
+    const endpoint = { inboxUrl: 'http://127.0.0.1:18766', inboxId: 'bma3' }
+    client.setBackend(endpoint)
+    assert.equal(client.status().lockError, 'state_lock_held')
+    client.setBackend({ ...endpoint, inboxFingerprint: 'a'.repeat(64) })
+    assert.equal(client.status().lockError, null)
+    assert.equal(client.status().targetSessionId, 'session-before-crash')
+    assert.equal(client.status().stopped, true)
+    assert.equal(client.status().persistence.lockHeld, true)
+  } finally {
+    client.dispose()
+  }
 })
 
 test('apply exposes one-panel tools and does not leak the token', async () => {
