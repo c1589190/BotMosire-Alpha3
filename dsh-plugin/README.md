@@ -10,8 +10,7 @@ Linux 一键包在目标 DSH profile 加载一条 `bma3-plugin` 入口，组装�
 
 ## 预设：人设 + 薄面
 
-提示词文件默认 `~/.dsh/bma3/systemprompt.md`（`$DSH_HOME` 优先），示例见
-[`examples/systemprompt.md`](examples/systemprompt.md)。
+Linux BMA3 预设使用会话工作区中的 `systemprompt.md`，找不到可用文件时读取 `$DSH_HOME/bma3/systemprompt.md`（通常是 `~/.dsh/bma3/systemprompt.md`）。显式的 `preset.promptFile` 优先。示例见 [`examples/systemprompt.md`](examples/systemprompt.md)。
 
 在 Linux profile 的 `cordis.patch.yml` 可覆盖同一入口的配置。宿主用这一段 `config` 替换默认值，已有的运行时和 Inbox 设置也应写在同一段。
 
@@ -44,8 +43,8 @@ Linux 一键包在目标 DSH profile 加载一条 `bma3-plugin` 入口，组装�
 
 - `complete: true`（默认）：这份文本**就是**完整 system prompt，整份替换 DSH 默认提示词。
 - `complete: false`：退化成"插在 persona 前缀位置"，保留 DSH 默认提示词。
-- 文件缺失或为空 ⇒ **不挂任何 section**，绝不塞内置替身。
-- 每次组装前重读，改了下一轮生效；读取失败保留上一份非空文本。
+- 无可用人设时，由 DSH 组装默认提示词。
+- 每次组装前重读。会话工作区的文件新增或编辑后，下次组装即生效。已读取的固定文件临时不可读时继续使用上次读到的文本。
 
 会话里选 `BMA3` 即生效。
 

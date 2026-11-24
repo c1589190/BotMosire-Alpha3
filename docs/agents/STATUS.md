@@ -1,8 +1,19 @@
 # STATUS —— 更新时间：2026-11-24 (UTC+8)
 
-## 2026-11-24：0.0.9-fix3 Linux DSH
+## 2026-11-24：完整 0.0.9-fix3 Linux 一键包
 
-- `feat/0.0.9-early` 基线 `4a06bdc`。`0.0.9-fix3` 包含 Inbox 恢复旧会话时补挂原预设的修复。唯一发行资产为 `mosire-bma3-dsh-0.0.9-fix3-linux-x64-full.tgz`，SHA-256 `2fe0148773134d0548d4b36a91a212593f74b03152a1ebf76c4e7dd4b9df22ee`。[发行说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/v0.0.9-fix3)
+- 按用户指令发布包含冷恢复与工作区提示词的完整 `0.0.9-fix3`。使用 `0.0.9-fix3` 标签对应完整源码。初版草稿使用过 `v0.0.9-fix3`。唯一发行资产为 `mosire-bma3-dsh-0.0.9-fix3-linux-x64-full.tgz`，SHA-256 `d3c3f267c6e3aa883c60e51581aa553e03e84ac46e845a85efe8c3e4468ea5ac`。[发行说明](https://github.com/c1589190/BotMosire-Alpha3/releases/tag/0.0.9-fix3)
+- 最终包在 Linux DSH Web `0.2.2-rc.5` 通过工作区人设隔离及正式 `fix2` 的重启升级。Node 22 与 26 各 194/194。相同 Java 源码的 Maven 全量测试 rc=0，949 项通过、2 项按环境跳过。证据 `/tmp/bma3-workspace-persona.7FtNf1Fi/` 与 `/tmp/bma3-009-fix3.uttc1Ay0/maven-test.log`。远程实例和 Windows 为 `NOT_RUN`。
+
+## 2026-11-24：Linux 工作区提示词恢复
+
+- 用户报告「工作区的系统提示词没有成功加载」，并暂停 `fix3` 发布。隔离 Linux DSH Web `0.2.2-rc.5` 中，只有工作区 `systemprompt.md` 的 BMA3 会话仍有 Bash，提示词却由 12 段 DSH 默认内容组装。原加载器只读 `promptFile` 或 DSH 共享路径，与重启后整套预设未挂载的故障可分别复现。`bash /tmp/bma3-workspace-persona.7FtNf1Fi/run.sh baseline <原 fix3 包> no-fallback` rc=1，日志 `baseline.log`。
+- Linux 单入口按 `preset.promptFile`、会话工作区 `systemprompt.md`、`$DSH_HOME/bma3/systemprompt.md` 取人设。BMA3 作用域在组装时读取文件，一个 profile 的两个工作区可有各自的人设。`complete` 与默认提示词回退按专题契约。`run.sh <场景> <修复后候选包> <模式>` 在 `no-fallback`、`with-fallback`、`explicit`、`additive` 四个模式 rc=0，覆盖补建、编辑、越界链接和切换预设。`cold.sh seed` 与 `cold.sh resume` rc=0，发布版 `fix2` 写盘后用候选包重启，原会话从工作区恢复人设、历史和日常工具，实际执行 Bash 和日常 MCP。证据同目录 `fixed-*.log`、`cold-{seed,resume}.log`。[工作区契约](../superpowers/specs/2026-11-24-dsh-unified-plugin-linux-design.md#日常使用)
+- `env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none` 在 Node 22 和 Node 26 各 194/194，`bash packaging/build-dsh-bundle.sh`、`sha256sum -c <候选包.sha256>` 均 rc=0。证据同目录 `{node22,node26,build}.log`。GitHub `fix3` 维持仅含此前包的草稿。本轮候选保留本地，远端业务实例与 Windows 复验为 `NOT_RUN`。
+
+## 2026-11-24：0.0.9-fix3 Linux DSH 初版草稿
+
+- `feat/0.0.9-early` 基线 `4a06bdc`。初版候选包包含 Inbox 恢复旧会话时补挂原预设的修复，SHA-256 `2fe0148773134d0548d4b36a91a212593f74b03152a1ebf76c4e7dd4b9df22ee`。
 - `MAVEN_ARGS="-o -Dmaven.repo.local=<隔离缓存>" bash packaging/build-dsh-bundle.sh`、`sha256sum -c <fix3.tgz.sha256>` 均 rc=0。包只有一条 DSH 入口，嵌入镜像与清单摘要一致。`env -u JAVA_HOME PATH=/nonexistent ./botmosire-a3/bin/botmosire-a3 --version` 报告 `0.0.9-fix3`。`env -u DEEPSEEK_API_KEY <node> --test --experimental-test-isolation=none` 在 Node 22 和 26 各通过 193 项，均 rc=0。证据 `/tmp/bma3-009-fix3.uttc1Ay0/{build,node22,node26}.log`。
 - `bash /tmp/bma3-009-fix3.uttc1Ay0/cold.sh seed` 和 `cold.sh resume` 均 rc=0。正式 `fix2` 写盘后更换最终 `fix3` 包，Linux DSH Web `0.2.2-rc.5` 新进程恢复原会话的人设、历史与工具，并实际运行 Bash 和日常 MCP 调用。证据同目录 `upgrade-{seed,resume}.log`。
 - `bash /tmp/bma3-009-fix3.uttc1Ay0/hot.sh hot-call` rc=0。在隔离 Web profile 中，允许管理插件的原 BMA3 会话可用 `plugin_manager install_bundle` 安装 `fix3`，宿主返回 `restart-required` / `unmanaged-plugin`。Inbox 与托管 JAR 升到 `fix3`，原会话恢复并实际调用日常 MCP，仍绑定旧预设版本，新会话挂载新版本。证据同目录 `hot-call.log`。远端实例和 Windows 为 `NOT_RUN`。

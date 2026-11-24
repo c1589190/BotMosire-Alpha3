@@ -65,10 +65,24 @@ export function readPrompt(file) {
   }
 }
 
+function readWorkspacePrompt(context) {
+  const root = context?.agent?.session?.header?.cwd
+  if (!root || !path.isAbsolute(root)) return ''
+  try {
+    const directory = fs.realpathSync(root)
+    const file = fs.realpathSync(path.join(directory, 'systemprompt.md'))
+    const relative = path.relative(directory, file)
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return ''
+    return fs.statSync(file).isFile() ? readPrompt(file) : ''
+  } catch {
+    return ''
+  }
+}
+
 /**
  * Register the persona section for this preset revision.
  * @param {any} ctx the preset row's context.
- * @param {{promptFile?: string, complete?: boolean}} [config] row config.
+ * @param {{promptFile?: string, complete?: boolean, workspacePrompt?: boolean}} [config] row config.
  * @returns {(() => void) | undefined} the section disposer, or undefined when nothing was mounted.
  */
 export function apply(ctx, config = {}) {
@@ -76,24 +90,41 @@ export function apply(ctx, config = {}) {
   if (!systemPrompt?.section) return undefined
 
   const file = resolvePromptFile(config)
-  // Never inject a built-in stand-in: a missing or blank file means the workspace has no persona,
-  // and an empty complete section would blank the system prompt outright.
+  const explicitFile = typeof config?.promptFile === 'string' && config.promptFile.trim()
+  const workspace = config?.workspacePrompt === true && !explicitFile
+  const complete = config?.complete !== false
   let text = readPrompt(file)
-  if (!text) return undefined
+  const currentPrompt = (context) => {
+    const workspaceText = workspace ? readWorkspacePrompt(context) : ''
+    if (workspaceText) return workspaceText
+    text = readPrompt(file) || text
+    return text
+  }
+
+  if (!text) {
+    if (!workspace) return undefined
+    // Each assembly can select a different workspace. Keep the host sections when no file applies.
+    return ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const assembly = await next()
+      const text = currentPrompt(context)
+      if (!text) return assembly
+
+      const persona = { name: PERSONA_SECTION, text, interpolate: false }
+      if (complete) return { ...assembly, sections: [persona] }
+
+      const sections = [...assembly.sections]
+      const prefix = sections.findIndex((section) => section.name === PERSONA_SECTION)
+      if (prefix >= 0) sections.splice(prefix, 1, persona)
+      else sections.splice(sections.findIndex((section) => section.name === 'harness:identity') + 1, 0, persona)
+      return { ...assembly, sections }
+    }, { prepend: true })
+  }
 
   const section = {
     name: PERSONA_SECTION,
     order: systemPrompt.getSectionOrder ? systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') : 0,
-    // Re-read on every assembly so an edit applies from the next turn; keep the last non-empty
-    // text so a transient read failure cannot blank a complete section.
-    text: () => {
-      const next = readPrompt(file)
-      if (next) text = next
-      return text
-    },
-    // The persona replaces the default preamble rather than being appended to it (D-0xx persona
-    // loader). `complete:false` opts back into additive prompting.
-    complete: config?.complete !== false,
+    text: currentPrompt,
+    complete,
     interpolate: false,
   }
   const dispose = systemPrompt.section(section)

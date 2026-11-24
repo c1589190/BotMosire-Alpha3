@@ -118,6 +118,7 @@ export function presetDefinition(ctx, config = {}, scopedMcp = false) {
         // compatibility preflight, silently.
         name: new URL('./persona.js', import.meta.url).href,
         config: {
+          ...(scopedMcp ? { workspacePrompt: true } : {}),
           ...(config.promptFile ? { promptFile: config.promptFile } : {}),
           ...(config.complete === undefined ? {} : { complete: config.complete }),
         },

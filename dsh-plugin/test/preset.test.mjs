@@ -63,6 +63,7 @@ test('persona config is forwarded, empty values are omitted', () => {
   const definition = presetDefinition(undefined, { promptFile: '/tmp/p.md', complete: false })
   assert.deepEqual(definition.plugins[0].config, { promptFile: '/tmp/p.md', complete: false })
   assert.deepEqual(presetDefinition(undefined, { promptFile: '' }).plugins[0].config, {})
+  assert.equal(presetDefinition(undefined, {}, true).plugins[0].config.workspacePrompt, true)
 })
 
 test('preset can be registered', () => {

@@ -39,6 +39,8 @@ Linux 每个版本只提供 `mosire-bma3-dsh-<版本>-linux-x64-full.tgz` 及其
 
 首次启动和预设内动态 MCP 挂载复用现有协议。工具的可见性由注册作用域决定。停机时撤销旧工具，已发出的调用按原业务契约结算，发送结果为 `UNKNOWN` 时不自动重发。[DSH MCP 作用域](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/mcp.md)
 
+Linux 单入口的 BMA3 预设优先读取显式配置的 `preset.promptFile`。未指定时，每次组装从会话创建时的工作区读取 `systemprompt.md`，再回退到 `$DSH_HOME/bma3/systemprompt.md`。工作区候选必须是位于该工作区内的普通文件。没有可用人设时由 DSH 组装其默认提示词。`complete` 默认为 `true`，提供完整提示词。预设作用域隔离各会话的人设，无需新建会话或重新挂载预设就能读取工作区文件的新内容。[组装上下文](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/system-prompt.md)
+
 ## JAR 生命周期
 
 | 动作 | 行为 |
@@ -94,6 +96,7 @@ Agent 用同一个工具提交 `action: configure`、`target: app` 及结构化 
 5. 核对 Linux 发行输出只有一种 DSH tgz，内含完整运行镜像。覆盖镜像缺失、损坏、显式选用其他来源，以及同一 profile 升级后手动停止意图继续生效。
 6. 运行中的旧 BMA3 会话在插件升级后沿用原有会话及预设。模拟旧作用域丢失终端或图片读取工具，验证同一会话恢复缺失工具，普通会话和被宿主限制的会话保持各自工具面。
 7. 用独立的 DSH 进程恢复写盘后的 Inbox 绑定会话。旧会话的创建头记录 Standard，首轮前改选 BMA3。核对原会话标识、历史、BMA3 人设、原生工具和日常 MCP 工具均可用，Standard 会话与全局无 BMA3 MCP 工具。
+8. 同 profile 下的 BMA3 会话各读自己的工作区提示词，普通会话使用宿主提示词。测试显式覆盖、共享文件回退、文件缺失后补建、编辑后重新组装及指向工作区外的符号链接。
 
 ## 未决问题
 

@@ -61,6 +61,38 @@ test('a missing or blank prompt registers no section at all', () => {
   assert.equal(apply(fakeCtx(), { promptFile: blank }), undefined)
 })
 
+test('the unified preset can pick up workspace prompts created after it mounts', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bma3-persona-home-'))
+  const file = path.join(home, 'systemprompt.md')
+  const previousHome = process.env.DSH_HOME
+  const ctx = fakeCtx()
+  let assemble
+  ctx.on = (event, handler) => {
+    assert.equal(event, 'system-prompt/assemble')
+    assemble = handler
+  }
+  try {
+    process.env.DSH_HOME = home
+    apply(ctx, { workspacePrompt: true })
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  }
+
+  try {
+    const context = { agent: { session: { header: { cwd: home } } } }
+    const host = { sections: [{ name: 'harness:identity', text: 'Host default' }], variables: {} }
+    assert.equal(await assemble(host, context, async () => host), host)
+    fs.writeFileSync(file, 'Workspace persona')
+    assert.deepEqual((await assemble(host, context, async () => host)).sections, [
+      { name: PERSONA_SECTION, text: 'Workspace persona', interpolate: false },
+    ])
+    assert.equal(await assemble(host, {}, async () => host), host)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the persona shadows the deployment prefix and is complete by default', () => {
   const file = tempPrompt('# 我是谁\n你是 BMA3。')
   const ctx = fakeCtx()

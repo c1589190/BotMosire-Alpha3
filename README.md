@@ -212,7 +212,7 @@ curl -H "Authorization: Bearer $INBOX_TOKEN" \
 
 ### 4. 使用 BMA3 预设和业务工具
 
-在目标会话选择 **BMA3** 预设。提示词来自 `$DSH_HOME/bma3/systemprompt.md`，可参考
+在目标会话选择 **BMA3** 预设。默认读取会话工作区的 `systemprompt.md`，也可使用 `$DSH_HOME/bma3/systemprompt.md` 提供共享人设。可参考
 [提示词模板](dsh-plugin/examples/systemprompt.md)。插件会在该预设内接入业务 MCP。
 JAR 就绪后，可调用 `mcp__bma3__inbox_status` 自检。旧插件升级、外部 JAR 和低频工具入口配置见
 [DSH 插件指南](dsh-plugin/README.md)。
